@@ -1,0 +1,11 @@
+# Atari Sample Tracker - Dependencies
+
+# Required
+dearpygui>=1.9.0
+numpy>=1.20.0
+
+# Audio (strongly recommended)
+sounddevice>=0.4.5
+
+# Better WAV support (optional)
+scipy>=1.7.0
