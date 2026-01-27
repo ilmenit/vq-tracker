@@ -47,10 +47,14 @@ def setup_theme():
             dpg.add_theme_color(dpg.mvThemeCol_ScrollbarGrabHovered, COLORS['highlight'])
             
             # Style
-            dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 4)
-            dpg.add_theme_style(dpg.mvStyleVar_WindowRounding, 5)
-            dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 8, 5)  # Increased padding
-            dpg.add_theme_style(dpg.mvStyleVar_ItemSpacing, 8, 6)   # Increased spacing
+            dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 6)
+            dpg.add_theme_style(dpg.mvStyleVar_WindowRounding, 8)
+            dpg.add_theme_style(dpg.mvStyleVar_PopupRounding, 8)
+            dpg.add_theme_style(dpg.mvStyleVar_ScrollbarRounding, 6)
+            dpg.add_theme_style(dpg.mvStyleVar_GrabRounding, 6)
+            dpg.add_theme_style(dpg.mvStyleVar_TabRounding, 6)
+            dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 10, 6)  # Spacious padding
+            dpg.add_theme_style(dpg.mvStyleVar_ItemSpacing, 10, 8)   # Spacious spacing
     
     dpg.bind_theme(theme)
     setup_font()
@@ -91,27 +95,16 @@ def setup_font():
     """Setup and bind a global font."""
     import os
     
-    # Common font paths on Linux
-    font_paths = [
-        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-        "/usr/share/fonts/gnu-free/FreeSans.ttf",
-    ]
+    # Path to embedded font
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    font_path = os.path.join(base_dir, "assets", "fonts", "font.ttf")
     
-    font_path = None
-    for path in font_paths:
-        if os.path.exists(path):
-            font_path = path
-            break
-            
     with dpg.font_registry():
-        if font_path:
+        if os.path.exists(font_path):
             # Load font with size 20 (larger than default ~13)
             with dpg.font(font_path, 20) as default_font:
                 # Add extra characters if needed
                 dpg.add_font_range_hint(dpg.mvFontRangeHint_Default)
             dpg.bind_font(default_font)
         else:
-            print("Warning: No system font found, using default.")
+            print(f"Warning: Embedded font not found at {font_path}, using default.")

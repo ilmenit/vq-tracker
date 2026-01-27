@@ -92,9 +92,9 @@ COLORS = {
 # UI DIMENSIONS
 # =============================================================================
 
-WIN_WIDTH = 1280
-WIN_HEIGHT = 820
-VISIBLE_ROWS = 24
+WIN_WIDTH = 1480
+WIN_HEIGHT = 920
+VISIBLE_ROWS = 16  # Fewer rows due to larger font
 
 # =============================================================================
 # APP INFO
