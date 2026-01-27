@@ -1,47 +1,33 @@
-"""
-Atari Sample Tracker - Data Model
-Core data structures: Song, Pattern, Row, Instrument
-"""
-
+"""Atari Sample Tracker - Data Model"""
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 import numpy as np
-
-from constants import (
-    MAX_CHANNELS, MAX_PATTERNS, MAX_ROWS, MAX_INSTRUMENTS,
-    MAX_SONGLINES, MAX_VOLUME, DEFAULT_SPEED, DEFAULT_LENGTH,
-    PAL_HZ, MAX_NOTES
-)
-
-# =============================================================================
-# PATTERN ROW
-# =============================================================================
+from constants import (MAX_CHANNELS, MAX_PATTERNS, MAX_ROWS, MAX_INSTRUMENTS,
+                       MAX_SONGLINES, MAX_VOLUME, DEFAULT_SPEED, DEFAULT_LENGTH,
+                       PAL_HZ, MAX_NOTES)
 
 @dataclass
 class Row:
     """Single row in a pattern."""
-    note: int = 0           # 0=empty, 1-48=note
-    instrument: int = 0     # 0-127
-    volume: int = MAX_VOLUME  # 0-15
+    note: int = 0
+    instrument: int = 0
+    volume: int = MAX_VOLUME
     
     def clear(self):
-        self.note = 0
-        self.instrument = 0
+        self.note = self.instrument = 0
         self.volume = MAX_VOLUME
     
     def copy(self) -> 'Row':
         return Row(self.note, self.instrument, self.volume)
     
     def to_dict(self) -> dict:
-        return {'note': self.note, 'instrument': self.instrument, 'volume': self.volume}
+        return {'n': self.note, 'i': self.instrument, 'v': self.volume}
     
     @classmethod
     def from_dict(cls, d: dict) -> 'Row':
-        return cls(d.get('note', 0), d.get('instrument', 0), d.get('volume', MAX_VOLUME))
-
-# =============================================================================
-# PATTERN
-# =============================================================================
+        return cls(d.get('n', d.get('note', 0)),
+                   d.get('i', d.get('instrument', 0)),
+                   d.get('v', d.get('volume', MAX_VOLUME)))
 
 @dataclass
 class Pattern:
@@ -52,20 +38,20 @@ class Pattern:
     def __post_init__(self):
         while len(self.rows) < self.length:
             self.rows.append(Row())
-        if len(self.rows) > self.length:
-            self.rows = self.rows[:self.length]
+        self.rows = self.rows[:self.length]
     
     def get_row(self, idx: int) -> Row:
-        if 0 <= idx < len(self.rows):
-            return self.rows[idx]
-        return Row()
+        return self.rows[idx] if 0 <= idx < len(self.rows) else Row()
+    
+    def get_row_wrapped(self, idx: int) -> Row:
+        """Get row with wrap-around for pattern repetition."""
+        return self.rows[idx % self.length] if self.length > 0 else Row()
     
     def set_length(self, length: int):
         length = max(1, min(MAX_ROWS, length))
         while len(self.rows) < length:
             self.rows.append(Row())
-        if len(self.rows) > length:
-            self.rows = self.rows[:length]
+        self.rows = self.rows[:length]
         self.length = length
     
     def insert_row(self, idx: int):
@@ -81,9 +67,9 @@ class Pattern:
     def transpose(self, semitones: int):
         for row in self.rows:
             if row.note > 0:
-                new = row.note + semitones
-                if 1 <= new <= MAX_NOTES:
-                    row.note = new
+                new_note = row.note + semitones
+                if 1 <= new_note <= MAX_NOTES:
+                    row.note = new_note
     
     def clear(self):
         for row in self.rows:
@@ -95,28 +81,24 @@ class Pattern:
         return p
     
     def to_dict(self) -> dict:
-        return {'length': self.length, 'rows': [r.to_dict() for r in self.rows]}
+        return {'len': self.length, 'rows': [r.to_dict() for r in self.rows]}
     
     @classmethod
     def from_dict(cls, d: dict) -> 'Pattern':
-        p = cls(length=d.get('length', DEFAULT_LENGTH))
+        p = cls(length=d.get('len', d.get('length', DEFAULT_LENGTH)))
         p.rows = [Row.from_dict(r) for r in d.get('rows', [])]
         while len(p.rows) < p.length:
             p.rows.append(Row())
         return p
 
-# =============================================================================
-# INSTRUMENT
-# =============================================================================
-
 @dataclass
 class Instrument:
     """Sample-based instrument."""
-    name: str = "New Instrument"
+    name: str = "New"
     sample_path: str = ""
     sample_data: Optional[np.ndarray] = None
     sample_rate: int = 44100
-    base_note: int = 25  # C2
+    base_note: int = 13  # C-2 for 3-octave range
     
     def is_loaded(self) -> bool:
         return self.sample_data is not None and len(self.sample_data) > 0
@@ -125,16 +107,13 @@ class Instrument:
         return len(self.sample_data) / self.sample_rate if self.is_loaded() else 0.0
     
     def to_dict(self) -> dict:
-        return {'name': self.name, 'sample': self.sample_path, 'base_note': self.base_note}
+        return {'name': self.name, 'path': self.sample_path, 'base': self.base_note}
     
     @classmethod
     def from_dict(cls, d: dict) -> 'Instrument':
-        return cls(name=d.get('name', 'New'), sample_path=d.get('sample', ''),
-                   base_note=d.get('base_note', 25))
-
-# =============================================================================
-# SONGLINE
-# =============================================================================
+        return cls(name=d.get('name', 'New'),
+                   sample_path=d.get('path', d.get('sample', '')),
+                   base_note=d.get('base', d.get('base_note', 13)))
 
 @dataclass
 class Songline:
@@ -148,10 +127,6 @@ class Songline:
     
     def copy(self) -> 'Songline':
         return Songline(patterns=self.patterns.copy())
-
-# =============================================================================
-# SONG
-# =============================================================================
 
 @dataclass
 class Song:
@@ -173,7 +148,6 @@ class Song:
             self.patterns = [Pattern() for _ in range(3)]
     
     def reset(self):
-        """Reset to empty state."""
         self.title = "Untitled"
         self.author = ""
         self.speed = DEFAULT_SPEED
@@ -190,7 +164,14 @@ class Song:
     def get_instrument(self, idx: int) -> Optional[Instrument]:
         return self.instruments[idx] if 0 <= idx < len(self.instruments) else None
     
-    # Songline operations
+    def max_pattern_length(self, songline_idx: int) -> int:
+        """Get max pattern length for a songline (for repetition display)."""
+        if 0 <= songline_idx < len(self.songlines):
+            sl = self.songlines[songline_idx]
+            return max(self.get_pattern(p).length for p in sl.patterns)
+        return DEFAULT_LENGTH
+    
+    # === SONGLINE OPERATIONS ===
     def add_songline(self, after: int = -1) -> int:
         if len(self.songlines) >= MAX_SONGLINES:
             return -1
@@ -214,7 +195,7 @@ class Song:
         self.modified = True
         return idx + 1
     
-    # Pattern operations
+    # === PATTERN OPERATIONS ===
     def add_pattern(self) -> int:
         if len(self.patterns) >= MAX_PATTERNS:
             return -1
@@ -232,9 +213,8 @@ class Song:
     def delete_pattern(self, idx: int) -> bool:
         if len(self.patterns) <= 1:
             return False
-        for sl in self.songlines:
-            if idx in sl.patterns:
-                return False
+        if any(idx in sl.patterns for sl in self.songlines):
+            return False
         if 0 <= idx < len(self.patterns):
             self.patterns.pop(idx)
             for sl in self.songlines:
@@ -248,8 +228,8 @@ class Song:
     def pattern_in_use(self, idx: int) -> bool:
         return any(idx in sl.patterns for sl in self.songlines)
     
-    # Instrument operations
-    def add_instrument(self, name: str = "New Instrument") -> int:
+    # === INSTRUMENT OPERATIONS ===
+    def add_instrument(self, name: str = "New") -> int:
         if len(self.instruments) >= MAX_INSTRUMENTS:
             return -1
         self.instruments.append(Instrument(name=name))
@@ -263,12 +243,14 @@ class Song:
             return True
         return False
     
-    # Serialization
+    # === SERIALIZATION ===
     def to_dict(self) -> dict:
         return {
-            'version': 2,
-            'metadata': {'title': self.title, 'author': self.author,
-                         'speed': self.speed, 'system': self.system},
+            'version': 3,
+            'meta': {
+                'title': self.title, 'author': self.author,
+                'speed': self.speed, 'system': self.system
+            },
             'songlines': [sl.patterns for sl in self.songlines],
             'patterns': [p.to_dict() for p in self.patterns],
             'instruments': [i.to_dict() for i in self.instruments]
@@ -276,16 +258,19 @@ class Song:
     
     @classmethod
     def from_dict(cls, d: dict) -> 'Song':
-        meta = d.get('metadata', {})
+        meta = d.get('meta', d.get('metadata', {}))
         song = cls(
             title=meta.get('title', 'Untitled'),
             author=meta.get('author', ''),
             speed=meta.get('speed', DEFAULT_SPEED),
             system=meta.get('system', PAL_HZ)
         )
-        song.songlines = [Songline(patterns=list(sl)) for sl in d.get('songlines', [[0, 1, 2]])]
-        song.patterns = [Pattern.from_dict(p) for p in d.get('patterns', [])]
-        song.instruments = [Instrument.from_dict(i) for i in d.get('instruments', [])]
+        song.songlines = [Songline(patterns=list(sl)) 
+                          for sl in d.get('songlines', [[0, 1, 2]])]
+        song.patterns = [Pattern.from_dict(p) 
+                         for p in d.get('patterns', d.get('ptn', []))]
+        song.instruments = [Instrument.from_dict(i) 
+                            for i in d.get('instruments', d.get('inst', []))]
         while len(song.patterns) < 3:
             song.patterns.append(Pattern())
         return song

@@ -1,12 +1,6 @@
-"""
-Atari Sample Tracker - Keyboard Handler
-Process keyboard input for notes and commands.
-"""
-
+"""Atari Sample Tracker - Keyboard Handler"""
 import dearpygui.dearpygui as dpg
-from typing import Optional
-
-from constants import NOTE_KEYS
+from constants import NOTE_KEYS, FOCUS_EDITOR
 from state import state
 import operations as ops
 
@@ -31,10 +25,14 @@ KEY_MAP = {
 
 def handle_key(sender, key):
     """Handle key press event."""
+    # Skip if typing in a text field
+    if state.input_active:
+        return
+    
     ctrl = dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)
     shift = dpg.is_key_down(dpg.mvKey_LShift) or dpg.is_key_down(dpg.mvKey_RShift)
     
-    # Ctrl shortcuts
+    # === GLOBAL SHORTCUTS (Ctrl+key) ===
     if ctrl:
         if key == dpg.mvKey_N:
             ops.new_song()
@@ -47,22 +45,50 @@ def handle_key(sender, key):
         elif key == dpg.mvKey_Y:
             ops.redo()
         elif key == dpg.mvKey_C:
-            ops.copy_row()
+            ops.copy_cells()
         elif key == dpg.mvKey_X:
-            ops.cut_row()
+            ops.cut_cells()
         elif key == dpg.mvKey_V:
-            ops.paste_row()
+            ops.paste_cells()
         elif key == dpg.mvKey_Home:
             ops.jump_first_songline()
         elif key == dpg.mvKey_End:
             ops.jump_last_songline()
         return
     
+    # === PLAYBACK (always active) ===
+    if key == dpg.mvKey_Spacebar:
+        ops.play_stop()
+        return
+    elif key == dpg.mvKey_F1:
+        from ui_dialogs import show_shortcuts
+        show_shortcuts()
+        return
+    elif key == dpg.mvKey_F5:
+        ops.play_pattern()
+        return
+    elif key == dpg.mvKey_F6:
+        ops.play_song_start()
+        return
+    elif key == dpg.mvKey_F7:
+        ops.play_song_here()
+        return
+    elif key == dpg.mvKey_F8:
+        ops.stop_playback()
+        return
+    elif key in (dpg.mvKey_Return, dpg.mvKey_NumPadEnter):
+        ops.preview_row()
+        return
+    
+    # === EDITOR-ONLY SHORTCUTS ===
+    if state.focus != FOCUS_EDITOR:
+        return
+    
     # Navigation
     if key == dpg.mvKey_Up:
-        ops.move_cursor(-1, 0)
+        ops.move_cursor(-1, 0, extend_selection=shift)
     elif key == dpg.mvKey_Down:
-        ops.move_cursor(1, 0)
+        ops.move_cursor(1, 0, extend_selection=shift)
     elif key == dpg.mvKey_Left:
         ops.move_cursor(0, -1)
     elif key == dpg.mvKey_Right:
@@ -86,36 +112,19 @@ def handle_key(sender, key):
     elif key == dpg.mvKey_Insert:
         ops.insert_row()
     
-    # Playback
-    elif key == dpg.mvKey_Spacebar:
-        ops.play_stop()
-    elif key == dpg.mvKey_F1:
-        from ui_dialogs import show_shortcuts
-        show_shortcuts()
-    elif key == dpg.mvKey_F5:
-        ops.play_pattern()
-    elif key == dpg.mvKey_F6:
-        ops.play_song_start()
-    elif key == dpg.mvKey_F7:
-        ops.play_song_here()
-    elif key == dpg.mvKey_F8:
-        ops.stop_playback()
-    elif key == dpg.mvKey_Return or key == dpg.mvKey_NumPadEnter:
-        ops.preview_row()
-    
-    # Octave
-    elif key == dpg.mvKey_Multiply:
+    # Octave change
+    elif key == dpg.mvKey_Multiply:  # Numpad *
         ops.octave_up()
-    elif key in (dpg.mvKey_Subtract, dpg.mvKey_Minus):
+    elif key in (dpg.mvKey_Subtract, dpg.mvKey_Minus):  # Numpad - or -
         ops.octave_down()
     
-    # Instrument
-    elif key == dpg.mvKey_Open_Brace:
-        ops.prev_inst()
-    elif key == dpg.mvKey_Close_Brace:
-        ops.next_inst()
+    # Instrument change
+    elif key == dpg.mvKey_Open_Brace:  # [
+        ops.prev_instrument()
+    elif key == dpg.mvKey_Close_Brace:  # ]
+        ops.next_instrument()
     
-    # Character input
+    # Character input (notes and hex digits)
     else:
         char = KEY_MAP.get(key)
         if char:
@@ -126,12 +135,12 @@ def handle_char(char: str):
     """Handle character input for notes and values."""
     char = char.lower()
     
-    # Note keys
-    if char in NOTE_KEYS:
+    # Note keys (only in note column)
+    if char in NOTE_KEYS and state.column == 0:
         ops.enter_note(NOTE_KEYS[char])
         return
     
-    # Hex digits for inst/vol columns
+    # Hex digits for instrument/volume columns
     if state.column > 0:
         if char in '0123456789':
             ops.enter_digit(int(char))

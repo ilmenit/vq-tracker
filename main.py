@@ -1,560 +1,968 @@
-"""
-Atari Sample Tracker - Main Entry Point
-UI creation and main loop.
-"""
-
+"""Atari Sample Tracker - Main UI (v3.1)"""
 import dearpygui.dearpygui as dpg
 import os
-
-from constants import (
-    COLORS, WIN_WIDTH, WIN_HEIGHT, MAX_CHANNELS, PAL_HZ, NTSC_HZ,
-    APP_NAME, APP_VERSION, note_to_str, VISIBLE_ROWS
-)
+from constants import (APP_NAME, APP_VERSION, WIN_WIDTH, WIN_HEIGHT, ROW_HEIGHT,
+                       MAX_CHANNELS, MAX_OCTAVES, MAX_VOLUME, MAX_ROWS, MAX_INSTRUMENTS,
+                       MAX_NOTES, PAL_HZ, NTSC_HZ, note_to_str, FOCUS_SONG, FOCUS_PATTERN,
+                       FOCUS_INSTRUMENTS, FOCUS_INFO, FOCUS_EDITOR, COL_CH,
+                       COL_NOTE, COL_INST, COL_VOL, NOTE_NAMES, COL_INACTIVE)
 from state import state
-from audio_engine import AUDIO_OK
-from ui_theme import setup_theme
-from ui_dialogs import show_file_dialog, show_confirm, show_error, show_rename_dlg, show_about, show_shortcuts
+from ui_theme import create_themes, get_cell_theme
+from ui_dialogs import (show_file_dialog, show_confirm, show_error,
+                        show_rename_dialog, show_about, show_shortcuts)
 import operations as ops
-import keyboard
+from keyboard import handle_key
 
 # =============================================================================
-# HELPER
+# GLOBALS
+# =============================================================================
+_visible_rows = 16
+_play_row = -1
+_play_songline = -1
+_last_refresh_hash = None  # For optimizing grid refresh
+
+# =============================================================================
+# UI HELPERS
 # =============================================================================
 
 def fmt(val: int, width: int = 2) -> str:
+    """Format number in hex or decimal."""
     return f"{val:0{width}X}" if state.hex_mode else f"{val:0{width}d}"
 
-def update_title():
-    title = f"{APP_NAME} v{APP_VERSION}"
-    if state.song.file_path:
-        title += f" - {os.path.basename(state.song.file_path)}"
-    else:
-        title += " - New Project"
-    if state.song.modified:
-        title += " *"
-    dpg.set_viewport_title(title)
+def set_focus(area: int):
+    """Set focus to area and update visual indicators."""
+    state.set_focus(area)
+    panels = [
+        ("song_panel", FOCUS_SONG),
+        ("pattern_panel", FOCUS_PATTERN),
+        ("inst_panel", FOCUS_INSTRUMENTS),
+        ("info_panel", FOCUS_INFO),
+        ("editor_panel", FOCUS_EDITOR),
+    ]
+    for tag, focus_id in panels:
+        if dpg.does_item_exist(tag):
+            theme = "theme_panel_focused" if area == focus_id else "theme_panel_normal"
+            dpg.bind_item_theme(tag, theme)
 
-def show_status(msg: str):
-    if dpg.does_item_exist("status"):
-        dpg.set_value("status", msg)
+def on_input_focus(sender, data):
+    """Called when text input gains focus."""
+    state.set_input_active(True)
+
+def on_input_blur(sender, data):
+    """Called when text input loses focus."""
+    state.set_input_active(False)
+
+def get_grid_hash():
+    """Get hash of current grid state for change detection."""
+    return (state.songline, state.row, state.channel, state.column, 
+            _play_row, _play_songline, state.hex_mode,
+            tuple(state.get_patterns()),
+            tuple(state.audio.is_channel_enabled(i) for i in range(MAX_CHANNELS)))
 
 # =============================================================================
-# UI REFRESH
+# REFRESH FUNCTIONS
 # =============================================================================
 
 def refresh_all():
+    """Refresh entire UI."""
     refresh_songlist()
+    refresh_pattern_info()
     refresh_instruments()
     refresh_editor()
-    refresh_pattern_combo()
-    update_metadata()
-    update_octave()
-    update_step()
-    update_pattern_len()
-    refresh_mute_solo()
+    update_controls()
 
 def refresh_songlist():
-    if not dpg.does_item_exist("songlist_container"):
+    """Refresh song list with clickable pattern combos."""
+    if not dpg.does_item_exist("songlist"):
         return
-    dpg.delete_item("songlist_container", children_only=True)
     
-    play_sl = -1
-    if state.audio.is_playing():
-        play_sl, _ = state.audio.get_position()
+    dpg.delete_item("songlist", children_only=True)
+    
+    # Header row
+    with dpg.group(horizontal=True, parent="songlist"):
+        dpg.add_text("   ", color=(100,100,100))  # Spacer for marker
+        dpg.add_text("CH1", color=COL_CH[0])
+        dpg.add_spacer(width=10)
+        dpg.add_text("CH2", color=COL_CH[1])
+        dpg.add_spacer(width=10)
+        dpg.add_text("CH3", color=COL_CH[2])
     
     for i, sl in enumerate(state.song.songlines):
-        is_cur = (i == state.songline)
-        is_play = (i == play_sl)
+        is_current = (i == state.songline)
+        marker = ">" if is_current else " "
         
-        with dpg.group(horizontal=True, parent="songlist_container"):
-            color = COLORS['playing'] if is_play else (COLORS['cursor'] if is_cur else COLORS['text_dim'])
-            mark = "▶" if is_play else ("●" if is_cur else " ")
-            dpg.add_text(f"{mark}{fmt(i)}", color=color)
+        with dpg.group(horizontal=True, parent="songlist"):
+            # Row number and marker
+            btn = dpg.add_button(label=f"{marker}{fmt(i)}", width=40, height=22,
+                                 callback=select_songline_click, user_data=i)
+            if is_current:
+                dpg.bind_item_theme(btn, "theme_cell_cursor")
+            with dpg.tooltip(btn):
+                dpg.add_text("Click to select this song row")
             
+            # Pattern combos for each channel
             for ch in range(MAX_CHANNELS):
-                tag = f"sl_{i}_{ch}"
-                dpg.add_button(label=fmt(sl.patterns[ch]), tag=tag, width=40,
-                               callback=lambda s,a,u: _click_songline(u[0], u[1]),
-                               user_data=(i, ch))
-                if is_cur and ch == state.channel:
-                    dpg.bind_item_theme(tag, "th_cursor")
+                ptn_items = [fmt(p) for p in range(len(state.song.patterns))] + ["ADD"]
+                combo = dpg.add_combo(
+                    items=ptn_items, default_value=fmt(sl.patterns[ch]),
+                    width=50, callback=on_songline_pattern_change,
+                    user_data=(i, ch)
+                )
+                with dpg.tooltip(combo):
+                    dpg.add_text(f"Pattern for CH{ch+1}. Select ADD to create new pattern.")
 
-def _click_songline(sl: int, ch: int):
-    state.songline = sl
-    state.channel = ch
-    state.row = 0
-    refresh_all()
+def refresh_pattern_info():
+    """Refresh pattern section - now shows selected pattern editor."""
+    # Update pattern selector combo
+    if dpg.does_item_exist("ptn_select_combo"):
+        ptn_items = [f"{fmt(i)}" for i in range(len(state.song.patterns))] + ["ADD"]
+        dpg.configure_item("ptn_select_combo", items=ptn_items)
+        dpg.set_value("ptn_select_combo", fmt(state.selected_pattern))
+    
+    # Update length
+    if dpg.does_item_exist("ptn_len_input"):
+        ptn = state.song.get_pattern(state.selected_pattern)
+        dpg.set_value("ptn_len_input", ptn.length)
 
 def refresh_instruments():
-    if not dpg.does_item_exist("inst_container"):
+    """Refresh instrument list."""
+    if not dpg.does_item_exist("instlist"):
         return
-    dpg.delete_item("inst_container", children_only=True)
     
-    if not state.song.instruments:
-        dpg.add_text("No instruments", parent="inst_container", color=COLORS['text_dim'])
-        dpg.add_text("[+] to add", parent="inst_container", color=COLORS['text_muted'])
-        return
+    dpg.delete_item("instlist", children_only=True)
     
     for i, inst in enumerate(state.song.instruments):
-        is_cur = (i == state.instrument)
-        with dpg.group(horizontal=True, parent="inst_container"):
-            mark = "▶" if is_cur else " "
-            dpg.add_text(mark, color=COLORS['accent_green'] if is_cur else COLORS['text_dim'])
-            dpg.add_text(fmt(i), color=COLORS['accent_green'] if is_cur else COLORS['text_dim'])
-            
-            loaded = "●" if inst.is_loaded() else "○"
-            name = inst.name[:12] if len(inst.name) > 12 else inst.name
-            tag = f"inst_{i}"
-            dpg.add_button(label=f"{loaded} {name}", tag=tag, width=-1,
-                           callback=lambda s,a,u: ops.select_instrument(u), user_data=i)
-            if is_cur:
-                dpg.bind_item_theme(tag, "th_cursor")
+        is_current = (i == state.instrument)
+        marker = ">" if is_current else " "
+        loaded = "*" if inst.is_loaded() else " "
+        name = inst.name[:12]
+        label = f"{marker}{fmt(i)}{loaded}{name}"
+        
+        btn = dpg.add_button(
+            label=label, parent="instlist", width=-1, height=22,
+            callback=select_inst_click, user_data=i
+        )
+        if is_current:
+            dpg.bind_item_theme(btn, "theme_cell_cursor")
 
 def refresh_editor():
+    """Refresh pattern editor grid with optimized updates."""
+    global _visible_rows, _last_refresh_hash
+    
     if not dpg.does_item_exist("editor_grid"):
         return
-    dpg.delete_item("editor_grid", children_only=True)
     
-    ptns = state.patterns()
+    # Check if we actually need to refresh
+    current_hash = get_grid_hash()
+    
+    # Delete and recreate table
+    parent = dpg.get_item_parent("editor_grid")
+    dpg.delete_item("editor_grid")
+    
+    ptns = state.get_patterns()
     patterns = [state.song.get_pattern(p) for p in ptns]
-    max_len = max(p.length for p in patterns)
+    max_len = state.song.max_pattern_length(state.songline)
     
-    # Playing position
-    play_row = -1
-    play_sl = -1
-    if state.audio.is_playing():
-        play_sl, play_row = state.audio.get_position()
-    is_cur_sl_playing = (play_sl == state.songline)
+    # Calculate visible range (center cursor)
+    half = _visible_rows // 2
+    start_row = max(0, state.row - half)
+    if start_row + _visible_rows > max_len:
+        start_row = max(0, max_len - _visible_rows)
+    end_row = min(start_row + _visible_rows, max_len)
     
-    # Visible range - use constant
-    visible = VISIBLE_ROWS
-    half = visible // 2
-    start = max(0, state.row - half)
-    end = min(max_len, start + visible)
-    if end - start < visible:
-        start = max(0, end - visible)
-    
-    # Header
-    with dpg.group(horizontal=True, parent="editor_grid"):
-        dpg.add_text("Row ", color=COLORS['text_dim'])
+    # Create new table
+    with dpg.table(tag="editor_grid", parent=parent, header_row=False,
+                   borders_innerH=True, borders_innerV=True,
+                   resizable=False, policy=dpg.mvTable_SizingStretchProp):
+        # Add columns
+        dpg.add_table_column(label="Row", width_fixed=True, init_width_or_weight=50)
         for ch in range(MAX_CHANNELS):
-            colors = [COLORS['ch1'], COLORS['ch2'], COLORS['ch3']]
-            dpg.add_text(f"   CH{ch+1} [{fmt(ptns[ch])}]    ", color=colors[ch])
-    dpg.add_separator(parent="editor_grid")
-    
-    # Rows
-    for r in range(start, end):
-        is_cursor_row = (r == state.row)
-        is_playing_row = is_cur_sl_playing and (r == play_row)
+            dpg.add_table_column(label=f"CH{ch+1}")
         
-        with dpg.group(horizontal=True, parent="editor_grid"):
-            # Row number
-            row_color = COLORS['playing'] if is_playing_row else (COLORS['cursor'] if is_cursor_row else COLORS['text_dim'])
-            dpg.add_text(f"{fmt(r)} ", color=row_color)
+        # Header row with pattern combos
+        with dpg.table_row():
+            dpg.add_text("Row")
+            for ch in range(MAX_CHANNELS):
+                enabled = state.audio.is_channel_enabled(ch)
+                with dpg.group(horizontal=True):
+                    # Channel checkbox
+                    cb = dpg.add_checkbox(
+                        label="", default_value=enabled,
+                        callback=on_channel_toggle, user_data=ch
+                    )
+                    with dpg.tooltip(cb):
+                        dpg.add_text(f"Enable/disable CH{ch+1}")
+                    
+                    # Pattern combo
+                    ptn_items = [fmt(p) for p in range(len(state.song.patterns))] + ["ADD"]
+                    combo = dpg.add_combo(
+                        items=ptn_items, default_value=fmt(ptns[ch]),
+                        width=60, callback=on_editor_pattern_change, user_data=ch
+                    )
+                    col = COL_CH[ch] if enabled else COL_INACTIVE
+                    with dpg.tooltip(combo):
+                        dpg.add_text(f"CH{ch+1} pattern. Select ADD to create new.")
+        
+        # Data rows
+        for row_idx in range(start_row, end_row):
+            is_cursor_row = (row_idx == state.row)
+            is_playing = (row_idx == _play_row and state.songline == _play_songline)
             
-            # Channels
-            for ch_idx, ptn in enumerate(patterns):
-                is_cursor_ch = (ch_idx == state.channel)
+            with dpg.table_row():
+                # Row number
+                row_label = fmt(row_idx)
+                row_text = dpg.add_text(row_label)
+                if is_playing:
+                    dpg.bind_item_theme(row_text, "theme_text_green")
+                elif is_cursor_row:
+                    dpg.bind_item_theme(row_text, "theme_text_accent")
                 
-                if r < ptn.length:
-                    row = ptn.get_row(r)
-                    has_note = row.note > 0
-                    note = note_to_str(row.note)
-                    ins = fmt(row.instrument) if has_note else "--"
-                    vol = fmt(row.volume, 1) if has_note else "-"
-                else:
-                    note, ins, vol = "...", "..", "."
-                    has_note = False
-                
-                # Note cell
-                is_cur_cell = is_cursor_row and is_cursor_ch and state.column == 0
-                tag_n = f"n_{r}_{ch_idx}"
-                dpg.add_button(label=note, tag=tag_n, width=55,
-                               callback=lambda s,a,u: _click_cell(u[0], u[1], 0), user_data=(r, ch_idx))
-                if is_cur_cell:
-                    dpg.bind_item_theme(tag_n, "th_cursor")
-                elif is_playing_row:
-                    dpg.bind_item_theme(tag_n, "th_playing")
-                elif has_note:
-                    dpg.bind_item_theme(tag_n, "th_note_on")
-                else:
-                    dpg.bind_item_theme(tag_n, "th_note_off")
-                
-                # Inst cell
-                is_cur_cell = is_cursor_row and is_cursor_ch and state.column == 1
-                tag_i = f"i_{r}_{ch_idx}"
-                dpg.add_button(label=ins, tag=tag_i, width=40,
-                               callback=lambda s,a,u: _click_cell(u[0], u[1], 1), user_data=(r, ch_idx))
-                if is_cur_cell:
-                    dpg.bind_item_theme(tag_i, "th_cursor")
-                
-                # Vol cell
-                is_cur_cell = is_cursor_row and is_cursor_ch and state.column == 2
-                tag_v = f"v_{r}_{ch_idx}"
-                dpg.add_button(label=vol, tag=tag_v, width=30,
-                               callback=lambda s,a,u: _click_cell(u[0], u[1], 2), user_data=(r, ch_idx))
-                if is_cur_cell:
-                    dpg.bind_item_theme(tag_v, "th_cursor")
-                
-                dpg.add_text("  ", color=COLORS['border'])
+                # Channel cells
+                for ch in range(MAX_CHANNELS):
+                    ptn = patterns[ch]
+                    ptn_len = ptn.length
+                    ch_enabled = state.audio.is_channel_enabled(ch)
+                    
+                    # Check if we're in repeat zone
+                    is_repeat = row_idx >= ptn_len
+                    actual_row = row_idx % ptn_len if ptn_len > 0 else 0
+                    r = ptn.get_row(actual_row)
+                    
+                    # Determine cell state
+                    is_cursor = is_cursor_row and ch == state.channel
+                    is_selected = state.selection.contains(row_idx, ch)
+                    has_note = r.note > 0
+                    
+                    # Build cell with individual clickable parts
+                    with dpg.group(horizontal=True):
+                        # Note field
+                        note_str = note_to_str(r.note)
+                        is_note_cursor = is_cursor and state.column == COL_NOTE
+                        note_theme = "theme_cell_cursor" if is_note_cursor else (
+                            "theme_cell_inactive" if not ch_enabled else
+                            get_cell_theme(False, is_playing, is_selected, is_repeat, has_note, not ch_enabled))
+                        
+                        if is_repeat and actual_row == 0:
+                            note_label = f"~{note_str}"
+                        else:
+                            note_label = f" {note_str}"
+                        
+                        note_btn = dpg.add_button(
+                            label=note_label, width=45, height=ROW_HEIGHT - 4,
+                            callback=cell_click, user_data=(row_idx, ch, COL_NOTE)
+                        )
+                        dpg.bind_item_theme(note_btn, note_theme)
+                        with dpg.tooltip(note_btn):
+                            dpg.add_text("Note - Click to edit, use piano keys")
+                        
+                        # Instrument field  
+                        inst_str = fmt(r.instrument) if r.note > 0 else "--"
+                        is_inst_cursor = is_cursor and state.column == COL_INST
+                        inst_theme = "theme_cell_cursor" if is_inst_cursor else (
+                            "theme_cell_inactive" if not ch_enabled else
+                            get_cell_theme(False, is_playing, is_selected, is_repeat, has_note, not ch_enabled))
+                        
+                        inst_btn = dpg.add_button(
+                            label=inst_str, width=30, height=ROW_HEIGHT - 4,
+                            callback=cell_click, user_data=(row_idx, ch, COL_INST)
+                        )
+                        dpg.bind_item_theme(inst_btn, inst_theme)
+                        with dpg.tooltip(inst_btn):
+                            dpg.add_text("Instrument - Click to select from list")
+                        
+                        # Volume field
+                        vol_str = f"{r.volume:X}" if r.note > 0 else "-"
+                        is_vol_cursor = is_cursor and state.column == COL_VOL
+                        vol_theme = "theme_cell_cursor" if is_vol_cursor else (
+                            "theme_cell_inactive" if not ch_enabled else
+                            get_cell_theme(False, is_playing, is_selected, is_repeat, has_note, not ch_enabled))
+                        
+                        vol_btn = dpg.add_button(
+                            label=vol_str, width=20, height=ROW_HEIGHT - 4,
+                            callback=cell_click, user_data=(row_idx, ch, COL_VOL)
+                        )
+                        dpg.bind_item_theme(vol_btn, vol_theme)
+                        with dpg.tooltip(vol_btn):
+                            dpg.add_text("Volume (0-F) - Click to edit")
+    
+    _last_refresh_hash = current_hash
 
-def _click_cell(row: int, ch: int, col: int):
-    state.clear_pending()
+def update_controls():
+    """Update control values."""
+    if dpg.does_item_exist("oct_input"):
+        dpg.set_value("oct_input", state.octave)
+    if dpg.does_item_exist("step_input"):
+        dpg.set_value("step_input", state.step)
+    if dpg.does_item_exist("speed_input"):
+        dpg.set_value("speed_input", state.song.speed)
+    if dpg.does_item_exist("ptn_len_input"):
+        ptn = state.song.get_pattern(state.selected_pattern)
+        dpg.set_value("ptn_len_input", ptn.length)
+
+def update_title():
+    """Update window title."""
+    mod = "*" if state.song.modified else ""
+    name = state.song.title or "Untitled"
+    dpg.set_viewport_title(f"{mod}{name} - {APP_NAME}")
+
+def show_status(msg: str):
+    """Show status message."""
+    if dpg.does_item_exist("status_text"):
+        dpg.set_value("status_text", msg)
+
+# =============================================================================
+# CLICK HANDLERS
+# =============================================================================
+
+def select_songline_click(sender, app_data, user_data):
+    """Handle songline click."""
+    set_focus(FOCUS_SONG)
+    ops.select_songline(user_data)
+
+def select_inst_click(sender, app_data, user_data):
+    """Handle instrument click."""
+    set_focus(FOCUS_INSTRUMENTS)
+    ops.select_instrument(user_data)
+
+def cell_click(sender, app_data, user_data):
+    """Handle cell click - now includes column."""
+    row, channel, column = user_data
+    set_focus(FOCUS_EDITOR)
     state.row = row
-    state.channel = ch
-    state.column = col
+    state.channel = channel
+    state.column = column
+    state.selection.clear()
+    
+    # Show popup for instrument/volume selection
+    if column == COL_INST and state.song.instruments:
+        show_instrument_popup(row, channel)
+    elif column == COL_VOL:
+        show_volume_popup(row, channel)
+    elif column == COL_NOTE:
+        show_note_popup(row, channel)
+    
     refresh_editor()
 
-def refresh_pattern_combo():
-    if dpg.does_item_exist("ptn_combo"):
-        items = [fmt(i) for i in range(len(state.song.patterns))]
-        dpg.configure_item("ptn_combo", items=items)
-        dpg.set_value("ptn_combo", fmt(state.focused_pattern_idx()))
+def show_instrument_popup(row: int, channel: int):
+    """Show instrument selection popup."""
+    if dpg.does_item_exist("inst_popup"):
+        dpg.delete_item("inst_popup")
+    
+    ptn_idx = state.get_patterns()[channel]
+    ptn = state.song.get_pattern(ptn_idx)
+    current_inst = ptn.get_row(row).instrument
+    
+    items = [f"{fmt(i)} - {inst.name}" for i, inst in enumerate(state.song.instruments)]
+    if not items:
+        return
+    
+    def on_select(sender, value):
+        try:
+            idx = int(value.split(" - ")[0], 16 if state.hex_mode else 10)
+            ops.set_cell_instrument(row, channel, idx)
+        except:
+            pass
+        dpg.delete_item("inst_popup")
+    
+    with dpg.window(tag="inst_popup", popup=True, no_title_bar=True, 
+                    min_size=(200, 100), max_size=(300, 300)):
+        dpg.add_text("Select Instrument:")
+        dpg.add_listbox(items=items, default_value=items[min(current_inst, len(items)-1)] if items else "",
+                        num_items=min(8, len(items)), callback=on_select, width=-1)
 
-def refresh_mute_solo():
-    for ch in range(MAX_CHANNELS):
-        if dpg.does_item_exist(f"mute_{ch}"):
-            muted = state.audio.is_muted(ch)
-            dpg.configure_item(f"mute_{ch}", label="M*" if muted else "M")
-            dpg.bind_item_theme(f"mute_{ch}", "th_muted" if muted else "th_default")
-        
-        if dpg.does_item_exist(f"solo_{ch}"):
-            solo = state.audio.is_solo(ch)
-            dpg.configure_item(f"solo_{ch}", label="S*" if solo else "S")
-            dpg.bind_item_theme(f"solo_{ch}", "th_solo" if solo else "th_default")
+def show_volume_popup(row: int, channel: int):
+    """Show volume selection popup."""
+    if dpg.does_item_exist("vol_popup"):
+        dpg.delete_item("vol_popup")
+    
+    ptn_idx = state.get_patterns()[channel]
+    ptn = state.song.get_pattern(ptn_idx)
+    current_vol = ptn.get_row(row).volume
+    
+    def on_change(sender, value):
+        ops.set_cell_volume(row, channel, value)
+        dpg.delete_item("vol_popup")
+    
+    with dpg.window(tag="vol_popup", popup=True, no_title_bar=True, min_size=(150, 60)):
+        dpg.add_text("Volume (0-15):")
+        dpg.add_slider_int(default_value=current_vol, min_value=0, max_value=MAX_VOLUME,
+                           callback=on_change, width=-1)
 
-def update_metadata():
-    if dpg.does_item_exist("title_inp"):
-        dpg.set_value("title_inp", state.song.title)
-    if dpg.does_item_exist("author_inp"):
-        dpg.set_value("author_inp", state.song.author)
-    if dpg.does_item_exist("speed_inp"):
-        dpg.set_value("speed_inp", state.song.speed)
-    if dpg.does_item_exist("system_combo"):
-        dpg.set_value("system_combo", "PAL" if state.song.system == PAL_HZ else "NTSC")
-
-def update_octave():
-    if dpg.does_item_exist("octave_txt"):
-        dpg.set_value("octave_txt", str(state.octave))
-
-def update_step():
-    if dpg.does_item_exist("step_inp"):
-        dpg.set_value("step_inp", state.step)
-
-def update_pattern_len():
-    if dpg.does_item_exist("len_inp"):
-        dpg.set_value("len_inp", state.current_pattern().length)
+def show_note_popup(row: int, channel: int):
+    """Show note selection popup."""
+    if dpg.does_item_exist("note_popup"):
+        dpg.delete_item("note_popup")
+    
+    ptn_idx = state.get_patterns()[channel]
+    ptn = state.song.get_pattern(ptn_idx)
+    current_note = ptn.get_row(row).note
+    
+    # Build note list
+    notes = ["--- (empty)"] + [note_to_str(n) for n in range(1, MAX_OCTAVES * 12 + 1)]
+    current_val = notes[current_note] if current_note < len(notes) else notes[0]
+    
+    def on_select(sender, value):
+        if value == "--- (empty)":
+            ops.set_cell_note(row, channel, 0)
+        else:
+            try:
+                idx = notes.index(value)
+                ops.set_cell_note(row, channel, idx)
+            except:
+                pass
+        dpg.delete_item("note_popup")
+    
+    with dpg.window(tag="note_popup", popup=True, no_title_bar=True,
+                    min_size=(120, 200), max_size=(150, 400)):
+        dpg.add_text("Select Note:")
+        dpg.add_listbox(items=notes, default_value=current_val,
+                        num_items=12, callback=on_select, width=-1)
 
 # =============================================================================
-# CALLBACKS
+# CONTROL CALLBACKS
 # =============================================================================
 
-def on_title_change(s, v, u):
-    state.song.title = v
+def on_octave_change(sender, value):
+    ops.set_octave(value)
+
+def on_step_change(sender, value):
+    ops.set_step(value)
+
+def on_speed_change(sender, value):
+    ops.set_speed(value)
+
+def on_ptn_len_change(sender, value):
+    ops.set_pattern_length(value, state.selected_pattern)
+
+def on_pattern_select(sender, value):
+    """Handle pattern selection in PATTERN panel."""
+    if value == "ADD":
+        idx = state.song.add_pattern()
+        if idx >= 0:
+            state.selected_pattern = idx
+            ops.save_undo("Add pattern")
+            refresh_pattern_info()
+            show_status(f"Added pattern {fmt(idx)}")
+    else:
+        try:
+            idx = int(value, 16) if state.hex_mode else int(value)
+            state.selected_pattern = idx
+            refresh_pattern_info()
+        except:
+            pass
+
+def on_songline_pattern_change(sender, value, user_data):
+    """Handle pattern change in songline."""
+    sl_idx, ch = user_data
+    if value == "ADD":
+        idx = state.song.add_pattern()
+        if idx >= 0:
+            state.song.songlines[sl_idx].patterns[ch] = idx
+            ops.save_undo("Add pattern")
+            refresh_all()
+            show_status(f"Added pattern {fmt(idx)}")
+    else:
+        try:
+            idx = int(value, 16) if state.hex_mode else int(value)
+            state.song.songlines[sl_idx].patterns[ch] = idx
+            state.song.modified = True
+            refresh_editor()
+        except:
+            pass
+
+def on_editor_pattern_change(sender, value, user_data):
+    """Handle pattern change in editor header."""
+    ch = user_data
+    if value == "ADD":
+        idx = state.song.add_pattern()
+        if idx >= 0:
+            state.song.songlines[state.songline].patterns[ch] = idx
+            ops.save_undo("Add pattern")
+            refresh_all()
+            show_status(f"Added pattern {fmt(idx)}")
+    else:
+        try:
+            idx = int(value, 16) if state.hex_mode else int(value)
+            ops.set_songline_pattern(ch, idx)
+        except:
+            pass
+
+def on_channel_toggle(sender, value, user_data):
+    """Handle channel enable/disable toggle."""
+    ch = user_data
+    state.audio.set_channel_enabled(ch, value)
+    refresh_editor()
+
+def on_system_change(sender, value):
+    state.song.system = PAL_HZ if value == "PAL" else NTSC_HZ
+    state.audio.set_system(state.song.system)
     state.song.modified = True
     update_title()
 
-def on_author_change(s, v, u):
-    state.song.author = v
-    state.song.modified = True
-
-def on_speed_change(s, v, u):
-    state.song.speed = max(1, min(255, v))
-    state.audio.set_speed(state.song.speed)
-    state.song.modified = True
-
-def on_system_change(s, v, u):
-    state.song.system = PAL_HZ if v == "PAL" else NTSC_HZ
-    state.audio.set_system(state.song.system)
-    state.song.modified = True
-
-def on_step_change(s, v, u):
-    state.step = max(0, min(16, v))
-
-def on_len_change(s, v, u):
-    ops.set_pattern_length(v)
-
-def on_ptn_select(s, v, u):
-    try:
-        idx = int(v, 16) if state.hex_mode else int(v)
-        ops.set_songline_pattern(state.channel, idx)
-    except ValueError:
-        pass
-
-def on_hex_toggle(s, v, u):
-    state.hex_mode = v
+def on_hex_toggle(sender, value):
+    state.hex_mode = value
     refresh_all()
 
-def on_follow_toggle(s, v, u):
-    state.follow = v
+# =============================================================================
+# PLAYBACK CALLBACKS
+# =============================================================================
 
-def toggle_mute(ch: int):
-    state.audio.toggle_mute(ch)
-    refresh_mute_solo()
-
-def toggle_solo(ch: int):
-    state.audio.toggle_solo(ch)
-    refresh_mute_solo()
-
-def on_row_change(sl: int, row: int):
-    if state.follow:
-        if state.audio.get_mode() == 'song':
-            state.songline = sl
+def on_playback_row(songline: int, row: int):
+    global _play_row, _play_songline
+    _play_row = row
+    _play_songline = songline
+    if state.follow and state.audio.is_playing():
+        if state.songline != songline:
+            state.songline = songline
+            refresh_songlist()
         state.row = row
     refresh_editor()
-    if state.audio.get_mode() == 'song':
-        refresh_songlist()
 
-def on_stop():
+def on_playback_stop():
+    global _play_row, _play_songline
+    _play_row = -1
+    _play_songline = -1
     refresh_editor()
-    show_status("Stopped")
-
-def try_quit():
-    if state.song.modified:
-        show_confirm("Unsaved Changes", "Quit anyway?", _do_quit)
-    else:
-        _do_quit()
-
-def _do_quit():
-    dpg.stop_dearpygui()
 
 # =============================================================================
-# UI CREATION
+# WINDOW RESIZE HANDLER
 # =============================================================================
 
-def create_menu():
+def calculate_visible_rows():
+    """Calculate visible rows based on editor panel height."""
+    global _visible_rows
+    if dpg.does_item_exist("editor_panel"):
+        height = dpg.get_item_height("editor_panel")
+        # Account for header row, padding, and controls
+        available = height - 80  # Header + margins
+        rows = max(4, available // ROW_HEIGHT)
+        if rows != _visible_rows:
+            _visible_rows = rows
+            refresh_editor()
+
+# =============================================================================
+# BUILD UI
+# =============================================================================
+
+def build_menu():
+    """Build menu bar."""
     with dpg.menu_bar():
         with dpg.menu(label="File"):
             dpg.add_menu_item(label="New", callback=ops.new_song, shortcut="Ctrl+N")
             dpg.add_menu_item(label="Open...", callback=ops.open_song, shortcut="Ctrl+O")
             dpg.add_separator()
             dpg.add_menu_item(label="Save", callback=ops.save_song, shortcut="Ctrl+S")
-            dpg.add_menu_item(label="Save As...", callback=ops.save_song_as)
+            dpg.add_menu_item(label="Save As...", callback=ops.save_song_as, shortcut="Ctrl+Shift+S")
             dpg.add_separator()
-            dpg.add_menu_item(label="Export ASM...", callback=ops.export_asm_files)
+            with dpg.menu(label="Export"):
+                dpg.add_menu_item(label="Binary (.pvg)...", callback=ops.export_binary_file)
+                dpg.add_menu_item(label="ASM Files...", callback=ops.export_asm_files)
             dpg.add_separator()
-            dpg.add_menu_item(label="Exit", callback=try_quit)
+            dpg.add_menu_item(label="Exit", callback=lambda: dpg.stop_dearpygui())
         
         with dpg.menu(label="Edit"):
             dpg.add_menu_item(label="Undo", callback=ops.undo, shortcut="Ctrl+Z")
             dpg.add_menu_item(label="Redo", callback=ops.redo, shortcut="Ctrl+Y")
             dpg.add_separator()
-            dpg.add_menu_item(label="Copy", callback=ops.copy_row, shortcut="Ctrl+C")
-            dpg.add_menu_item(label="Cut", callback=ops.cut_row, shortcut="Ctrl+X")
-            dpg.add_menu_item(label="Paste", callback=ops.paste_row, shortcut="Ctrl+V")
+            dpg.add_menu_item(label="Copy Cells", callback=ops.copy_cells, shortcut="Ctrl+C")
+            dpg.add_menu_item(label="Cut Cells", callback=ops.cut_cells, shortcut="Ctrl+X")
+            dpg.add_menu_item(label="Paste Cells", callback=ops.paste_cells, shortcut="Ctrl+V")
             dpg.add_separator()
-            dpg.add_menu_item(label="Clear Cell", callback=ops.clear_cell, shortcut="Del")
-            dpg.add_menu_item(label="Insert Row", callback=ops.insert_row, shortcut="Ins")
-            dpg.add_menu_item(label="Delete Row", callback=ops.delete_row)
+            dpg.add_menu_item(label="Clear Pattern", callback=ops.clear_pattern)
         
         with dpg.menu(label="Song"):
-            dpg.add_menu_item(label="Add Songline", callback=ops.add_songline)
-            dpg.add_menu_item(label="Clone Songline", callback=ops.clone_songline)
-            dpg.add_menu_item(label="Delete Songline", callback=ops.delete_songline)
+            dpg.add_menu_item(label="Add Row", callback=ops.add_songline)
+            dpg.add_menu_item(label="Clone Row", callback=ops.clone_songline)
+            dpg.add_menu_item(label="Delete Row", callback=on_delete_songline_confirm)
         
         with dpg.menu(label="Pattern"):
-            dpg.add_menu_item(label="New", callback=ops.add_pattern)
-            dpg.add_menu_item(label="Clone", callback=ops.clone_pattern)
-            dpg.add_menu_item(label="Delete", callback=ops.delete_pattern)
-            dpg.add_menu_item(label="Clear", callback=ops.clear_pattern)
+            dpg.add_menu_item(label="New Pattern", callback=ops.add_pattern)
+            dpg.add_menu_item(label="Clone Pattern", callback=ops.clone_pattern)
+            dpg.add_menu_item(label="Delete Pattern", callback=on_delete_pattern_confirm)
             dpg.add_separator()
             dpg.add_menu_item(label="Transpose +1", callback=lambda: ops.transpose(1))
             dpg.add_menu_item(label="Transpose -1", callback=lambda: ops.transpose(-1))
             dpg.add_menu_item(label="Transpose +12", callback=lambda: ops.transpose(12))
             dpg.add_menu_item(label="Transpose -12", callback=lambda: ops.transpose(-12))
         
-        with dpg.menu(label="Instrument"):
-            dpg.add_menu_item(label="Add", callback=ops.add_instrument)
-            dpg.add_menu_item(label="Load Sample...", callback=ops.load_sample_dlg)
-            dpg.add_menu_item(label="Rename...", callback=ops.rename_instrument)
-            dpg.add_menu_item(label="Remove", callback=ops.remove_instrument)
-        
-        with dpg.menu(label="Play"):
-            dpg.add_menu_item(label="Play/Stop", callback=ops.play_stop, shortcut="Space")
-            dpg.add_menu_item(label="Play Pattern", callback=ops.play_pattern, shortcut="F5")
-            dpg.add_menu_item(label="Play Song", callback=ops.play_song_start, shortcut="F6")
-            dpg.add_menu_item(label="Play Here", callback=ops.play_song_here, shortcut="F7")
-            dpg.add_menu_item(label="Stop", callback=ops.stop_playback, shortcut="F8")
-            dpg.add_separator()
-            dpg.add_menu_item(label="Preview Row", callback=ops.preview_row, shortcut="Enter")
-        
         with dpg.menu(label="Help"):
-            dpg.add_menu_item(label="Shortcuts...", callback=show_shortcuts, shortcut="F1")
+            dpg.add_menu_item(label="Keyboard Shortcuts", callback=show_shortcuts, shortcut="F1")
             dpg.add_separator()
-            dpg.add_menu_item(label="About...", callback=show_about)
+            dpg.add_menu_item(label="About", callback=show_about)
 
-def create_panels():
-    with dpg.group(horizontal=True):
-        # Song panel
-        with dpg.child_window(width=260, height=290, border=True):
-            dpg.add_text("SONG", color=COLORS['accent_blue'])
-            dpg.add_separator()
-            with dpg.child_window(height=190, tag="songlist_container", border=False):
-                pass
-            with dpg.group(horizontal=True):
-                dpg.add_button(label="+", width=45, callback=ops.add_songline)
-                dpg.add_button(label="Clone", width=70, callback=ops.clone_songline)
-                dpg.add_button(label="Del", width=55, callback=ops.delete_songline)
-        
-        # Instrument panel
-        with dpg.child_window(width=300, height=290, border=True):
-            dpg.add_text("INSTRUMENTS", color=COLORS['accent_green'])
-            dpg.add_separator()
-            with dpg.child_window(height=190, tag="inst_container", border=False):
-                pass
-            with dpg.group(horizontal=True):
-                dpg.add_button(label="+", width=40, callback=ops.add_instrument)
-                dpg.add_button(label="Load", width=65, callback=ops.load_sample_dlg)
-                dpg.add_button(label="Rename", width=75, callback=ops.rename_instrument)
-                dpg.add_button(label="Del", width=50, callback=ops.remove_instrument)
-        
-        # Controls panel
-        with dpg.child_window(width=400, height=290, border=True):
-            dpg.add_text("SONG INFO", color=COLORS['accent_yellow'])
-            dpg.add_separator()
-            
-            with dpg.group(horizontal=True):
-                dpg.add_text("Title:", color=COLORS['text_dim'])
-                dpg.add_input_text(tag="title_inp", width=-1, callback=on_title_change, on_enter=True)
-            
-            with dpg.group(horizontal=True):
-                dpg.add_text("Author:", color=COLORS['text_dim'])
-                dpg.add_input_text(tag="author_inp", width=-1, callback=on_author_change, on_enter=True)
-            
-            dpg.add_spacer(height=4)
-            with dpg.group(horizontal=True):
-                dpg.add_text("Speed:", color=COLORS['text_dim'])
-                dpg.add_input_int(tag="speed_inp", width=80, min_value=1, max_value=255,
-                                  min_clamped=True, max_clamped=True, callback=on_speed_change)
-                dpg.add_spacer(width=15)
-                dpg.add_text("System:", color=COLORS['text_dim'])
-                dpg.add_combo(tag="system_combo", items=["PAL","NTSC"], default_value="PAL",
-                              width=90, callback=on_system_change)
-            
-            with dpg.group(horizontal=True):
-                dpg.add_text("Octave:", color=COLORS['text_dim'])
-                dpg.add_button(label="-", width=35, callback=ops.octave_down)
-                dpg.add_text(tag="octave_txt", default_value="2")
-                dpg.add_button(label="+", width=35, callback=ops.octave_up)
-                dpg.add_spacer(width=15)
-                dpg.add_text("Step:", color=COLORS['text_dim'])
-                dpg.add_input_int(tag="step_inp", width=70, min_value=0, max_value=16,
-                                  min_clamped=True, max_clamped=True, callback=on_step_change)
-            
-            with dpg.group(horizontal=True):
-                dpg.add_checkbox(label="Hex", default_value=True, callback=on_hex_toggle)
-                dpg.add_spacer(width=20)
-                dpg.add_checkbox(label="Follow Playback", default_value=True, callback=on_follow_toggle)
-        
-        # Pattern panel
-        with dpg.child_window(width=340, height=290, border=True):
-            dpg.add_text("PATTERN", color=COLORS['accent_purple'])
-            dpg.add_separator()
-            
-            with dpg.group(horizontal=True):
-                dpg.add_text("Ptn:", color=COLORS['text_dim'])
-                dpg.add_combo(tag="ptn_combo", items=["00"], default_value="00", width=80, callback=on_ptn_select)
-                dpg.add_spacer(width=15)
-                dpg.add_text("Len:", color=COLORS['text_dim'])
-                dpg.add_input_int(tag="len_inp", width=80, min_value=1, max_value=256,
-                                  min_clamped=True, max_clamped=True, callback=on_len_change)
-            
-            dpg.add_spacer(height=8)
-            with dpg.group(horizontal=True):
-                dpg.add_button(label="New", width=70, callback=ops.add_pattern)
-                dpg.add_button(label="Clone", width=70, callback=ops.clone_pattern)
-                dpg.add_button(label="Delete", width=75, callback=ops.delete_pattern)
-            with dpg.group(horizontal=True):
-                dpg.add_button(label="Clear", width=70, callback=ops.clear_pattern)
-            
-            dpg.add_spacer(height=8)
-            dpg.add_text("Channels:", color=COLORS['text_dim'])
-            with dpg.group(horizontal=True):
-                colors = [COLORS['ch1'], COLORS['ch2'], COLORS['ch3']]
-                for ch in range(MAX_CHANNELS):
-                    dpg.add_text(f"CH{ch+1}:", color=colors[ch])
-                    dpg.add_button(label="M", tag=f"mute_{ch}", width=35,
-                                   callback=lambda s,a,u: toggle_mute(u), user_data=ch)
-                    dpg.add_button(label="S", tag=f"solo_{ch}", width=35,
-                                   callback=lambda s,a,u: toggle_solo(u), user_data=ch)
-                    if ch < 2:
-                        dpg.add_spacer(width=10)
+def on_delete_songline_confirm():
+    """Confirm before deleting songline."""
+    show_confirm_centered("Delete Row", "Delete this song row?", ops.delete_songline)
 
-def create_editor():
-    dpg.add_text("PATTERN EDITOR", color=COLORS['accent_cyan'])
-    dpg.add_separator()
-    with dpg.child_window(tag="editor_grid", border=True, height=-45):
-        pass
-    dpg.add_spacer(height=4)
+def on_delete_pattern_confirm():
+    """Confirm before deleting pattern."""
+    ptn_idx = state.selected_pattern
+    if state.song.pattern_in_use(ptn_idx):
+        show_error("Cannot Delete", "Pattern is in use by song rows")
+        return
+    show_confirm_centered("Delete Pattern", f"Delete pattern {fmt(ptn_idx)}?", ops.delete_pattern)
+
+def show_confirm_centered(title: str, message: str, callback):
+    """Show confirmation dialog centered on window."""
+    if dpg.does_item_exist("confirm_dialog"):
+        dpg.delete_item("confirm_dialog")
+    
+    # Calculate center position
+    vp_width = dpg.get_viewport_width()
+    vp_height = dpg.get_viewport_height()
+    dialog_width, dialog_height = 320, 120
+    pos_x = (vp_width - dialog_width) // 2
+    pos_y = (vp_height - dialog_height) // 2
+    
+    def on_ok():
+        dpg.delete_item("confirm_dialog")
+        callback()
+    
+    def on_cancel():
+        dpg.delete_item("confirm_dialog")
+    
+    with dpg.window(
+        tag="confirm_dialog",
+        label=title,
+        modal=True,
+        width=dialog_width,
+        height=dialog_height,
+        pos=[pos_x, pos_y],
+        no_resize=True,
+        no_collapse=True
+    ):
+        dpg.add_text(message)
+        dpg.add_spacer(height=15)
+        with dpg.group(horizontal=True):
+            dpg.add_button(label="OK", width=80, callback=on_ok)
+            dpg.add_spacer(width=10)
+            dpg.add_button(label="Cancel", width=80, callback=on_cancel)
+
+def build_top_row():
+    """Build top row: SONG, PATTERN, INSTRUMENTS."""
     with dpg.group(horizontal=True):
-        dpg.add_text("Ready", tag="status", color=COLORS['text_dim'])
+        # === SONG PANEL ===
+        with dpg.child_window(tag="song_panel", width=230, height=240, border=True):
+            dpg.add_text("SONG")
+            with dpg.tooltip(dpg.last_item()):
+                dpg.add_text("Song arrangement - each row assigns patterns to channels.\nClick pattern numbers to change, ADD creates new pattern.")
+            
+            with dpg.child_window(tag="songlist", height=160, border=False):
+                pass
+            
+            with dpg.group(horizontal=True):
+                b = dpg.add_button(label="Add", width=55, callback=ops.add_songline)
+                with dpg.tooltip(b):
+                    dpg.add_text("Add new song row after current")
+                
+                b = dpg.add_button(label="Clone", width=55, callback=ops.clone_songline)
+                with dpg.tooltip(b):
+                    dpg.add_text("Duplicate current song row")
+                
+                b = dpg.add_button(label="Del", width=50, callback=on_delete_songline_confirm)
+                with dpg.tooltip(b):
+                    dpg.add_text("Delete current song row (with confirmation)")
+        
+        # === PATTERN PANEL (now pattern editor) ===
+        with dpg.child_window(tag="pattern_panel", width=200, height=240, border=True):
+            dpg.add_text("PATTERN")
+            with dpg.tooltip(dpg.last_item()):
+                dpg.add_text("Edit selected pattern properties")
+            
+            dpg.add_spacer(height=5)
+            
+            # Pattern selector
+            with dpg.group(horizontal=True):
+                dpg.add_text("Pattern:")
+                ptn_items = [fmt(i) for i in range(len(state.song.patterns))] + ["ADD"]
+                combo = dpg.add_combo(
+                    tag="ptn_select_combo",
+                    items=ptn_items, default_value=fmt(0),
+                    width=70, callback=on_pattern_select
+                )
+                with dpg.tooltip(combo):
+                    dpg.add_text("Select pattern to edit. ADD creates new pattern.")
+            
+            dpg.add_spacer(height=10)
+            
+            # Pattern length
+            with dpg.group(horizontal=True):
+                dpg.add_text("Length: ")
+                inp = dpg.add_input_int(
+                    tag="ptn_len_input", default_value=64,
+                    min_value=1, max_value=MAX_ROWS, min_clamped=True, max_clamped=True,
+                    width=80, callback=on_ptn_len_change, on_enter=True
+                )
+                with dpg.tooltip(inp):
+                    dpg.add_text("Pattern length in rows (1-256)")
+            
+            dpg.add_spacer(height=10)
+            
+            with dpg.group(horizontal=True):
+                b = dpg.add_button(label="Add", width=50, callback=ops.add_pattern)
+                with dpg.tooltip(b):
+                    dpg.add_text("Create new empty pattern")
+                
+                b = dpg.add_button(label="Clone", width=55, callback=ops.clone_pattern)
+                with dpg.tooltip(b):
+                    dpg.add_text("Duplicate selected pattern")
+                
+                b = dpg.add_button(label="Del", width=45, callback=on_delete_pattern_confirm)
+                with dpg.tooltip(b):
+                    dpg.add_text("Delete pattern (with confirmation, only if unused)")
+        
+        # === INSTRUMENTS PANEL ===
+        with dpg.child_window(tag="inst_panel", width=200, height=240, border=True):
+            dpg.add_text("INSTRUMENTS")
+            with dpg.tooltip(dpg.last_item()):
+                dpg.add_text("Sample instruments - * indicates loaded sample")
+            
+            with dpg.child_window(tag="instlist", height=140, border=False):
+                pass
+            
+            with dpg.group(horizontal=True):
+                b = dpg.add_button(label="+ Sample", width=80, callback=ops.add_sample)
+                with dpg.tooltip(b):
+                    dpg.add_text("Load WAV sample(s) - multi-select supported")
+                
+                b = dpg.add_button(label="+ Folder", width=80, callback=ops.add_folder)
+                with dpg.tooltip(b):
+                    dpg.add_text("Load all WAV files from folder AND subfolders")
+            
+            with dpg.group(horizontal=True):
+                b = dpg.add_button(label="Rename", width=65, callback=ops.rename_instrument)
+                with dpg.tooltip(b):
+                    dpg.add_text("Rename current instrument")
+                
+                b = dpg.add_button(label="Del", width=50, callback=ops.remove_instrument)
+                with dpg.tooltip(b):
+                    dpg.add_text("Remove current instrument")
+        
+        # === SETTINGS PANEL ===
+        with dpg.child_window(width=-1, height=240, border=True):
+            dpg.add_text("SETTINGS")
+            
+            dpg.add_spacer(height=5)
+            
+            # System selector
+            with dpg.group(horizontal=True):
+                dpg.add_text("System:")
+                combo = dpg.add_combo(
+                    items=["PAL", "NTSC"], default_value="PAL",
+                    width=80, callback=on_system_change
+                )
+                with dpg.tooltip(combo):
+                    dpg.add_text("PAL=50Hz (Europe), NTSC=60Hz (USA) timing")
+            
+            dpg.add_spacer(height=5)
+            cb = dpg.add_checkbox(label="Hex mode", default_value=True, callback=on_hex_toggle)
+            with dpg.tooltip(cb):
+                dpg.add_text("Display numbers in hexadecimal")
+            
+            dpg.add_spacer(height=10)
+            dpg.add_separator()
+            dpg.add_spacer(height=5)
+            
+            # Input settings
+            dpg.add_text("INPUT", color=(150,150,160))
+            dpg.add_spacer(height=3)
+            
+            with dpg.group(horizontal=True):
+                dpg.add_text("Octave:")
+                inp = dpg.add_input_int(
+                    tag="oct_input", default_value=state.octave,
+                    min_value=1, max_value=MAX_OCTAVES, min_clamped=True, max_clamped=True,
+                    width=70, callback=on_octave_change, on_enter=True
+                )
+                with dpg.tooltip(inp):
+                    dpg.add_text("Base octave for note entry (1-3)")
+                with dpg.item_handler_registry() as handler:
+                    dpg.add_item_activated_handler(callback=on_input_focus)
+                    dpg.add_item_deactivated_handler(callback=on_input_blur)
+                dpg.bind_item_handler_registry(inp, handler)
+            
+            with dpg.group(horizontal=True):
+                dpg.add_text("Step:   ")
+                inp = dpg.add_input_int(
+                    tag="step_input", default_value=state.step,
+                    min_value=0, max_value=16, min_clamped=True, max_clamped=True,
+                    width=70, callback=on_step_change, on_enter=True
+                )
+                with dpg.tooltip(inp):
+                    dpg.add_text("Cursor advance after note entry (0-16)")
+                with dpg.item_handler_registry() as handler:
+                    dpg.add_item_activated_handler(callback=on_input_focus)
+                    dpg.add_item_deactivated_handler(callback=on_input_blur)
+                dpg.bind_item_handler_registry(inp, handler)
+
+def build_middle_row():
+    """Build middle row: SONG INFO."""
+    with dpg.child_window(tag="info_panel", height=80, border=True):
+        dpg.add_text("SONG INFO")
+        
+        dpg.add_spacer(height=3)
+        
+        with dpg.group(horizontal=True):
+            dpg.add_text("Title:")
+            inp = dpg.add_input_text(
+                tag="title_input", default_value=state.song.title,
+                width=220, callback=lambda s, v: setattr(state.song, 'title', v)
+            )
+            with dpg.tooltip(inp):
+                dpg.add_text("Song title")
+            with dpg.item_handler_registry() as handler:
+                dpg.add_item_activated_handler(callback=on_input_focus)
+                dpg.add_item_deactivated_handler(callback=on_input_blur)
+            dpg.bind_item_handler_registry(inp, handler)
+            
+            dpg.add_spacer(width=30)
+            
+            dpg.add_text("Author:")
+            inp = dpg.add_input_text(
+                tag="author_input", default_value=state.song.author,
+                width=180, callback=lambda s, v: setattr(state.song, 'author', v)
+            )
+            with dpg.tooltip(inp):
+                dpg.add_text("Composer name")
+            with dpg.item_handler_registry() as handler:
+                dpg.add_item_activated_handler(callback=on_input_focus)
+                dpg.add_item_deactivated_handler(callback=on_input_blur)
+            dpg.bind_item_handler_registry(inp, handler)
+            
+            dpg.add_spacer(width=30)
+            
+            dpg.add_text("Speed:")
+            inp = dpg.add_input_int(
+                tag="speed_input", default_value=state.song.speed,
+                min_value=1, max_value=255, min_clamped=True, max_clamped=True,
+                width=70, callback=on_speed_change, on_enter=True
+            )
+            with dpg.tooltip(inp):
+                dpg.add_text("Ticks per row (lower = faster)")
+            with dpg.item_handler_registry() as handler:
+                dpg.add_item_activated_handler(callback=on_input_focus)
+                dpg.add_item_deactivated_handler(callback=on_input_blur)
+            dpg.bind_item_handler_registry(inp, handler)
+
+def build_editor():
+    """Build pattern editor."""
+    with dpg.child_window(tag="editor_panel", border=True):
+        dpg.add_text("PATTERN EDITOR")
+        with dpg.tooltip(dpg.last_item()):
+            dpg.add_text("Click on Note/Inst/Vol to edit. ~ marks pattern repeat.\nUse checkbox to enable/disable channel, combo to change pattern.")
+        
+        # Create initial table (will be recreated on refresh)
+        with dpg.table(tag="editor_grid", header_row=False,
+                       borders_innerH=True, borders_innerV=True,
+                       resizable=False, policy=dpg.mvTable_SizingStretchProp):
+            dpg.add_table_column(label="Row", width_fixed=True, init_width_or_weight=50)
+            for ch in range(MAX_CHANNELS):
+                dpg.add_table_column(label=f"CH{ch+1}")
+
+def build_status_bar():
+    """Build status bar."""
+    with dpg.group(horizontal=True):
+        dpg.add_text(tag="status_text", default_value="Ready")
         dpg.add_spacer(width=30)
-        audio_txt = "Audio: OK" if AUDIO_OK else "Audio: N/A"
-        dpg.add_text(audio_txt, color=COLORS['accent_green'] if AUDIO_OK else COLORS['accent_red'])
-        dpg.add_spacer(width=30)
-        dpg.add_text("F1=Help  Space=Play", color=COLORS['text_muted'])
+        
+        b = dpg.add_button(label="[>] Play", width=80, callback=ops.play_stop)
+        with dpg.tooltip(b):
+            dpg.add_text("Play/Stop (Space)")
+        
+        b = dpg.add_button(label="[>>] Song", width=80, callback=ops.play_song_start)
+        with dpg.tooltip(b):
+            dpg.add_text("Play song from start (F6)")
+        
+        b = dpg.add_button(label="[X] Stop", width=80, callback=ops.stop_playback)
+        with dpg.tooltip(b):
+            dpg.add_text("Stop playback (F8)")
+
+def build_ui():
+    """Build complete UI."""
+    with dpg.window(tag="main_window"):
+        build_menu()
+        dpg.add_spacer(height=8)
+        build_top_row()
+        dpg.add_spacer(height=8)
+        build_middle_row()
+        dpg.add_spacer(height=8)
+        build_editor()
+        dpg.add_spacer(height=8)
+        build_status_bar()
 
 # =============================================================================
 # MAIN
 # =============================================================================
 
-def run():
-    # Wire up operations module
+def setup_operations_callbacks():
+    """Wire up operations module callbacks."""
     ops.refresh_all = refresh_all
     ops.refresh_editor = refresh_editor
     ops.refresh_songlist = refresh_songlist
     ops.refresh_instruments = refresh_instruments
-    ops.refresh_pattern_combo = refresh_pattern_combo
-    ops.update_pattern_len = update_pattern_len
+    ops.refresh_pattern_combo = refresh_pattern_info
+    ops.update_controls = update_controls
     ops.show_status = show_status
     ops.update_title = update_title
     ops.show_error = show_error
     ops.show_confirm = show_confirm
     ops.show_file_dialog = show_file_dialog
-    ops.show_rename_dlg = show_rename_dlg
-    
-    # Init DPG
+    ops.show_rename_dialog = show_rename_dialog
+
+def main():
+    """Main entry point."""
     dpg.create_context()
-    setup_theme()
+    dpg.create_viewport(title=APP_NAME, width=WIN_WIDTH, height=WIN_HEIGHT)
     
-    dpg.create_viewport(title=f"{APP_NAME} v{APP_VERSION}", width=WIN_WIDTH, height=WIN_HEIGHT,
-                        min_width=1200, min_height=800)
+    # Setup larger font
+    with dpg.font_registry():
+        default_font = None
+        font_paths = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+            "/usr/share/fonts/dejavu-sans-mono-fonts/DejaVuSansMono.ttf",
+            "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+            "/usr/share/fonts/dejavu/DejaVuSansMono.ttf",
+            "C:/Windows/Fonts/consola.ttf",
+            "/System/Library/Fonts/Monaco.ttf",
+        ]
+        for font_path in font_paths:
+            try:
+                if os.path.exists(font_path):
+                    default_font = dpg.add_font(font_path, 18)
+                    break
+            except:
+                pass
+        
+        if default_font:
+            dpg.bind_font(default_font)
     
-    # Main window
-    with dpg.window(tag="main"):
-        create_menu()
-        create_panels()
-        dpg.add_spacer(height=8)
-        create_editor()
+    create_themes()
+    build_ui()
+    setup_operations_callbacks()
     
-    # Keyboard handler
+    state.audio.on_row = on_playback_row
+    state.audio.on_stop = on_playback_stop
+    
     with dpg.handler_registry():
-        dpg.add_key_press_handler(callback=keyboard.handle_key)
+        dpg.add_key_press_handler(callback=handle_key)
     
-    # Init audio
-    if AUDIO_OK:
-        state.audio.start()
     state.audio.set_song(state.song)
-    state.audio.on_row = on_row_change
-    state.audio.on_stop = on_stop
-    
-    # Initial refresh
+    state.audio.start()
     refresh_all()
     update_title()
+    set_focus(FOCUS_EDITOR)
     
-    # Setup and run
     dpg.setup_dearpygui()
     dpg.show_viewport()
-    dpg.set_primary_window("main", True)
+    dpg.set_primary_window("main_window", True)
     
-    # Main loop
     while dpg.is_dearpygui_running():
         state.audio.process_callbacks()
+        calculate_visible_rows()
         dpg.render_dearpygui_frame()
     
-    # Cleanup
     state.audio.stop()
     dpg.destroy_context()
 
 if __name__ == "__main__":
-    run()
+    main()

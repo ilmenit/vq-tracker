@@ -1,110 +1,146 @@
-"""
-Atari Sample Tracker - UI Theme
-Theme setup and color definitions.
-"""
-
+"""Atari Sample Tracker - UI Themes"""
 import dearpygui.dearpygui as dpg
-from constants import COLORS
+from constants import (COL_BG, COL_BG2, COL_BG3, COL_TEXT, COL_DIM, COL_MUTED,
+                       COL_ACCENT, COL_GREEN, COL_RED, COL_YELLOW, COL_CYAN,
+                       COL_CURSOR_BG, COL_PLAY_BG, COL_REPEAT_BG, COL_BORDER, COL_FOCUS)
 
-def setup_theme():
-    """Setup Dear PyGui theme."""
-    with dpg.theme() as theme:
-        with dpg.theme_component(dpg.mvAll):
-            # Backgrounds
-            dpg.add_theme_color(dpg.mvThemeCol_WindowBg, COLORS['bg_dark'])
-            dpg.add_theme_color(dpg.mvThemeCol_ChildBg, COLORS['bg_medium'])
-            dpg.add_theme_color(dpg.mvThemeCol_PopupBg, COLORS['bg_medium'])
-            
-            # Frames
-            dpg.add_theme_color(dpg.mvThemeCol_FrameBg, COLORS['bg_light'])
-            dpg.add_theme_color(dpg.mvThemeCol_FrameBgHovered, COLORS['highlight'])
-            dpg.add_theme_color(dpg.mvThemeCol_FrameBgActive, COLORS['accent_blue'])
-            
-            # Title
-            dpg.add_theme_color(dpg.mvThemeCol_TitleBg, COLORS['bg_medium'])
-            dpg.add_theme_color(dpg.mvThemeCol_TitleBgActive, COLORS['accent_blue'])
-            
-            # Buttons
-            dpg.add_theme_color(dpg.mvThemeCol_Button, COLORS['bg_light'])
-            dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, COLORS['highlight'])
-            dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, COLORS['accent_blue'])
-            
-            # Headers
-            dpg.add_theme_color(dpg.mvThemeCol_Header, COLORS['bg_light'])
-            dpg.add_theme_color(dpg.mvThemeCol_HeaderHovered, COLORS['highlight'])
-            dpg.add_theme_color(dpg.mvThemeCol_HeaderActive, COLORS['accent_blue'])
-            
-            # Text
-            dpg.add_theme_color(dpg.mvThemeCol_Text, COLORS['text'])
-            dpg.add_theme_color(dpg.mvThemeCol_TextDisabled, COLORS['text_dim'])
-            
-            # Border
-            dpg.add_theme_color(dpg.mvThemeCol_Border, COLORS['border'])
-            
-            # Scrollbar
-            dpg.add_theme_color(dpg.mvThemeCol_ScrollbarBg, COLORS['bg_dark'])
-            dpg.add_theme_color(dpg.mvThemeCol_ScrollbarGrab, COLORS['bg_lighter'])
-            dpg.add_theme_color(dpg.mvThemeCol_ScrollbarGrabHovered, COLORS['highlight'])
-            
-            # Style
-            dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 6)
-            dpg.add_theme_style(dpg.mvStyleVar_WindowRounding, 8)
-            dpg.add_theme_style(dpg.mvStyleVar_PopupRounding, 8)
-            dpg.add_theme_style(dpg.mvStyleVar_ScrollbarRounding, 6)
-            dpg.add_theme_style(dpg.mvStyleVar_GrabRounding, 6)
-            dpg.add_theme_style(dpg.mvStyleVar_TabRounding, 6)
-            dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 10, 6)  # Spacious padding
-            dpg.add_theme_style(dpg.mvStyleVar_ItemSpacing, 10, 8)   # Spacious spacing
+def create_themes():
+    """Create all UI themes."""
     
-    dpg.bind_theme(theme)
-    setup_font()
-    
-    # Cell themes
-    with dpg.theme(tag="th_cursor"):
+    # === GLOBAL THEME ===
+    with dpg.theme() as global_theme:
         with dpg.theme_component(dpg.mvAll):
-            dpg.add_theme_color(dpg.mvThemeCol_Button, COLORS['cursor_bg'])
-            dpg.add_theme_color(dpg.mvThemeCol_Text, COLORS['cursor'])
+            dpg.add_theme_color(dpg.mvThemeCol_WindowBg, COL_BG)
+            dpg.add_theme_color(dpg.mvThemeCol_ChildBg, COL_BG)
+            dpg.add_theme_color(dpg.mvThemeCol_PopupBg, COL_BG2)
+            dpg.add_theme_color(dpg.mvThemeCol_FrameBg, COL_BG2)
+            dpg.add_theme_color(dpg.mvThemeCol_FrameBgHovered, COL_BG3)
+            dpg.add_theme_color(dpg.mvThemeCol_FrameBgActive, COL_BG3)
+            dpg.add_theme_color(dpg.mvThemeCol_Button, COL_BG2)
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, COL_BG3)
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, COL_ACCENT)
+            dpg.add_theme_color(dpg.mvThemeCol_Header, COL_BG2)
+            dpg.add_theme_color(dpg.mvThemeCol_HeaderHovered, COL_BG3)
+            dpg.add_theme_color(dpg.mvThemeCol_HeaderActive, COL_ACCENT)
+            dpg.add_theme_color(dpg.mvThemeCol_Text, COL_TEXT)
+            dpg.add_theme_color(dpg.mvThemeCol_Border, COL_BORDER)
+            dpg.add_theme_color(dpg.mvThemeCol_ScrollbarBg, COL_BG)
+            dpg.add_theme_color(dpg.mvThemeCol_ScrollbarGrab, COL_BG3)
+            dpg.add_theme_color(dpg.mvThemeCol_CheckMark, COL_ACCENT)
+            dpg.add_theme_color(dpg.mvThemeCol_SliderGrab, COL_ACCENT)
+            dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 3)
+            dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 6, 4)
+            dpg.add_theme_style(dpg.mvStyleVar_ItemSpacing, 8, 4)
+            dpg.add_theme_style(dpg.mvStyleVar_ScrollbarSize, 12)
+    dpg.bind_theme(global_theme)
     
-    with dpg.theme(tag="th_playing"):
-        with dpg.theme_component(dpg.mvAll):
-            dpg.add_theme_color(dpg.mvThemeCol_Button, COLORS['playing_bg'])
-            dpg.add_theme_color(dpg.mvThemeCol_Text, COLORS['playing'])
+    # === CELL THEMES ===
     
-    with dpg.theme(tag="th_note_on"):
-        with dpg.theme_component(dpg.mvAll):
-            dpg.add_theme_color(dpg.mvThemeCol_Text, COLORS['note_on'])
+    # Normal cell (has note)
+    with dpg.theme(tag="theme_cell_note"):
+        with dpg.theme_component(dpg.mvButton):
+            dpg.add_theme_color(dpg.mvThemeCol_Button, COL_BG3)
+            dpg.add_theme_color(dpg.mvThemeCol_Text, COL_TEXT)
     
-    with dpg.theme(tag="th_note_off"):
-        with dpg.theme_component(dpg.mvAll):
-            dpg.add_theme_color(dpg.mvThemeCol_Text, COLORS['note_off'])
+    # Empty cell
+    with dpg.theme(tag="theme_cell_empty"):
+        with dpg.theme_component(dpg.mvButton):
+            dpg.add_theme_color(dpg.mvThemeCol_Button, COL_BG2)
+            dpg.add_theme_color(dpg.mvThemeCol_Text, COL_DIM)
     
-    with dpg.theme(tag="th_muted"):
-        with dpg.theme_component(dpg.mvAll):
-            dpg.add_theme_color(dpg.mvThemeCol_Button, COLORS['accent_red'])
+    # Cursor cell
+    with dpg.theme(tag="theme_cell_cursor"):
+        with dpg.theme_component(dpg.mvButton):
+            dpg.add_theme_color(dpg.mvThemeCol_Button, COL_CURSOR_BG)
+            dpg.add_theme_color(dpg.mvThemeCol_Text, (255, 255, 255))
     
-    with dpg.theme(tag="th_solo"):
-        with dpg.theme_component(dpg.mvAll):
-            dpg.add_theme_color(dpg.mvThemeCol_Button, COLORS['accent_yellow'])
+    # Playing row
+    with dpg.theme(tag="theme_cell_playing"):
+        with dpg.theme_component(dpg.mvButton):
+            dpg.add_theme_color(dpg.mvThemeCol_Button, COL_PLAY_BG)
+            dpg.add_theme_color(dpg.mvThemeCol_Text, COL_GREEN)
     
-    # Default theme (for unbinding - resets to normal button style)
-    with dpg.theme(tag="th_default"):
-        with dpg.theme_component(dpg.mvAll):
-            dpg.add_theme_color(dpg.mvThemeCol_Button, COLORS['bg_light'])
+    # Repeat zone (pattern shorter than max)
+    with dpg.theme(tag="theme_cell_repeat"):
+        with dpg.theme_component(dpg.mvButton):
+            dpg.add_theme_color(dpg.mvThemeCol_Button, COL_REPEAT_BG)
+            dpg.add_theme_color(dpg.mvThemeCol_Text, COL_MUTED)
+    
+    # Selected cell
+    with dpg.theme(tag="theme_cell_selected"):
+        with dpg.theme_component(dpg.mvButton):
+            dpg.add_theme_color(dpg.mvThemeCol_Button, (60, 80, 120))
+            dpg.add_theme_color(dpg.mvThemeCol_Text, (255, 255, 255))
+    
+    # === CHANNEL THEMES ===
+    
+    # Inactive channel cell (dimmed)
+    with dpg.theme(tag="theme_cell_inactive"):
+        with dpg.theme_component(dpg.mvButton):
+            dpg.add_theme_color(dpg.mvThemeCol_Button, (30, 30, 35))
+            dpg.add_theme_color(dpg.mvThemeCol_Text, (70, 70, 80))
+    
+    # Default button
+    with dpg.theme(tag="theme_button_default"):
+        with dpg.theme_component(dpg.mvButton):
+            dpg.add_theme_color(dpg.mvThemeCol_Button, COL_BG2)
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, COL_BG3)
+    
+    # === PANEL THEMES ===
+    
+    # Focused panel border
+    with dpg.theme(tag="theme_panel_focused"):
+        with dpg.theme_component(dpg.mvChildWindow):
+            dpg.add_theme_color(dpg.mvThemeCol_Border, COL_FOCUS)
+            dpg.add_theme_style(dpg.mvStyleVar_ChildBorderSize, 2)
+    
+    # Normal panel border
+    with dpg.theme(tag="theme_panel_normal"):
+        with dpg.theme_component(dpg.mvChildWindow):
+            dpg.add_theme_color(dpg.mvThemeCol_Border, COL_BORDER)
+            dpg.add_theme_style(dpg.mvStyleVar_ChildBorderSize, 1)
+    
+    # === TEXT THEMES ===
+    
+    # Dim text
+    with dpg.theme(tag="theme_text_dim"):
+        with dpg.theme_component(dpg.mvText):
+            dpg.add_theme_color(dpg.mvThemeCol_Text, COL_DIM)
+    
+    # Accent text
+    with dpg.theme(tag="theme_text_accent"):
+        with dpg.theme_component(dpg.mvText):
+            dpg.add_theme_color(dpg.mvThemeCol_Text, COL_ACCENT)
+    
+    # Green text
+    with dpg.theme(tag="theme_text_green"):
+        with dpg.theme_component(dpg.mvText):
+            dpg.add_theme_color(dpg.mvThemeCol_Text, COL_GREEN)
+    
+    # Yellow text
+    with dpg.theme(tag="theme_text_yellow"):
+        with dpg.theme_component(dpg.mvText):
+            dpg.add_theme_color(dpg.mvThemeCol_Text, COL_YELLOW)
+    
+    # Cyan text
+    with dpg.theme(tag="theme_text_cyan"):
+        with dpg.theme_component(dpg.mvText):
+            dpg.add_theme_color(dpg.mvThemeCol_Text, COL_CYAN)
 
-def setup_font():
-    """Setup and bind a global font."""
-    import os
-    
-    # Path to embedded font
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    font_path = os.path.join(base_dir, "assets", "fonts", "font.ttf")
-    
-    with dpg.font_registry():
-        if os.path.exists(font_path):
-            # Load font with size 20 (larger than default ~13)
-            with dpg.font(font_path, 20) as default_font:
-                # Add extra characters if needed
-                dpg.add_font_range_hint(dpg.mvFontRangeHint_Default)
-            dpg.bind_font(default_font)
-        else:
-            print(f"Warning: Embedded font not found at {font_path}, using default.")
+
+def get_cell_theme(is_cursor: bool, is_playing: bool, is_selected: bool, 
+                   is_repeat: bool, has_note: bool, is_inactive: bool = False) -> str:
+    """Get appropriate theme for a cell."""
+    if is_inactive and not is_cursor:
+        return "theme_cell_inactive"
+    if is_cursor:
+        return "theme_cell_cursor"
+    if is_selected:
+        return "theme_cell_selected"
+    if is_playing:
+        return "theme_cell_playing"
+    if is_repeat:
+        return "theme_cell_repeat"
+    if has_note:
+        return "theme_cell_note"
+    return "theme_cell_empty"
