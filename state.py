@@ -1,7 +1,7 @@
 """Atari Sample Tracker - Application State"""
 from typing import List, Tuple, Optional
 from constants import (DEFAULT_OCTAVE, DEFAULT_STEP, VISIBLE_ROWS, MAX_CHANNELS,
-                       FOCUS_EDITOR)
+                       MAX_VOLUME, FOCUS_EDITOR)
 from data_model import Song, Pattern, Row
 from audio_engine import AudioEngine
 
@@ -136,16 +136,21 @@ class AppState:
         self.selection = Selection()
         self.audio = AudioEngine()
         
-        # Cursor position
-        self.songline = 0
-        self.row = 0
-        self.channel = 0
-        self.column = 0  # 0=note, 1=inst, 2=vol
+        # Pattern Editor cursor position
+        self.songline = 0      # Current songline being edited
+        self.row = 0           # Row in pattern
+        self.channel = 0       # Channel 0-2
+        self.column = 0        # 0=note, 1=inst, 2=vol
         
-        # Input settings
+        # Song Editor cursor position
+        self.song_cursor_row = 0     # Row in song editor (which songline)
+        self.song_cursor_col = 0     # Column: 0=C1, 1=C2, 2=C3
+        
+        # Input settings (brush)
         self.octave = DEFAULT_OCTAVE
         self.step = DEFAULT_STEP
         self.instrument = 0
+        self.volume = MAX_VOLUME  # Brush volume for stamping new notes
         self.selected_pattern = 0  # Currently selected pattern in PATTERN panel
         
         # Display settings

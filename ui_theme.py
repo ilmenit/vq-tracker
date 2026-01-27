@@ -72,11 +72,11 @@ def create_themes():
             dpg.add_theme_color(dpg.mvThemeCol_Button, (60, 80, 120))
             dpg.add_theme_color(dpg.mvThemeCol_Text, (255, 255, 255))
     
-    # Current row (cursor row highlight, "under" cursor)
+    # Current row (cursor row highlight, "under" cursor) - darker to not conflict with cursor
     with dpg.theme(tag="theme_cell_current_row"):
         with dpg.theme_component(dpg.mvButton):
-            dpg.add_theme_color(dpg.mvThemeCol_Button, (40, 55, 80))  # Subtle blue-ish highlight
-            dpg.add_theme_color(dpg.mvThemeCol_Text, (200, 210, 230))
+            dpg.add_theme_color(dpg.mvThemeCol_Button, (30, 38, 55))  # Much darker blue-ish
+            dpg.add_theme_color(dpg.mvThemeCol_Text, (180, 190, 210))
     
     # === CHANNEL THEMES ===
     
@@ -94,11 +94,11 @@ def create_themes():
     
     # === PANEL THEMES ===
     
-    # Focused panel border
+    # Focused panel border - bright and thick
     with dpg.theme(tag="theme_panel_focused"):
         with dpg.theme_component(dpg.mvChildWindow):
             dpg.add_theme_color(dpg.mvThemeCol_Border, COL_FOCUS)
-            dpg.add_theme_style(dpg.mvStyleVar_ChildBorderSize, 2)
+            dpg.add_theme_style(dpg.mvStyleVar_ChildBorderSize, 3)
     
     # Normal panel border
     with dpg.theme(tag="theme_panel_normal"):
@@ -132,6 +132,32 @@ def create_themes():
     with dpg.theme(tag="theme_text_cyan"):
         with dpg.theme_component(dpg.mvText):
             dpg.add_theme_color(dpg.mvThemeCol_Text, COL_CYAN)
+    
+    # === SONG ROW NUMBER THEMES ===
+    
+    # Normal row number (dim)
+    with dpg.theme(tag="theme_song_row_normal"):
+        with dpg.theme_component(dpg.mvButton):
+            dpg.add_theme_color(dpg.mvThemeCol_Button, (25, 28, 35))
+            dpg.add_theme_color(dpg.mvThemeCol_Text, (100, 100, 110))
+    
+    # Cursor row number (bright blue)
+    with dpg.theme(tag="theme_song_row_cursor"):
+        with dpg.theme_component(dpg.mvButton):
+            dpg.add_theme_color(dpg.mvThemeCol_Button, (40, 55, 80))
+            dpg.add_theme_color(dpg.mvThemeCol_Text, (100, 160, 255))
+    
+    # Playing row number (green)
+    with dpg.theme(tag="theme_song_row_playing"):
+        with dpg.theme_component(dpg.mvButton):
+            dpg.add_theme_color(dpg.mvThemeCol_Button, (30, 50, 35))
+            dpg.add_theme_color(dpg.mvThemeCol_Text, (80, 200, 100))
+    
+    # Empty/inactive row number
+    with dpg.theme(tag="theme_song_row_empty"):
+        with dpg.theme_component(dpg.mvButton):
+            dpg.add_theme_color(dpg.mvThemeCol_Button, (20, 22, 28))
+            dpg.add_theme_color(dpg.mvThemeCol_Text, (50, 50, 60))
 
 
 def get_cell_theme(is_cursor: bool, is_playing: bool, is_selected: bool, 

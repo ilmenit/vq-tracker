@@ -9,9 +9,12 @@ from file_io import (save_project, load_project, load_sample, export_asm,
 # UI callbacks (set by main module)
 refresh_all = None
 refresh_editor = None
+refresh_song_editor = None
 refresh_songlist = None
 refresh_instruments = None
 refresh_pattern_combo = None
+refresh_all_pattern_combos = None
+refresh_all_instrument_combos = None
 update_controls = None
 show_status = None
 update_title = None
@@ -47,6 +50,8 @@ def _do_new():
     state.song.reset()
     state.undo.clear()
     state.songline = state.row = state.channel = state.instrument = 0
+    state.song_cursor_row = state.song_cursor_col = 0  # Reset song grid cursor
+    state.volume = MAX_VOLUME  # Reset brush volume
     state.selection.clear()
     state.audio.set_song(state.song)
     refresh_all()
@@ -67,6 +72,8 @@ def _load_file(path: str):
         state.undo.clear()
         state.songline = state.row = state.channel = 0
         state.instrument = 0
+        state.song_cursor_row = state.song_cursor_col = 0  # Reset song grid cursor
+        state.volume = MAX_VOLUME  # Reset brush volume
         state.selection.clear()
         state.audio.set_song(state.song)
         refresh_all()
@@ -214,7 +221,9 @@ def add_pattern(*args):
     """Add new pattern."""
     idx = state.song.add_pattern()
     if idx >= 0:
+        state.selected_pattern = idx
         save_undo("Add pattern")
+        refresh_all_pattern_combos()
         refresh_pattern_combo()
         show_status(f"Added pattern {fmt(idx)}")
 
@@ -223,7 +232,9 @@ def clone_pattern(*args):
     ptn_idx = state.current_pattern_idx()
     new_idx = state.song.clone_pattern(ptn_idx)
     if new_idx >= 0:
+        state.selected_pattern = new_idx
         save_undo("Clone pattern")
+        refresh_all_pattern_combos()
         refresh_pattern_combo()
         show_status(f"Cloned > {fmt(new_idx)}")
 
@@ -264,8 +275,9 @@ def add_songline(*args):
     idx = state.song.add_songline(state.songline)
     if idx >= 0:
         state.songline = idx
+        state.song_cursor_row = idx  # Keep song grid cursor in sync
         save_undo("Add row")
-        refresh_songlist()
+        refresh_all()
 
 def delete_songline(*args):
     """Delete current songline."""
@@ -275,6 +287,7 @@ def delete_songline(*args):
     if state.song.delete_songline(state.songline):
         if state.songline >= len(state.song.songlines):
             state.songline = len(state.song.songlines) - 1
+        state.song_cursor_row = state.songline  # Keep song grid cursor in sync
         save_undo("Delete row")
         refresh_all()
 
@@ -283,8 +296,9 @@ def clone_songline(*args):
     idx = state.song.clone_songline(state.songline)
     if idx >= 0:
         state.songline = idx
+        state.song_cursor_row = idx  # Keep song grid cursor in sync
         save_undo("Clone row")
-        refresh_songlist()
+        refresh_all()
 
 def set_songline_pattern(ch: int, ptn_idx: int):
     """Set pattern for channel in current songline."""
@@ -297,7 +311,9 @@ def set_songline_pattern(ch: int, ptn_idx: int):
 
 def select_songline(idx: int):
     """Select songline by index."""
-    state.songline = max(0, min(idx, len(state.song.songlines) - 1))
+    idx = max(0, min(idx, len(state.song.songlines) - 1))
+    state.songline = idx
+    state.song_cursor_row = idx  # Keep song grid cursor in sync
     state.row = 0
     state.selection.clear()
     refresh_all()
@@ -344,7 +360,8 @@ def preview_row(*args):
 # =============================================================================
 
 def enter_note(semitone: int):
-    """Enter note at cursor."""
+    """Enter note at cursor. If cell was empty, stamp full brush (note+inst+vol).
+    If cell had existing note, only change the note."""
     note = (state.octave - 1) * 12 + semitone + 1
     if not (1 <= note <= MAX_NOTES):
         return
@@ -355,8 +372,15 @@ def enter_note(semitone: int):
     
     ptn = state.current_pattern()
     row = ptn.get_row(state.row)
+    
+    was_empty = (row.note == 0)
     row.note = note
-    row.instrument = state.instrument
+    
+    # If cell was empty, stamp full brush (instrument + volume)
+    if was_empty:
+        row.instrument = state.instrument
+        row.volume = state.volume
+    # If cell had note, keep existing instrument and volume
     
     # Preview note
     if state.instrument < len(state.song.instruments):
@@ -708,12 +732,18 @@ def prev_instrument():
 # =============================================================================
 
 def set_cell_note(row: int, channel: int, note: int):
-    """Set note at specific cell."""
+    """Set note at specific cell. Applies brush logic if cell was empty."""
     ptns = state.get_patterns()
     ptn = state.song.get_pattern(ptns[channel])
     if 0 <= row < ptn.length:
         save_undo("Set note")
-        ptn.get_row(row).note = note
+        cell = ptn.get_row(row)
+        was_empty = (cell.note == 0)
+        cell.note = note
+        # If cell was empty and setting a note, stamp full brush
+        if was_empty and note > 0:
+            cell.instrument = state.instrument
+            cell.volume = state.volume
         state.song.modified = True
         refresh_editor()
 

@@ -1,6 +1,6 @@
 """Atari Sample Tracker - Keyboard Handler"""
 import dearpygui.dearpygui as dpg
-from constants import NOTE_KEYS, FOCUS_EDITOR
+from constants import NOTE_KEYS, FOCUS_EDITOR, FOCUS_SONG, MAX_CHANNELS
 from state import state
 import operations as ops
 
@@ -22,12 +22,38 @@ KEY_MAP = {
     dpg.mvKey_NumPad9: '9',
 }
 
+# Pending hex digit for song editor
+_song_pending_digit = None
+
 
 def handle_key(sender, key):
     """Handle key press event."""
-    # Skip if typing in a text field
+    # Skip if typing in a text field - check both our flag and DPG's active item detection
     if state.input_active:
         return
+    
+    # Additional check: see if any input-related item has keyboard focus
+    # This catches cases where our callback didn't fire
+    input_tags = ["title_input", "author_input", "speed_input", "step_input", "ptn_len_input"]
+    try:
+        for tag in input_tags:
+            if dpg.does_item_exist(tag):
+                if dpg.is_item_active(tag) or dpg.is_item_focused(tag):
+                    return
+    except:
+        pass
+    
+    # Also check if a popup or modal is open (file dialogs, etc.)
+    # This is harder to detect, but we can check for common popup tags
+    popup_tags = ["popup_inst", "popup_vol", "popup_note", "popup_song_ptn", 
+                  "confirm_dlg", "rename_dlg", "error_dlg", "confirm_dialog", 
+                  "error_dialog", "rename_dialog", "about_dialog", "shortcuts_dialog"]
+    try:
+        for tag in popup_tags:
+            if dpg.does_item_exist(tag) and dpg.is_item_shown(tag):
+                return
+    except:
+        pass
     
     ctrl = dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)
     shift = dpg.is_key_down(dpg.mvKey_LShift) or dpg.is_key_down(dpg.mvKey_RShift)
@@ -78,6 +104,58 @@ def handle_key(sender, key):
         return
     elif key in (dpg.mvKey_Return, dpg.mvKey_NumPadEnter):
         ops.preview_row()
+        return
+    
+    # === SONG EDITOR SHORTCUTS ===
+    if state.focus == FOCUS_SONG:
+        total_songlines = len(state.song.songlines)
+        if key == dpg.mvKey_Up:
+            if state.song_cursor_row > 0:
+                state.song_cursor_row -= 1
+                state.songline = state.song_cursor_row
+                ops.refresh_song_editor()
+                ops.refresh_editor()
+        elif key == dpg.mvKey_Down:
+            if state.song_cursor_row < total_songlines - 1:
+                state.song_cursor_row += 1
+                state.songline = state.song_cursor_row
+                ops.refresh_song_editor()
+                ops.refresh_editor()
+        elif key == dpg.mvKey_Left:
+            if state.song_cursor_col > 0:
+                state.song_cursor_col -= 1
+                ops.refresh_song_editor()
+        elif key == dpg.mvKey_Right:
+            if state.song_cursor_col < MAX_CHANNELS - 1:
+                state.song_cursor_col += 1
+                ops.refresh_song_editor()
+        elif key == dpg.mvKey_Home:
+            state.song_cursor_row = 0
+            state.songline = 0
+            ops.refresh_song_editor()
+            ops.refresh_editor()
+        elif key == dpg.mvKey_End:
+            state.song_cursor_row = total_songlines - 1
+            state.songline = state.song_cursor_row
+            ops.refresh_song_editor()
+            ops.refresh_editor()
+        elif key == dpg.mvKey_Delete:
+            # Delete current songline
+            if total_songlines > 1:
+                ops.delete_songline()
+                if state.song_cursor_row >= len(state.song.songlines):
+                    state.song_cursor_row = len(state.song.songlines) - 1
+                state.songline = state.song_cursor_row
+                ops.refresh_all()
+        elif key == dpg.mvKey_Insert:
+            # Insert new songline at current position
+            ops.add_songline()
+            ops.refresh_all()
+        # Hex digit input to change pattern
+        else:
+            char = KEY_MAP.get(key)
+            if char and char in '0123456789abcdef':
+                handle_song_hex_input(char)
         return
     
     # === EDITOR-ONLY SHORTCUTS ===
@@ -152,3 +230,40 @@ def handle_char(char: str):
             # Decimal mode: only 0-9
             if char in '0123456789':
                 ops.enter_digit_decimal(int(char))
+
+
+def handle_song_hex_input(char: str):
+    """Handle hex digit input for song editor (pattern selection)."""
+    global _song_pending_digit
+    
+    char = char.lower()
+    if char in '0123456789':
+        digit = int(char)
+    elif char in 'abcdef':
+        digit = 10 + ord(char) - ord('a')
+    else:
+        return
+    
+    if state.hex_mode:
+        # Two-digit hex entry
+        if _song_pending_digit is not None:
+            # Second digit - complete the value
+            value = _song_pending_digit * 16 + digit
+            _song_pending_digit = None
+        else:
+            # First digit - store and wait
+            _song_pending_digit = digit
+            return
+    else:
+        # Single digit decimal for simplicity (could do multi-digit)
+        value = digit
+    
+    # Apply value to current cell
+    if value < len(state.song.patterns):
+        sl_idx = state.song_cursor_row
+        ch = state.song_cursor_col
+        state.song.songlines[sl_idx].patterns[ch] = value
+        state.selected_pattern = value
+        state.song.modified = True
+        ops.refresh_song_editor()
+        ops.refresh_editor()

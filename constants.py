@@ -79,7 +79,7 @@ COL_CURSOR_BG = (40, 60, 100)
 COL_PLAY_BG = (30, 70, 40)
 COL_REPEAT_BG = (45, 40, 55)
 COL_BORDER = (50, 55, 70)
-COL_FOCUS = (80, 140, 240)
+COL_FOCUS = (100, 180, 255)  # Bright blue for focused panel border
 COL_CH = [(255, 100, 100), (100, 255, 120), (100, 160, 255)]
 COL_INACTIVE = (60, 60, 70)  # Color for inactive/muted channels
 
