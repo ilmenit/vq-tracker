@@ -1,6 +1,7 @@
 """Atari Sample Tracker - UI Dialogs"""
 import dearpygui.dearpygui as dpg
 from constants import COL_DIM, COL_ACCENT, COL_TEXT, APP_NAME, APP_VERSION
+from state import state
 
 # Callback storage
 _file_callback = None
@@ -15,6 +16,8 @@ def show_file_dialog(title: str, extensions: list, callback,
     
     if dpg.does_item_exist("file_dialog"):
         dpg.delete_item("file_dialog")
+    
+    state.set_input_active(True)  # Block keyboard while dialog open
     
     with dpg.file_dialog(
         tag="file_dialog",
@@ -34,6 +37,7 @@ def show_file_dialog(title: str, extensions: list, callback,
 
 def _on_file_ok(sender, data):
     global _file_callback, _file_multi
+    state.set_input_active(False)  # Re-enable keyboard
     if _file_callback:
         if _file_multi and 'selections' in data and len(data['selections']) > 0:
             paths = list(data['selections'].values())
@@ -47,6 +51,7 @@ def _on_file_ok(sender, data):
 
 def _on_file_cancel(sender, data):
     global _file_callback
+    state.set_input_active(False)  # Re-enable keyboard
     _file_callback = None
 
 
@@ -55,11 +60,15 @@ def show_confirm(title: str, message: str, callback):
     if dpg.does_item_exist("confirm_dialog"):
         dpg.delete_item("confirm_dialog")
     
+    state.set_input_active(True)
+    
     def on_ok():
+        state.set_input_active(False)
         dpg.delete_item("confirm_dialog")
         callback()
     
     def on_cancel():
+        state.set_input_active(False)
         dpg.delete_item("confirm_dialog")
     
     # Calculate center position
@@ -90,7 +99,10 @@ def show_error(title: str, message: str):
     if dpg.does_item_exist("error_dialog"):
         dpg.delete_item("error_dialog")
     
+    state.set_input_active(True)
+    
     def on_close():
+        state.set_input_active(False)
         dpg.delete_item("error_dialog")
     
     # Calculate center position
@@ -118,12 +130,16 @@ def show_rename_dialog(title: str, current_name: str, callback):
     if dpg.does_item_exist("rename_dialog"):
         dpg.delete_item("rename_dialog")
     
+    state.set_input_active(True)
+    
     def on_ok():
         name = dpg.get_value("rename_input")
+        state.set_input_active(False)
         dpg.delete_item("rename_dialog")
         callback(name)
     
     def on_cancel():
+        state.set_input_active(False)
         dpg.delete_item("rename_dialog")
     
     # Calculate center position
@@ -154,16 +170,24 @@ def show_about():
     if dpg.does_item_exist("about_dialog"):
         dpg.delete_item("about_dialog")
     
+    state.set_input_active(True)
+    
     def on_close():
+        state.set_input_active(False)
         dpg.delete_item("about_dialog")
+    
+    # Calculate center position
+    vp_w = dpg.get_viewport_width()
+    vp_h = dpg.get_viewport_height()
+    w, h = 340, 200
     
     with dpg.window(
         tag="about_dialog",
         label="About",
         modal=True,
-        width=340,
-        height=200,
-        pos=[530, 340],
+        width=w,
+        height=h,
+        pos=[(vp_w - w) // 2, (vp_h - h) // 2],
         no_resize=True,
         no_collapse=True
     ):
@@ -186,16 +210,24 @@ def show_shortcuts():
     if dpg.does_item_exist("shortcuts_dialog"):
         dpg.delete_item("shortcuts_dialog")
     
+    state.set_input_active(True)
+    
     def on_close():
+        state.set_input_active(False)
         dpg.delete_item("shortcuts_dialog")
+    
+    # Calculate center position
+    vp_w = dpg.get_viewport_width()
+    vp_h = dpg.get_viewport_height()
+    w, h = 450, 540
     
     with dpg.window(
         tag="shortcuts_dialog",
         label="Keyboard Shortcuts",
         modal=True,
-        width=450,
-        height=520,
-        pos=[475, 180],
+        width=w,
+        height=h,
+        pos=[(vp_w - w) // 2, (vp_h - h) // 2],
         no_resize=True,
         no_collapse=True
     ):
@@ -213,7 +245,8 @@ def show_shortcuts():
         dpg.add_text("EDITING", color=COL_ACCENT)
         dpg.add_text("  Z-M, Q-P       Piano keys (2 octaves)")
         dpg.add_text("  2,3,5,6,7,9,0  Sharp notes")
-        dpg.add_text("  0-9, A-F       Hex values (inst/vol)")
+        dpg.add_text("  0-9, A-F       Hex mode: inst/vol")
+        dpg.add_text("  0-9            Decimal mode: inst/vol")
         dpg.add_text("  Delete         Clear cell")
         dpg.add_text("  Backspace      Clear and move up")
         dpg.add_text("  Insert         Insert row")

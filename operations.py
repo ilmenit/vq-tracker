@@ -416,7 +416,7 @@ def enter_digit(d: int):
     ptn = state.current_pattern()
     row = ptn.get_row(state.row)
     
-    if state.column == 1:  # Instrument (2 digits)
+    if state.column == 1:  # Instrument (2 hex digits)
         if state.pending_digit is not None and state.pending_col == 1:
             val = (state.pending_digit << 4) | (d & 0xF)
             save_undo("Enter instrument")
@@ -427,11 +427,49 @@ def enter_digit(d: int):
             state.pending_digit = d & 0xF
             state.pending_col = 1
             row.instrument = d & 0xF
-    else:  # Volume (1 digit)
+    else:  # Volume (1 hex digit)
         save_undo("Enter volume")
         row.volume = min(d & 0xF, MAX_VOLUME)
         state.clear_pending()
         move_cursor(state.step, 0)
+    
+    refresh_editor()
+
+def enter_digit_decimal(d: int):
+    """Enter decimal digit for instrument/volume in decimal mode."""
+    if state.column == 0:
+        return
+    
+    ptn = state.current_pattern()
+    row = ptn.get_row(state.row)
+    
+    if state.column == 1:  # Instrument (3 decimal digits, 000-127)
+        if state.pending_digit is not None and state.pending_col == 1:
+            # Check if we have 2 pending digits
+            if state.pending_digit >= 10:  # Already have 2 digits
+                val = state.pending_digit * 10 + d
+                save_undo("Enter instrument")
+                row.instrument = min(val, 127)
+                state.clear_pending()
+                move_cursor(state.step, 0)
+            else:  # Have 1 digit, now 2
+                state.pending_digit = state.pending_digit * 10 + d
+                row.instrument = min(state.pending_digit, 127)
+        else:
+            state.pending_digit = d
+            state.pending_col = 1
+            row.instrument = d
+    else:  # Volume (2 decimal digits, 00-15)
+        if state.pending_digit is not None and state.pending_col == 2:
+            val = state.pending_digit * 10 + d
+            save_undo("Enter volume")
+            row.volume = min(val, MAX_VOLUME)
+            state.clear_pending()
+            move_cursor(state.step, 0)
+        else:
+            state.pending_digit = d
+            state.pending_col = 2
+            row.volume = min(d, MAX_VOLUME)
     
     refresh_editor()
 

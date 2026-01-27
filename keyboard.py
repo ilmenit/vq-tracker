@@ -140,9 +140,15 @@ def handle_char(char: str):
         ops.enter_note(NOTE_KEYS[char])
         return
     
-    # Hex digits for instrument/volume columns
+    # Digits for instrument/volume columns
     if state.column > 0:
-        if char in '0123456789':
-            ops.enter_digit(int(char))
-        elif char in 'abcdef':
-            ops.enter_digit(10 + ord(char) - ord('a'))
+        if state.hex_mode:
+            # Hex mode: 0-9 and a-f
+            if char in '0123456789':
+                ops.enter_digit(int(char))
+            elif char in 'abcdef':
+                ops.enter_digit(10 + ord(char) - ord('a'))
+        else:
+            # Decimal mode: only 0-9
+            if char in '0123456789':
+                ops.enter_digit_decimal(int(char))
