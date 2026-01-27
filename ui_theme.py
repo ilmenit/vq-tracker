@@ -72,6 +72,12 @@ def create_themes():
             dpg.add_theme_color(dpg.mvThemeCol_Button, (60, 80, 120))
             dpg.add_theme_color(dpg.mvThemeCol_Text, (255, 255, 255))
     
+    # Current row (cursor row highlight, "under" cursor)
+    with dpg.theme(tag="theme_cell_current_row"):
+        with dpg.theme_component(dpg.mvButton):
+            dpg.add_theme_color(dpg.mvThemeCol_Button, (40, 55, 80))  # Subtle blue-ish highlight
+            dpg.add_theme_color(dpg.mvThemeCol_Text, (200, 210, 230))
+    
     # === CHANNEL THEMES ===
     
     # Inactive channel cell (dimmed)

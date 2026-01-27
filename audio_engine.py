@@ -1,16 +1,20 @@
 """Atari Sample Tracker - Audio Engine"""
 import threading
 import numpy as np
+import logging
 from typing import Optional, Callable, List, Tuple
 from dataclasses import dataclass
 from constants import MAX_CHANNELS, MAX_VOLUME, PAL_HZ
 
+logger = logging.getLogger("tracker.audio")
+
 try:
     import sounddevice as sd
     AUDIO_OK = True
+    logger.info("sounddevice imported successfully")
 except ImportError:
     AUDIO_OK = False
-    print("Warning: sounddevice not available, audio disabled")
+    logger.warning("sounddevice not available, audio disabled")
 
 SAMPLE_RATE = 44100
 BUFFER_SIZE = 512
@@ -69,22 +73,27 @@ class AudioEngine:
     
     def start(self) -> bool:
         """Start audio stream."""
+        logger.info(f"Starting audio engine, AUDIO_OK={AUDIO_OK}, running={self.running}")
         if not AUDIO_OK or self.running:
+            logger.warning(f"Cannot start: AUDIO_OK={AUDIO_OK}, already running={self.running}")
             return self.running
         try:
+            # Use stereo output for compatibility with most audio systems
             self.stream = sd.OutputStream(
-                samplerate=SAMPLE_RATE, channels=1, dtype='float32',
+                samplerate=SAMPLE_RATE, channels=2, dtype='float32',
                 blocksize=BUFFER_SIZE, callback=self._audio_callback, latency='low'
             )
             self.stream.start()
             self.running = True
+            logger.info("Audio stream started successfully (stereo)")
             return True
         except Exception as e:
-            print(f"Audio error: {e}")
+            logger.error(f"Audio start error: {e}")
             return False
     
     def stop(self):
         """Stop audio stream."""
+        logger.info("Stopping audio engine")
         self.stop_playback()
         if self.stream:
             try:
@@ -93,6 +102,7 @@ class AudioEngine:
             except:
                 pass
         self.running = False
+        logger.info("Audio engine stopped")
     
     def _audio_callback(self, out: np.ndarray, frames: int, time_info, status):
         """Audio thread callback."""
@@ -108,7 +118,10 @@ class AudioEngine:
                 ch_out = self._render_channel(ch, frames)
                 output += ch_out * (ch.volume / MAX_VOLUME)
             
-            out[:, 0] = np.tanh(output * self.master_volume)
+            # Output to both stereo channels
+            mono_out = np.tanh(output * self.master_volume)
+            out[:, 0] = mono_out  # Left
+            out[:, 1] = mono_out  # Right
     
     def _render_channel(self, ch: Channel, frames: int) -> np.ndarray:
         """Render channel with linear interpolation."""
@@ -177,7 +190,12 @@ class AudioEngine:
     
     def _trigger_note(self, ch_idx: int, note: int, inst, volume: int):
         """Trigger a note on a channel."""
-        if not (0 <= ch_idx < MAX_CHANNELS) or not inst.is_loaded():
+        logger.debug(f"_trigger_note: ch={ch_idx}, note={note}, vol={volume}, inst_loaded={inst.is_loaded() if inst else False}")
+        if not (0 <= ch_idx < MAX_CHANNELS):
+            logger.warning(f"Invalid channel index: {ch_idx}")
+            return
+        if not inst or not inst.is_loaded():
+            logger.warning(f"Instrument not loaded")
             return
         ch = self.channels[ch_idx]
         ch.pitch = 2 ** ((note - inst.base_note) / 12.0) * inst.sample_rate / SAMPLE_RATE
@@ -187,6 +205,7 @@ class AudioEngine:
         ch.sample_data = inst.sample_data
         ch.sample_rate = inst.sample_rate
         ch.position = 0.0
+        logger.debug(f"Note triggered: ch={ch_idx}, pitch={ch.pitch:.3f}, sample_len={len(ch.sample_data)}")
     
     def _stop_all_channels(self):
         """Stop all channels."""
@@ -268,9 +287,13 @@ class AudioEngine:
     
     def preview_note(self, ch_idx: int, note: int, inst, volume: int = MAX_VOLUME):
         """Preview a single note."""
+        logger.debug(f"preview_note called: ch={ch_idx}, note={note}, vol={volume}, running={self.running}")
         with self.lock:
             if inst and inst.is_loaded():
+                logger.debug(f"Calling _trigger_note")
                 self._trigger_note(ch_idx, note, inst, volume)
+            else:
+                logger.warning(f"preview_note: instrument not loaded or None")
     
     def preview_row(self, song, songline: int, row: int):
         """Preview all notes in a row."""

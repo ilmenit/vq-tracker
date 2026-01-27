@@ -4,8 +4,11 @@ import gzip
 import os
 import struct
 import wave
+import logging
 from typing import Optional, Tuple, List
 import numpy as np
+
+logger = logging.getLogger("tracker.file_io")
 
 try:
     from scipy.io import wavfile as scipy_wav
@@ -207,8 +210,10 @@ def export_asm(song: Song, out_dir: str) -> Tuple[bool, str]:
 
 def load_sample(inst: Instrument, path: str) -> Tuple[bool, str]:
     """Load WAV sample into instrument."""
+    logger.debug(f"load_sample: path={path}")
     try:
         if not os.path.exists(path):
+            logger.warning(f"File not found: {path}")
             return False, f"File not found: {path}"
         
         if not path.lower().endswith('.wav'):
@@ -216,6 +221,7 @@ def load_sample(inst: Instrument, path: str) -> Tuple[bool, str]:
         
         rate, data = _read_wav(path)
         if data is None:
+            logger.error(f"Failed to read WAV file: {path}")
             return False, "Failed to read WAV file"
         
         # Convert to mono float32
@@ -245,8 +251,10 @@ def load_sample(inst: Instrument, path: str) -> Tuple[bool, str]:
             inst.name = os.path.splitext(os.path.basename(path))[0][:16]
         
         duration = len(data) / rate
+        logger.info(f"Loaded sample: {inst.name}, {len(data)} samples, {rate}Hz, {duration:.2f}s")
         return True, f"Loaded: {len(data):,} samples, {rate}Hz, {duration:.2f}s"
     except Exception as e:
+        logger.error(f"Load failed: {e}")
         return False, f"Load failed: {e}"
 
 
