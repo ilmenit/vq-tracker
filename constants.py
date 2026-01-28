@@ -2,12 +2,12 @@
 
 # === LIMITS ===
 MAX_CHANNELS = 3
-MAX_OCTAVES = 3  # Changed from 4
+MAX_OCTAVES = 3  # Limited to 3 octaves (C1-B3) due to player pitch limits
 MAX_NOTES = MAX_OCTAVES * 12  # 36 notes
 MAX_VOLUME = 15
 MAX_INSTRUMENTS = 128
 MAX_PATTERNS = 256
-MAX_ROWS = 256
+MAX_ROWS = 255  # Limited to 255 because $FF is used as end marker in export format
 MAX_SONGLINES = 256
 
 # === DEFAULTS ===
@@ -20,6 +20,18 @@ VISIBLE_ROWS = 16
 # === TIMING ===
 PAL_HZ = 50
 NTSC_HZ = 60
+
+# === VQ CONVERSION ===
+# POKEY PAL Sample Rates (Hz) - divisor values map to these rates
+VQ_RATES = [
+    15834, 12667, 10556, 9048, 7917, 7037, 6333, 5757,
+    5278, 4872, 4524, 4222, 3958, 3725, 3518, 3333
+]
+VQ_RATE_DEFAULT = 7917
+VQ_VECTOR_SIZES = [2, 4, 6, 8, 10, 12, 14, 16]
+VQ_VECTOR_DEFAULT = 2
+VQ_SMOOTHNESS_VALUES = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+VQ_SMOOTHNESS_DEFAULT = 0
 
 # === FOCUS AREAS ===
 FOCUS_SONG = 0

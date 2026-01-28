@@ -1,10 +1,11 @@
 """Atari Sample Tracker - Operations"""
 import os
 from constants import (MAX_OCTAVES, MAX_NOTES, MAX_VOLUME, MAX_ROWS,
-                       NOTE_KEYS, PAL_HZ, NTSC_HZ, FOCUS_EDITOR)
+                       MAX_INSTRUMENTS, NOTE_KEYS, PAL_HZ, NTSC_HZ, FOCUS_EDITOR)
 from state import state
 from file_io import (save_project, load_project, load_sample, export_asm,
-                     export_binary, load_samples_multi, load_samples_folder)
+                     export_binary, load_samples_multi, load_samples_folder,
+                     import_pokeyvq)
 
 # UI callbacks (set by main module)
 refresh_all = None
@@ -22,6 +23,17 @@ show_error = None
 show_confirm = None
 show_file_dialog = None
 show_rename_dialog = None
+
+
+def set_playback_row_callback(callback):
+    """Set callback for playback row updates."""
+    state.audio.on_row = callback
+
+
+def set_playback_stop_callback(callback):
+    """Set callback for playback stop."""
+    state.audio.on_stop = callback
+
 
 def fmt(val: int, width: int = 2) -> str:
     """Format number in hex or decimal mode."""
@@ -53,6 +65,7 @@ def _do_new():
     state.song_cursor_row = state.song_cursor_col = 0  # Reset song grid cursor
     state.volume = MAX_VOLUME  # Reset brush volume
     state.selection.clear()
+    state.vq.invalidate()  # Clear VQ conversion for new project
     state.audio.set_song(state.song)
     refresh_all()
     update_title()
@@ -75,6 +88,7 @@ def _load_file(path: str):
         state.song_cursor_row = state.song_cursor_col = 0  # Reset song grid cursor
         state.volume = MAX_VOLUME  # Reset brush volume
         state.selection.clear()
+        state.vq.invalidate()  # Clear VQ conversion for new project
         state.audio.set_song(state.song)
         refresh_all()
         update_title()
@@ -129,6 +143,42 @@ def _do_export_asm(path: str):
     else:
         show_error("Export Error", msg)
 
+def import_pokeyvq_file(*args):
+    """Import PokeyVQ conversion output (conversion_info.json)."""
+    show_file_dialog("Import PokeyVQ", [".json"], _do_import_pokeyvq)
+
+def _do_import_pokeyvq(path: str):
+    if not path:
+        return
+    
+    results, config, msg = import_pokeyvq(path)
+    
+    if not results:
+        show_error("Import Error", msg)
+        return
+    
+    # Add successfully loaded instruments to song
+    loaded = 0
+    for inst, ok, inst_msg in results:
+        if ok:
+            idx = state.song.add_instrument()
+            if idx >= 0:
+                state.song.instruments[idx] = inst
+                loaded += 1
+            else:
+                show_error("Warning", "Maximum instruments reached")
+                break
+    
+    if loaded > 0:
+        save_undo("Import PokeyVQ")
+        state.song.modified = True
+        state.vq.invalidate()  # Invalidate VQ conversion
+        refresh_instruments()
+        refresh_all_instrument_combos()
+        state.audio.set_song(state.song)
+    
+    show_status(msg)
+
 # =============================================================================
 # INSTRUMENT OPERATIONS
 # =============================================================================
@@ -159,6 +209,7 @@ def _load_samples(paths):
     
     if count > 0:
         save_undo("Add samples")
+        state.vq.invalidate()  # Invalidate VQ conversion
         refresh_instruments()
         show_status(f"Loaded {count} sample(s)")
 
@@ -183,6 +234,7 @@ def _load_folder(path: str):
     
     if count > 0:
         save_undo("Add folder")
+        state.vq.invalidate()  # Invalidate VQ conversion
         refresh_instruments()
         show_status(f"Loaded {count} sample(s) from folder")
 
@@ -194,6 +246,7 @@ def remove_instrument(*args):
         if state.instrument >= len(state.song.instruments):
             state.instrument = max(0, len(state.song.instruments) - 1)
         save_undo("Remove instrument")
+        state.vq.invalidate()  # Invalidate VQ conversion
         refresh_instruments()
 
 def rename_instrument(*args):
@@ -239,17 +292,21 @@ def clone_pattern(*args):
         show_status(f"Cloned > {fmt(new_idx)}")
 
 def delete_pattern(*args):
-    """Delete current pattern if unused."""
-    ptn_idx = state.current_pattern_idx()
+    """Delete selected pattern if unused."""
+    ptn_idx = state.selected_pattern
     if state.song.pattern_in_use(ptn_idx):
-        show_error("Cannot Delete", "Pattern is in use")
+        show_error("Cannot Delete", "Pattern is in use by a songline")
         return
     if len(state.song.patterns) <= 1:
-        show_error("Cannot Delete", "Last pattern")
+        show_error("Cannot Delete", "Cannot delete last pattern")
         return
     if state.song.delete_pattern(ptn_idx):
+        # Adjust selected_pattern if needed
+        if state.selected_pattern >= len(state.song.patterns):
+            state.selected_pattern = len(state.song.patterns) - 1
         save_undo("Delete pattern")
         refresh_all()
+        show_status(f"Deleted pattern")
 
 def clear_pattern(*args):
     """Clear all rows in current pattern."""
@@ -444,7 +501,7 @@ def enter_digit(d: int):
         if state.pending_digit is not None and state.pending_col == 1:
             val = (state.pending_digit << 4) | (d & 0xF)
             save_undo("Enter instrument")
-            row.instrument = min(val, 127)
+            row.instrument = min(val, MAX_INSTRUMENTS - 1)
             state.clear_pending()
             move_cursor(state.step, 0)
         else:
@@ -473,12 +530,12 @@ def enter_digit_decimal(d: int):
             if state.pending_digit >= 10:  # Already have 2 digits
                 val = state.pending_digit * 10 + d
                 save_undo("Enter instrument")
-                row.instrument = min(val, 127)
+                row.instrument = min(val, MAX_INSTRUMENTS - 1)
                 state.clear_pending()
                 move_cursor(state.step, 0)
             else:  # Have 1 digit, now 2
                 state.pending_digit = state.pending_digit * 10 + d
-                row.instrument = min(state.pending_digit, 127)
+                row.instrument = min(state.pending_digit, MAX_INSTRUMENTS - 1)
         else:
             state.pending_digit = d
             state.pending_col = 1

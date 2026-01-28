@@ -4,6 +4,7 @@ from constants import (DEFAULT_OCTAVE, DEFAULT_STEP, VISIBLE_ROWS, MAX_CHANNELS,
                        MAX_VOLUME, FOCUS_EDITOR)
 from data_model import Song, Pattern, Row
 from audio_engine import AudioEngine
+from vq_convert import VQState
 
 class UndoManager:
     """Manages undo/redo history."""
@@ -135,6 +136,9 @@ class AppState:
         self.clipboard = Clipboard()
         self.selection = Selection()
         self.audio = AudioEngine()
+        
+        # VQ Conversion state
+        self.vq = VQState()
         
         # Pattern Editor cursor position
         self.songline = 0      # Current songline being edited

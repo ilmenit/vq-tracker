@@ -1,0 +1,18 @@
+{
+    "player_mode": "vq_basic",
+    "channels": "Dual",
+    "rate": 7917,
+    "quality": 50,
+    "smoothness": 0,
+    "enhance": true,
+    "codebook": "256",
+    "iters": 50,
+    "vec_min": 1,
+    "vec_max": 16,
+    "lbg": false,
+    "voltage": false,
+    "optimize": "Size",
+    "wav": true,
+    "show_cpu": true,
+    "gen_player": true
+}

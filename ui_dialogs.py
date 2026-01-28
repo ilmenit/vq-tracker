@@ -74,7 +74,13 @@ def show_confirm(title: str, message: str, callback):
     # Calculate center position
     vp_w = dpg.get_viewport_width()
     vp_h = dpg.get_viewport_height()
-    w, h = 320, 120
+    w, h = 320, 130
+    btn_w = 90
+    spacing = 20
+    # Calculate left margin to center two buttons with spacing
+    # Total buttons width = btn_w * 2 + spacing = 200
+    # Left margin = (w - 200) / 2 - padding (~16)
+    left_margin = (w - btn_w * 2 - spacing) // 2 - 8
     
     with dpg.window(
         tag="confirm_dialog",
@@ -86,12 +92,16 @@ def show_confirm(title: str, message: str, callback):
         no_resize=True,
         no_collapse=True
     ):
+        dpg.add_spacer(height=5)
+        # Center the message text
         dpg.add_text(message)
-        dpg.add_spacer(height=15)
+        dpg.add_spacer(height=20)
+        # Centered button row
         with dpg.group(horizontal=True):
-            dpg.add_button(label="OK", width=80, callback=on_ok)
-            dpg.add_spacer(width=10)
-            dpg.add_button(label="Cancel", width=80, callback=on_cancel)
+            dpg.add_spacer(width=left_margin)
+            dpg.add_button(label="OK", width=btn_w, callback=on_ok)
+            dpg.add_spacer(width=spacing)
+            dpg.add_button(label="Cancel", width=btn_w, callback=on_cancel)
 
 
 def show_error(title: str, message: str):
@@ -108,7 +118,13 @@ def show_error(title: str, message: str):
     # Calculate center position
     vp_w = dpg.get_viewport_width()
     vp_h = dpg.get_viewport_height()
-    w, h = 360, 130
+    
+    # Estimate height based on message length
+    line_count = message.count('\n') + 1
+    h = max(140, min(400, 100 + line_count * 20))
+    w = 400
+    btn_w = 90
+    left_margin = (w - btn_w) // 2 - 8
     
     with dpg.window(
         tag="error_dialog",
@@ -120,9 +136,52 @@ def show_error(title: str, message: str):
         no_resize=True,
         no_collapse=True
     ):
-        dpg.add_text(message, wrap=340)
-        dpg.add_spacer(height=15)
-        dpg.add_button(label="OK", width=80, callback=on_close)
+        dpg.add_spacer(height=5)
+        dpg.add_text(message, wrap=380)
+        dpg.add_spacer(height=20)
+        with dpg.group(horizontal=True):
+            dpg.add_spacer(width=left_margin)
+            dpg.add_button(label="OK", width=btn_w, callback=on_close)
+
+
+def show_info(title: str, message: str):
+    """Show info dialog centered on viewport."""
+    if dpg.does_item_exist("info_dialog"):
+        dpg.delete_item("info_dialog")
+    
+    state.set_input_active(True)
+    
+    def on_close():
+        state.set_input_active(False)
+        dpg.delete_item("info_dialog")
+    
+    # Calculate center position
+    vp_w = dpg.get_viewport_width()
+    vp_h = dpg.get_viewport_height()
+    
+    # Estimate height based on message length
+    line_count = message.count('\n') + 1
+    h = max(180, min(400, 100 + line_count * 20))
+    w = 450
+    btn_w = 90
+    left_margin = (w - btn_w) // 2 - 8
+    
+    with dpg.window(
+        tag="info_dialog",
+        label=title,
+        modal=True,
+        width=w,
+        height=h,
+        pos=[(vp_w - w) // 2, (vp_h - h) // 2],
+        no_resize=True,
+        no_collapse=True
+    ):
+        dpg.add_spacer(height=5)
+        dpg.add_text(message, wrap=430)
+        dpg.add_spacer(height=20)
+        with dpg.group(horizontal=True):
+            dpg.add_spacer(width=left_margin)
+            dpg.add_button(label="OK", width=btn_w, callback=on_close)
 
 
 def show_rename_dialog(title: str, current_name: str, callback):
@@ -145,7 +204,10 @@ def show_rename_dialog(title: str, current_name: str, callback):
     # Calculate center position
     vp_w = dpg.get_viewport_width()
     vp_h = dpg.get_viewport_height()
-    w, h = 320, 110
+    w, h = 320, 120
+    btn_w = 90
+    spacing = 20
+    left_margin = (w - btn_w * 2 - spacing) // 2 - 8
     
     with dpg.window(
         tag="rename_dialog",
@@ -157,12 +219,14 @@ def show_rename_dialog(title: str, current_name: str, callback):
         no_resize=True,
         no_collapse=True
     ):
+        dpg.add_spacer(height=5)
         dpg.add_input_text(tag="rename_input", default_value=current_name, width=-1)
-        dpg.add_spacer(height=15)
+        dpg.add_spacer(height=20)
         with dpg.group(horizontal=True):
-            dpg.add_button(label="OK", width=80, callback=on_ok)
-            dpg.add_spacer(width=10)
-            dpg.add_button(label="Cancel", width=80, callback=on_cancel)
+            dpg.add_spacer(width=left_margin)
+            dpg.add_button(label="OK", width=btn_w, callback=on_ok)
+            dpg.add_spacer(width=spacing)
+            dpg.add_button(label="Cancel", width=btn_w, callback=on_cancel)
 
 
 def show_about():
@@ -179,7 +243,9 @@ def show_about():
     # Calculate center position
     vp_w = dpg.get_viewport_width()
     vp_h = dpg.get_viewport_height()
-    w, h = 340, 200
+    w, h = 340, 210
+    btn_w = 90
+    left_margin = (w - btn_w) // 2 - 8
     
     with dpg.window(
         tag="about_dialog",
@@ -191,6 +257,7 @@ def show_about():
         no_resize=True,
         no_collapse=True
     ):
+        dpg.add_spacer(height=5)
         dpg.add_text(f"{APP_NAME}", color=COL_ACCENT)
         dpg.add_text(f"Version {APP_VERSION}")
         dpg.add_spacer(height=10)
@@ -201,8 +268,10 @@ def show_about():
         dpg.add_text("  - 3 channel polyphonic playback", color=COL_DIM)
         dpg.add_text("  - WAV sample import", color=COL_DIM)
         dpg.add_text("  - Export to ASM/binary", color=COL_DIM)
-        dpg.add_spacer(height=10)
-        dpg.add_button(label="Close", width=80, callback=on_close)
+        dpg.add_spacer(height=15)
+        with dpg.group(horizontal=True):
+            dpg.add_spacer(width=left_margin)
+            dpg.add_button(label="Close", width=btn_w, callback=on_close)
 
 
 def show_shortcuts():
@@ -219,7 +288,9 @@ def show_shortcuts():
     # Calculate center position
     vp_w = dpg.get_viewport_width()
     vp_h = dpg.get_viewport_height()
-    w, h = 450, 540
+    w, h = 450, 560
+    btn_w = 90
+    left_margin = (w - btn_w) // 2 - 8
     
     with dpg.window(
         tag="shortcuts_dialog",
@@ -270,6 +341,10 @@ def show_shortcuts():
         dpg.add_text("  Enter          Preview current row")
         
         dpg.add_spacer(height=8)
+        dpg.add_text("GENERAL", color=COL_ACCENT)
+        dpg.add_text("  Escape         Close popup / Clear selection")
+        
+        dpg.add_spacer(height=8)
         dpg.add_text("FILE", color=COL_ACCENT)
         dpg.add_text("  Ctrl+N         New project")
         dpg.add_text("  Ctrl+O         Open project")
@@ -277,5 +352,7 @@ def show_shortcuts():
         dpg.add_text("  Ctrl+Shift+S   Save as")
         dpg.add_text("  Ctrl+Z / Y     Undo / Redo")
         
-        dpg.add_spacer(height=12)
-        dpg.add_button(label="Close", width=80, callback=on_close)
+        dpg.add_spacer(height=15)
+        with dpg.group(horizontal=True):
+            dpg.add_spacer(width=left_margin)
+            dpg.add_button(label="Close", width=btn_w, callback=on_close)

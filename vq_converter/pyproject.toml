@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pokey-vq"
+version = "2.0.0"
+authors = [
+  { name="Author", email="author@example.com" },
+]
+description = "A production-ready VQ audio compressor and player for Atari 8-bit computers (POKEY)."
+readme = "README.md"
+requires-python = ">=3.7"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "numpy",
+    "scipy",
+    "librosa",
+    "tqdm",
+    "sounddevice",
+    "customtkinter",
+    "pyinstaller", # For development/build
+    "packaging"
+]
+
+[project.scripts]
+pokey-vq = "pokey_vq.cli:main"
+pvq = "pokey_vq.cli:main"
+pokey-gui = "pokey_vq.gui:main"
+
+[tool.setuptools.packages.find]
+include = ["pokey_vq*"]

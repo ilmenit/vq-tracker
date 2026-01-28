@@ -151,7 +151,7 @@ class AudioEngine:
     
     def _advance_row(self):
         """Advance to next row."""
-        self._play_current_row()
+        # First increment the row
         self.row += 1
         
         max_len = max(self.lengths) if self.lengths else 64
@@ -162,6 +162,9 @@ class AudioEngine:
                 if self.song and self.songline >= len(self.song.songlines):
                     self.songline = 0
                 self._update_patterns()
+        
+        # Then play the new row
+        self._play_current_row()
         
         if self.on_row:
             self._pending_callbacks.append((self.on_row, (self.songline, self.row)))
@@ -181,12 +184,14 @@ class AudioEngine:
                     self._trigger_note(ch_idx, row.note, inst, row.volume)
     
     def _update_patterns(self):
-        """Update pattern info from current songline."""
+        """Update pattern info and speed from current songline."""
         if not self.song or self.songline >= len(self.song.songlines):
             return
         sl = self.song.songlines[self.songline]
         self.patterns = sl.patterns.copy()
         self.lengths = [self.song.get_pattern(p).length for p in self.patterns]
+        # Update speed from songline
+        self.speed = sl.speed
     
     def _trigger_note(self, ch_idx: int, note: int, inst, volume: int):
         """Trigger a note on a channel."""
@@ -230,7 +235,11 @@ class AudioEngine:
         with self.lock:
             self.song = song
             if song:
-                self.speed = song.speed
+                # Use speed from first songline (if available)
+                if song.songlines:
+                    self.speed = song.songlines[0].speed
+                else:
+                    self.speed = 6  # Default
                 self.hz = song.system
                 self.samples_per_tick = SAMPLE_RATE // self.hz
     
@@ -246,7 +255,11 @@ class AudioEngine:
             self.tick = 0
             self.sample_count = 0
             self._update_patterns()
+            self._play_current_row()  # Play first row immediately
             self.playing = True
+            # Fire callback for initial position
+            if self.on_row:
+                self._pending_callbacks.append((self.on_row, (self.songline, self.row)))
     
     def play_pattern(self, songline: int = 0):
         """Play current pattern."""
@@ -264,7 +277,11 @@ class AudioEngine:
             self.tick = 0
             self.sample_count = 0
             self._update_patterns()
+            self._play_current_row()  # Play first row immediately
             self.playing = True
+            # Fire callback for initial position
+            if self.on_row:
+                self._pending_callbacks.append((self.on_row, (self.songline, self.row)))
     
     def stop_playback(self):
         """Stop playback."""

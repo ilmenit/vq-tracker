@@ -25,9 +25,14 @@ class Row:
     
     @classmethod
     def from_dict(cls, d: dict) -> 'Row':
-        return cls(d.get('n', d.get('note', 0)),
-                   d.get('i', d.get('instrument', 0)),
-                   d.get('v', d.get('volume', MAX_VOLUME)))
+        note = d.get('n', d.get('note', 0))
+        inst = d.get('i', d.get('instrument', 0))
+        vol = d.get('v', d.get('volume', MAX_VOLUME))
+        # Clamp to valid ranges
+        note = max(0, min(MAX_NOTES, note))
+        inst = max(0, min(MAX_INSTRUMENTS - 1, inst))  # 0-127
+        vol = max(0, min(MAX_VOLUME, vol))
+        return cls(note, inst, vol)
 
 @dataclass
 class Pattern:
@@ -95,7 +100,8 @@ class Pattern:
 class Instrument:
     """Sample-based instrument."""
     name: str = "New"
-    sample_path: str = ""
+    sample_path: str = ""  # Current loaded sample path
+    original_sample_path: str = ""  # Original WAV path (before conversion)
     sample_data: Optional[np.ndarray] = None
     sample_rate: int = 44100
     base_note: int = 13  # C-2 for 3-octave range
@@ -106,19 +112,31 @@ class Instrument:
     def duration(self) -> float:
         return len(self.sample_data) / self.sample_rate if self.is_loaded() else 0.0
     
+    def get_original_path(self) -> str:
+        """Get original sample path (for conversion)."""
+        return self.original_sample_path or self.sample_path
+    
     def to_dict(self) -> dict:
-        return {'name': self.name, 'path': self.sample_path, 'base': self.base_note}
+        return {
+            'name': self.name, 
+            'path': self.sample_path, 
+            'original_path': self.original_sample_path or self.sample_path,
+            'base': self.base_note
+        }
     
     @classmethod
     def from_dict(cls, d: dict) -> 'Instrument':
-        return cls(name=d.get('name', 'New'),
+        inst = cls(name=d.get('name', 'New'),
                    sample_path=d.get('path', d.get('sample', '')),
                    base_note=d.get('base', d.get('base_note', 13)))
+        inst.original_sample_path = d.get('original_path', inst.sample_path)
+        return inst
 
 @dataclass
 class Songline:
     """One row in song arrangement."""
     patterns: List[int] = field(default_factory=lambda: [0, 0, 0])
+    speed: int = DEFAULT_SPEED  # Speed for this songline (VBLANKs per row)
     
     def __post_init__(self):
         while len(self.patterns) < MAX_CHANNELS:
@@ -126,7 +144,7 @@ class Songline:
         self.patterns = self.patterns[:MAX_CHANNELS]
     
     def copy(self) -> 'Songline':
-        return Songline(patterns=self.patterns.copy())
+        return Songline(patterns=self.patterns.copy(), speed=self.speed)
 
 @dataclass
 class Song:
@@ -173,10 +191,12 @@ class Song:
     
     # === SONGLINE OPERATIONS ===
     def add_songline(self, after: int = -1) -> int:
+        """Add new songline with default patterns (all pattern 0)."""
         if len(self.songlines) >= MAX_SONGLINES:
             return -1
         after = after if after >= 0 else len(self.songlines) - 1
-        new = self.songlines[after].copy() if 0 <= after < len(self.songlines) else Songline()
+        # Create new songline with default patterns (pattern 0 for all channels)
+        new = Songline()
         self.songlines.insert(after + 1, new)
         self.modified = True
         return after + 1
@@ -246,12 +266,12 @@ class Song:
     # === SERIALIZATION ===
     def to_dict(self) -> dict:
         return {
-            'version': 3,
+            'version': 4,
             'meta': {
                 'title': self.title, 'author': self.author,
-                'speed': self.speed, 'system': self.system
+                'system': self.system
             },
-            'songlines': [sl.patterns for sl in self.songlines],
+            'songlines': [{'patterns': sl.patterns, 'speed': sl.speed} for sl in self.songlines],
             'patterns': [p.to_dict() for p in self.patterns],
             'instruments': [i.to_dict() for i in self.instruments]
         }
@@ -262,11 +282,27 @@ class Song:
         song = cls(
             title=meta.get('title', 'Untitled'),
             author=meta.get('author', ''),
-            speed=meta.get('speed', DEFAULT_SPEED),
+            speed=meta.get('speed', DEFAULT_SPEED),  # Legacy global speed
             system=meta.get('system', PAL_HZ)
         )
-        song.songlines = [Songline(patterns=list(sl)) 
-                          for sl in d.get('songlines', [[0, 1, 2]])]
+        
+        # Handle songlines - both old format (list of pattern arrays) and new format (list of dicts with speed)
+        raw_songlines = d.get('songlines', [[0, 1, 2]])
+        song.songlines = []
+        for sl in raw_songlines:
+            if isinstance(sl, dict):
+                # New format with speed
+                song.songlines.append(Songline(
+                    patterns=list(sl.get('patterns', [0, 0, 0])),
+                    speed=sl.get('speed', DEFAULT_SPEED)
+                ))
+            else:
+                # Old format - just pattern array, use default or legacy global speed
+                song.songlines.append(Songline(
+                    patterns=list(sl),
+                    speed=meta.get('speed', DEFAULT_SPEED)
+                ))
+        
         song.patterns = [Pattern.from_dict(p) 
                          for p in d.get('patterns', d.get('ptn', []))]
         song.instruments = [Instrument.from_dict(i) 

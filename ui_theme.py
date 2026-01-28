@@ -92,6 +92,14 @@ def create_themes():
             dpg.add_theme_color(dpg.mvThemeCol_Button, COL_BG2)
             dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, COL_BG3)
     
+    # Header button (for column labels - non-interactive look)
+    with dpg.theme(tag="theme_header_button"):
+        with dpg.theme_component(dpg.mvButton):
+            dpg.add_theme_color(dpg.mvThemeCol_Button, COL_BG)  # Match background
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, COL_BG)  # No hover change
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, COL_BG)  # No active change
+            dpg.add_theme_color(dpg.mvThemeCol_Text, COL_MUTED)  # Dimmed text
+    
     # === PANEL THEMES ===
     
     # Focused panel border - bright and thick
@@ -158,6 +166,49 @@ def create_themes():
         with dpg.theme_component(dpg.mvButton):
             dpg.add_theme_color(dpg.mvThemeCol_Button, (20, 22, 28))
             dpg.add_theme_color(dpg.mvThemeCol_Text, (50, 50, 60))
+    
+    # === INSTRUMENT THEMES (VQ conversion state) ===
+    
+    # Instrument not converted (normal/gray)
+    with dpg.theme(tag="theme_inst_normal"):
+        with dpg.theme_component(dpg.mvButton):
+            dpg.add_theme_color(dpg.mvThemeCol_Button, COL_BG2)
+            dpg.add_theme_color(dpg.mvThemeCol_Text, COL_TEXT)
+    
+    # Instrument converted (green tint)
+    with dpg.theme(tag="theme_inst_converted"):
+        with dpg.theme_component(dpg.mvButton):
+            dpg.add_theme_color(dpg.mvThemeCol_Button, (25, 45, 35))
+            dpg.add_theme_color(dpg.mvThemeCol_Text, (180, 230, 180))
+    
+    # Instrument selected + not converted
+    with dpg.theme(tag="theme_inst_selected"):
+        with dpg.theme_component(dpg.mvButton):
+            dpg.add_theme_color(dpg.mvThemeCol_Button, COL_CURSOR_BG)
+            dpg.add_theme_color(dpg.mvThemeCol_Text, (255, 255, 255))
+    
+    # Instrument selected + converted
+    with dpg.theme(tag="theme_inst_selected_converted"):
+        with dpg.theme_component(dpg.mvButton):
+            dpg.add_theme_color(dpg.mvThemeCol_Button, (40, 70, 55))
+            dpg.add_theme_color(dpg.mvThemeCol_Text, (200, 255, 200))
+    
+    # === VQ CONVERT BUTTON THEMES ===
+    
+    # Convert button normal (needs conversion)
+    with dpg.theme(tag="theme_btn_convert"):
+        with dpg.theme_component(dpg.mvButton):
+            dpg.add_theme_color(dpg.mvThemeCol_Button, (35, 70, 50))
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (45, 90, 65))
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (55, 110, 80))
+            dpg.add_theme_color(dpg.mvThemeCol_Text, (180, 255, 180))
+
+
+def get_inst_theme(is_selected: bool, is_converted: bool) -> str:
+    """Get theme for instrument button."""
+    if is_selected:
+        return "theme_inst_selected_converted" if is_converted else "theme_inst_selected"
+    return "theme_inst_converted" if is_converted else "theme_inst_normal"
 
 
 def get_cell_theme(is_cursor: bool, is_playing: bool, is_selected: bool, 
