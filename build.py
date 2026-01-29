@@ -7,7 +7,6 @@ import sys
 import shutil
 import subprocess
 import platform
-import tempfile
 import logging
 import threading
 import queue
@@ -65,12 +64,13 @@ class BuildState:
 build_state = BuildState()
 
 
-def export_song_data(song: Song, output_path: str) -> Tuple[bool, str]:
+def export_song_data(song: Song, output_path: str, output_func=None) -> Tuple[bool, str]:
     """Export song data to SONG_DATA.asm format.
     
     Args:
         song: Song object to export
         output_path: Path to write SONG_DATA.asm
+        output_func: Optional function for debug output
         
     Returns:
         (success, error_message)
@@ -132,10 +132,14 @@ def export_song_data(song: Song, output_path: str) -> Tuple[bool, str]:
         
         # Pattern data (variable-length events)
         lines.append("; --- Pattern Event Data ---")
+        
+        if output_func:
+            output_func("\n  --- Pattern Encoding Debug ---\n")
+        
         for i, pattern in enumerate(song.patterns):
             lines.append("")
             lines.append(f"PTN_{i}:")
-            event_bytes = _encode_pattern_events(pattern, i)
+            event_bytes = _encode_pattern_events(pattern, i, output_func)
             
             if not event_bytes:
                 lines.append("    .byte $FF  ; Empty pattern")
@@ -145,6 +149,9 @@ def export_song_data(song: Song, output_path: str) -> Tuple[bool, str]:
                     chunk = event_bytes[j:j+16]
                     hex_bytes = ','.join(f'${b:02X}' for b in chunk)
                     lines.append(f"    .byte {hex_bytes}")
+        
+        if output_func:
+            output_func("  --- End Pattern Encoding ---\n")
         
         lines.append("")
         lines.append("; === END OF SONG DATA ===")
@@ -159,16 +166,32 @@ def export_song_data(song: Song, output_path: str) -> Tuple[bool, str]:
     except Exception as e:
         logger.error(f"Failed to export song data: {e}")
         return False, str(e)
+        return False, str(e)
 
 
-def _encode_pattern_events(pattern: Pattern, pattern_idx: int) -> List[int]:
+def _encode_pattern_events(pattern: Pattern, pattern_idx: int, output_func=None) -> List[int]:
     """Encode pattern rows to variable-length event format.
     
+    Args:
+        pattern: Pattern to encode
+        pattern_idx: Pattern index for debug output
+        output_func: Optional function to call with debug output
+    
     Returns list of bytes representing all events in the pattern.
+    
+    Note encoding:
+        GUI note 1 (C-1) -> export as 1 -> ASM trigger: 1-1=0 -> pitch 1.0x
+        GUI note 13 (C-2) -> export as 13 -> ASM trigger: 13-1=12 -> pitch 2.0x
+        GUI note 25 (C-3) -> export as 25 -> ASM trigger: 25-1=24 -> pitch 4.0x
     """
     events = []
-    last_inst = -1  # Track last instrument for delta encoding
-    last_vol = -1   # Track last volume for delta encoding
+    last_inst = -1
+    last_vol = -1
+    
+    if output_func:
+        output_func(f"\n  Pattern {pattern_idx} (length={pattern.length}):\n")
+        output_func(f"    NOTE ENCODING: GUI note -> export byte -> ASM pitch index\n")
+    logger.debug(f"Encoding pattern {pattern_idx}: length={pattern.length}")
     
     for row_num, row in enumerate(pattern.rows):
         if row_num >= pattern.length:
@@ -177,10 +200,20 @@ def _encode_pattern_events(pattern: Pattern, pattern_idx: int) -> List[int]:
         if row.note == 0:
             continue  # Skip empty rows
         
-        # Determine what needs to be encoded
+        # Export GUI note as-is (1-48 for C-1 through B-4)
+        # The ASM player subtracts 1 to get pitch table index (0-47)
         note = row.note
         inst = row.instrument
         vol = row.volume
+        
+        # Convert note to display string for debug
+        NOTE_NAMES = ['C-', 'C#', 'D-', 'D#', 'E-', 'F-', 'F#', 'G-', 'G#', 'A-', 'A#', 'B-']
+        note_name = NOTE_NAMES[(note-1) % 12] + str(((note-1) // 12) + 1) if note > 0 else "---"
+        pitch_idx = note - 1
+        
+        if output_func:
+            output_func(f"    Row {row_num:02d}: {note_name} (note={note:2d} -> pitch_idx={pitch_idx:2d}) inst={inst} vol={vol:2d}")
+        logger.debug(f"  Row {row_num}: note={note}, inst={inst}, vol={vol}")
         
         # First event in pattern must include inst+vol
         if last_inst == -1:
@@ -189,6 +222,9 @@ def _encode_pattern_events(pattern: Pattern, pattern_idx: int) -> List[int]:
             events.append(note | 0x80)
             events.append(inst | 0x80)
             events.append(vol)
+            if output_func:
+                output_func(f" -> ${row_num:02X} ${note|0x80:02X} ${inst|0x80:02X} ${vol:02X}\n")
+            logger.debug(f"    -> Full event: ${row_num:02X} ${note|0x80:02X} ${inst|0x80:02X} ${vol:02X}")
             last_inst = inst
             last_vol = vol
         elif inst != last_inst or vol != last_vol:
@@ -199,20 +235,32 @@ def _encode_pattern_events(pattern: Pattern, pattern_idx: int) -> List[int]:
                 events.append(note | 0x80)
                 events.append(inst | 0x80)
                 events.append(vol)
+                if output_func:
+                    output_func(f" -> ${row_num:02X} ${note|0x80:02X} ${inst|0x80:02X} ${vol:02X}\n")
+                logger.debug(f"    -> Vol changed: ${row_num:02X} ${note|0x80:02X} ${inst|0x80:02X} ${vol:02X}")
             else:
                 # Only instrument changed
                 events.append(row_num)
                 events.append(note | 0x80)
                 events.append(inst)
+                if output_func:
+                    output_func(f" -> ${row_num:02X} ${note|0x80:02X} ${inst:02X}\n")
+                logger.debug(f"    -> Inst changed: ${row_num:02X} ${note|0x80:02X} ${inst:02X}")
             last_inst = inst
             last_vol = vol
         else:
             # Same inst+vol as before
             events.append(row_num)
             events.append(note)
+            if output_func:
+                output_func(f" -> ${row_num:02X} ${note:02X}\n")
+            logger.debug(f"    -> Same: ${row_num:02X} ${note:02X}")
     
     # End marker
     events.append(0xFF)
+    if output_func:
+        output_func(f"    -> {len(events)} bytes total\n")
+    logger.debug(f"  -> End marker, total {len(events)} bytes")
     
     return events
 
@@ -310,10 +358,21 @@ def build_xex_sync(song: Song, output_xex_path: str) -> BuildResult:
     _output(f"  Using MADS: {mads_path}\n")
     logger.info(f"Using MADS: {mads_path}")
     
-    # Create build directory
-    build_dir = tempfile.mkdtemp(prefix="tracker_build_")
+    # Create build directory in tmp-convert (persistent for debugging)
+    tracker_dir = os.path.dirname(os.path.abspath(__file__))
+    build_dir = os.path.join(tracker_dir, "tmp-convert", "build")
+    
+    # Clean and create build directory
+    if os.path.exists(build_dir):
+        try:
+            shutil.rmtree(build_dir)
+        except Exception as e:
+            logger.warning(f"Could not clean build dir: {e}")
+    os.makedirs(build_dir, exist_ok=True)
+    
     result.build_dir = build_dir
     _output(f"  Build directory: {build_dir}\n")
+    _output(f"  (Files kept for debugging)\n")
     logger.info(f"Build directory: {build_dir}")
     
     try:
@@ -359,6 +418,33 @@ def build_xex_sync(song: Song, output_xex_path: str) -> BuildResult:
                 _output(f"    ! {subdir}/ not found\n")
                 logger.warning(f"Support directory not found: {src_dir}")
         
+        # CRITICAL: Copy our UPDATED support files to overwrite VQ converter versions
+        # Our asm/ directory has fixes for sequencer variables, IRQ optimization, etc.
+        _output("\n  Copying tracker-specific support files...\n")
+        tracker_dir = os.path.dirname(os.path.abspath(__file__))
+        our_asm_dir = os.path.join(tracker_dir, "asm")
+        _output(f"    Looking for ASM files in: {our_asm_dir}\n")
+        logger.debug(f"Tracker ASM directory: {our_asm_dir}")
+        
+        if os.path.isdir(our_asm_dir):
+            for subdir in support_dirs:
+                our_subdir = os.path.join(our_asm_dir, subdir)
+                if os.path.isdir(our_subdir):
+                    dst_subdir = os.path.join(build_dir, subdir)
+                    os.makedirs(dst_subdir, exist_ok=True)
+                    for filename in os.listdir(our_subdir):
+                        src_file = os.path.join(our_subdir, filename)
+                        dst_file = os.path.join(dst_subdir, filename)
+                        if os.path.isfile(src_file):
+                            shutil.copy2(src_file, dst_file)
+                            _output(f"    + {subdir}/{filename} (updated)\n")
+                            logger.debug(f"Copied updated: {subdir}/{filename}")
+                else:
+                    _output(f"    ! Subdir not found: {our_subdir}\n")
+        else:
+            _output(f"    ! ASM directory not found: {our_asm_dir}\n")
+            _output(f"    ! You may need to manually copy asm/ files from tracker package\n")
+        
         # Verify critical support files exist
         critical_files = [
             "common/atari.inc",
@@ -388,12 +474,27 @@ def build_xex_sync(song: Song, output_xex_path: str) -> BuildResult:
         # Export song data
         _output("\n  Exporting song data...\n")
         song_data_path = os.path.join(build_dir, "SONG_DATA.asm")
-        ok, err = export_song_data(song, song_data_path)
+        ok, err = export_song_data(song, song_data_path, _output)
         if not ok:
             result.error_message = f"Failed to export song data: {err}"
             _output(f"ERROR: {result.error_message}\n")
             return result
         _output(f"    + SONG_DATA.asm ({len(song.patterns)} patterns, {len(song.songlines)} songlines)\n")
+        
+        # Show SONG_DATA.asm content for debugging
+        _output("\n  --- SONG_DATA.asm content ---\n")
+        try:
+            with open(song_data_path, 'r') as f:
+                content = f.read()
+                # Show first 80 lines or so
+                lines = content.split('\n')
+                for i, line in enumerate(lines[:80]):
+                    _output(f"  {line}\n")
+                if len(lines) > 80:
+                    _output(f"  ... ({len(lines) - 80} more lines)\n")
+        except Exception as e:
+            _output(f"  (Could not read: {e})\n")
+        _output("  --- end SONG_DATA.asm ---\n")
         
         # Copy song_player.asm from our asm/ directory
         tracker_dir = os.path.dirname(os.path.abspath(__file__))

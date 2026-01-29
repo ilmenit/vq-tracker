@@ -98,13 +98,26 @@ class Pattern:
 
 @dataclass
 class Instrument:
-    """Sample-based instrument."""
+    """Sample-based instrument.
+    
+    Attributes:
+        name: Display name for the instrument
+        sample_path: Path to loaded sample file
+        original_sample_path: Original WAV path before VQ conversion
+        sample_data: Audio samples as numpy array (float32, normalized)
+        sample_rate: Sample rate of loaded audio (Hz)
+        base_note: Note number where sample plays at original pitch
+                   Default is 1 (C-1) to match Atari pitch table where:
+                   - Index 0 (C-1) = 1.0x playback speed
+                   - Index 12 (C-2) = 2.0x playback speed
+                   - Index 24 (C-3) = 4.0x playback speed
+    """
     name: str = "New"
-    sample_path: str = ""  # Current loaded sample path
-    original_sample_path: str = ""  # Original WAV path (before conversion)
+    sample_path: str = ""
+    original_sample_path: str = ""
     sample_data: Optional[np.ndarray] = None
     sample_rate: int = 44100
-    base_note: int = 13  # C-2 for 3-octave range
+    base_note: int = 1  # C-1 = 1.0x pitch (matches Atari pitch table index 0)
     
     def is_loaded(self) -> bool:
         return self.sample_data is not None and len(self.sample_data) > 0
@@ -128,7 +141,7 @@ class Instrument:
     def from_dict(cls, d: dict) -> 'Instrument':
         inst = cls(name=d.get('name', 'New'),
                    sample_path=d.get('path', d.get('sample', '')),
-                   base_note=d.get('base', d.get('base_note', 13)))
+                   base_note=d.get('base', d.get('base_note', 1)))
         inst.original_sample_path = d.get('original_path', inst.sample_path)
         return inst
 

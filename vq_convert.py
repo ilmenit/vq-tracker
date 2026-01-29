@@ -132,12 +132,12 @@ class VQConverter:
         self.logger.warning("vq_converter not found in any candidate path")
         return None
     
-    def build_command(self, input_files: List[str], output_dir: str) -> List[str]:
+    def build_command(self, input_files: List[str], output_name: str) -> List[str]:
         """Build subprocess command.
         
         Args:
             input_files: List of WAV file paths
-            output_dir: Output directory for conversion
+            output_name: Output name/path for the XEX (ASM files go to parent dir)
         """
         settings = self.vq_state.settings
         
@@ -156,7 +156,7 @@ class VQConverter:
             "-e", "on" if settings.enhance else "off",
             "--optimize", "speed",  # Fast 2-byte fetch for tracker
             "--wav", "on",
-            "-o", output_dir  # Specify output directory
+            "-o", output_name  # Output name (XEX created at this path)
         ]
         return cmd
     
@@ -240,40 +240,36 @@ class VQConverter:
         # Create output directory in tmp-convert folder (same dir as tracker)
         tracker_dir = os.path.dirname(os.path.abspath(__file__))
         output_dirname = self._generate_output_dirname(len(input_files))
-        output_dir = os.path.join(tracker_dir, "tmp-convert", output_dirname)
+        asm_output_dir = os.path.join(tracker_dir, "tmp-convert")
+        output_name = os.path.join(asm_output_dir, output_dirname)  # XEX path
         
-        # Clean up existing output dir if it exists
-        if os.path.exists(output_dir):
-            try:
-                shutil.rmtree(output_dir)
-            except Exception as e:
-                self.logger.warning(f"Could not remove existing output dir: {e}")
+        # Ensure output directory exists
+        os.makedirs(asm_output_dir, exist_ok=True)
         
-        # Ensure parent directory exists
-        os.makedirs(os.path.dirname(output_dir), exist_ok=True)
-        
-        # Build command with explicit output directory
-        cmd = self.build_command(input_files, output_dir)
+        # Build command with output name (ASM files go to asm_output_dir)
+        cmd = self.build_command(input_files, output_name)
         self.logger.debug(f"Command: {' '.join(cmd[:10])}...")
-        self.logger.debug(f"Output dir: {output_dir}")
+        self.logger.debug(f"Output name: {output_name}")
+        self.logger.debug(f"ASM output dir: {asm_output_dir}")
         
         # Start conversion in thread
         thread = threading.Thread(
             target=self._run_conversion,
-            args=(cmd, vq_converter_path, output_dir, len(input_files)),
+            args=(cmd, vq_converter_path, asm_output_dir, output_name, len(input_files)),
             daemon=True
         )
         self.vq_state._is_converting = True
         thread.start()
     
     def _run_conversion(self, cmd: List[str], vq_converter_path: str, 
-                        output_dir: str, num_files: int):
+                        asm_output_dir: str, output_name: str, num_files: int):
         """Run conversion subprocess (called in thread).
         
         Args:
             cmd: Command to run
             vq_converter_path: Path to vq_converter
-            output_dir: Explicit output directory path
+            asm_output_dir: Directory where ASM files will be created
+            output_name: Full path for output XEX
             num_files: Number of input files
         """
         result = VQResult()
@@ -285,7 +281,7 @@ class VQConverter:
             
             self._queue_output(f"Starting conversion of {num_files} file(s)...\n")
             self._queue_output(f"VQ Converter: {vq_converter_path}\n")
-            self._queue_output(f"Output: {output_dir}\n")
+            self._queue_output(f"Output: {asm_output_dir}\n")
             self._queue_output(f"Settings: rate={self.vq_state.settings.rate}, "
                                f"vec={self.vq_state.settings.vector_size}, "
                                f"smooth={self.vq_state.settings.smoothness}, "
@@ -316,10 +312,15 @@ class VQConverter:
             process.wait()
             
             if process.returncode == 0:
-                # Output directory was explicitly specified, check it exists
-                if os.path.isdir(output_dir):
-                    result.output_dir = output_dir
-                    result = self._parse_results(output_dir, result)
+                # ASM files are in asm_output_dir (not a subdirectory)
+                # Check for required ASM files
+                required_files = ["VQ_BLOB.asm", "VQ_INDICES.asm", "SAMPLE_DIR.asm"]
+                found_files = [f for f in required_files 
+                              if os.path.exists(os.path.join(asm_output_dir, f))]
+                
+                if len(found_files) >= 2:  # At least VQ_BLOB and SAMPLE_DIR
+                    result.output_dir = asm_output_dir
+                    result = self._parse_results(asm_output_dir, result)
                     result.success = True
                     self.vq_state.output_dir = result.output_dir
                     self._queue_output("\n" + "=" * 60 + "\n")
@@ -329,8 +330,9 @@ class VQConverter:
                     self._queue_output(f"Converted WAVs: {len(result.converted_wavs)}\n")
                 else:
                     result.success = False
-                    result.error_message = f"Output directory not created: {output_dir}"
+                    result.error_message = f"Missing ASM files in {asm_output_dir}"
                     self._queue_output(f"\nWARNING: {result.error_message}\n")
+                    self._queue_output(f"Found: {found_files}\n")
             else:
                 result.success = False
                 result.error_message = f"Process exited with code {process.returncode}"

@@ -1,20 +1,26 @@
+; =============================================================================
+; ZERO PAGE DEFINITIONS
+; =============================================================================
+; Memory map for VQ players and tracker
+; =============================================================================
 
 ; -----------------------------------------------------------------------------
 ; TRACKER PLAYER (Structure of Arrays)
 ; -----------------------------------------------------------------------------
 .ifdef TRACKER
-    ; We use $80-$AF range (+ some overlap potentially, total 27 bytes used here)
+    ; We use $80-$BF range for tracker mode
+    
     ; --- POLYPHONIC TRACKER OPTIMIZED LAYOUT ---
     ; Channel 0 ($80-$8F)
-    trk0_stream_ptr   = $80 ; 2 bytes
-    trk0_stream_end   = $82 ; 2 bytes
-    trk0_sample_ptr   = $84 ; 2 bytes
-    trk0_vector_offset= $86 ; 1 byte
-    trk0_pitch_frac   = $87 ; 1 byte
-    trk0_pitch_int    = $88 ; 1 byte
-    trk0_pitch_step   = $89 ; 2 bytes
-    trk0_active       = $8B ; 1 byte
-    trk0_note         = $8C ; 1 byte (Debug/UI)
+    trk0_stream_ptr   = $80 ; 2 bytes - Current position in VQ index stream
+    trk0_stream_end   = $82 ; 2 bytes - End of sample data
+    trk0_sample_ptr   = $84 ; 2 bytes - Current VQ vector address
+    trk0_vector_offset= $86 ; 1 byte  - Position within current vector
+    trk0_pitch_frac   = $87 ; 1 byte  - Pitch accumulator fractional part
+    trk0_pitch_int    = $88 ; 1 byte  - Pitch accumulator integer part
+    trk0_pitch_step   = $89 ; 2 bytes - 8.8 fixed-point pitch increment
+    trk0_active       = $8B ; 1 byte  - Channel active flag ($FF=active)
+    trk0_note         = $8C ; 1 byte  - Current note (Debug/UI)
 
     ; Channel 1 ($90-$9F)
     trk1_stream_ptr   = $90 ; 2 bytes
@@ -27,8 +33,7 @@
     trk1_active       = $9B ; 1 byte
     trk1_note         = $9C ; 1 byte
     
-    ; Channel 2 ($A0-$AF) - Reusing some space? 
-    ; We have space up to $B0 safely.
+    ; Channel 2 ($A0-$AF)
     trk2_stream_ptr   = $A0 ; 2 bytes
     trk2_stream_end   = $A2 ; 2 bytes
     trk2_sample_ptr   = $A4 ; 2 bytes
@@ -39,20 +44,28 @@
     trk2_active       = $AB ; 1 byte
     trk2_note         = $AC ; 1 byte
 
-    ; Temp / Common ($B0+)
-    chn_idx           = $B0
-    trk_ptr           = $B2 ; 2 bytes
-
-    ; Common vars needed by Tracker (mapped to free space after arrays)
-    sample_ptr        = $B5 ; 2 bytes
-    nibble_state      = $B7 ; 1 byte (Required by pokey_setup)
-    trk_overflow      = $BB ; FIX ASM-5: Overflow flag for pitch calculations
+    ; --- Temp / Common ($B0-$BF) ---
+    chn_idx           = $B0 ; 1 byte  - Current channel index
+    ; $B1 reserved
+    trk_ptr           = $B2 ; 2 bytes - IRQ temp pointer (VQ lookups)
+    ; $B4 reserved
+    sample_ptr        = $B5 ; 2 bytes - Sample data pointer
+    nibble_state      = $B7 ; 1 byte  - Nibble toggle (required by pokey_setup)
     
     .ifndef USE_STACK_IRQ
-    irq_save_a        = $B8
-    irq_save_x        = $B9
-    irq_save_y        = $BA
+    irq_save_a        = $B8 ; 1 byte  - IRQ register save
+    irq_save_x        = $B9 ; 1 byte
+    irq_save_y        = $BA ; 1 byte
     .endif
+    
+    trk_overflow      = $BB ; 1 byte  - Overflow flag for pitch calculations
+    
+    ; --- Song Player Sequencer ($BC-$BF) ---
+    ; IMPORTANT: seq_ptr MUST be separate from trk_ptr!
+    ; NMI (sequencer) and IRQ (sample playback) can interrupt each other.
+    ; If they share a pointer, data corruption occurs.
+    seq_ptr           = $BC ; 2 bytes - NMI temp pointer (pattern data)
+    ; $BE-$BF reserved for future use
 
 .else
     ; -----------------------------------------------------------------------------

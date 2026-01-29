@@ -2,7 +2,7 @@
 
 # === LIMITS ===
 MAX_CHANNELS = 3
-MAX_OCTAVES = 3  # Limited to 3 octaves (C1-B3) due to player pitch limits
+MAX_OCTAVES = 3  # 3 octaves (C-1 to B-3, indices 0-35)
 MAX_NOTES = MAX_OCTAVES * 12  # 36 notes
 MAX_VOLUME = 15
 MAX_INSTRUMENTS = 128
