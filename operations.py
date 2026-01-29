@@ -1,11 +1,17 @@
 """Atari Sample Tracker - Operations"""
 import os
 from constants import (MAX_OCTAVES, MAX_NOTES, MAX_VOLUME, MAX_ROWS,
-                       MAX_INSTRUMENTS, NOTE_KEYS, PAL_HZ, NTSC_HZ, FOCUS_EDITOR)
+                       MAX_INSTRUMENTS, NOTE_KEYS, PAL_HZ, NTSC_HZ, FOCUS_EDITOR,
+                       NOTE_OFF)
 from state import state
 from file_io import (save_project, load_project, load_sample, export_asm,
-                     export_binary, load_samples_multi, load_samples_folder,
+                     export_binary, import_samples_multi, import_samples_folder,
+                     EditorState, work_dir, import_audio_file, get_supported_extensions,
                      import_pokeyvq)
+
+# Legacy compatibility aliases
+load_samples_multi = lambda paths: import_samples_multi(paths, work_dir.samples if work_dir else ".", 0)
+load_samples_folder = lambda folder, recursive=True: import_samples_folder(folder, work_dir.samples if work_dir else ".", recursive, 0)
 
 # UI callbacks (set by main module)
 refresh_all = None
@@ -66,6 +72,9 @@ def _do_new():
     state.volume = MAX_VOLUME  # Reset brush volume
     state.selection.clear()
     state.vq.invalidate()  # Clear VQ conversion for new project
+    # Clear working directory for new project
+    if work_dir:
+        work_dir.clear_all()
     state.audio.set_song(state.song)
     refresh_all()
     update_title()
@@ -78,17 +87,44 @@ def open_song(*args):
 def _load_file(path: str):
     if not path:
         return
-    song, msg = load_project(path)
+    if not work_dir:
+        show_error("Load Error", "Working directory not initialized")
+        return
+    
+    song, editor_state, msg = load_project(path, work_dir)
     if song:
         state.audio.stop_playback()
         state.song = song
         state.undo.clear()
-        state.songline = state.row = state.channel = 0
-        state.instrument = 0
-        state.song_cursor_row = state.song_cursor_col = 0  # Reset song grid cursor
-        state.volume = MAX_VOLUME  # Reset brush volume
+        
+        # Restore editor state if available
+        if editor_state:
+            state.songline = editor_state.songline
+            state.row = editor_state.row
+            state.channel = editor_state.channel
+            state.column = editor_state.column
+            state.song_cursor_row = editor_state.song_cursor_row
+            state.song_cursor_col = editor_state.song_cursor_col
+            state.octave = editor_state.octave
+            state.step = editor_state.step
+            state.instrument = editor_state.instrument
+            state.volume = editor_state.volume
+            state.selected_pattern = editor_state.selected_pattern
+            state.hex_mode = editor_state.hex_mode
+            state.follow = editor_state.follow
+            # Restore VQ state
+            if editor_state.vq_converted:
+                state.vq.output_dir = work_dir.vq_output
+                state.vq.is_valid = True
+        else:
+            # Default state for legacy files
+            state.songline = state.row = state.channel = 0
+            state.instrument = 0
+            state.song_cursor_row = state.song_cursor_col = 0
+            state.volume = MAX_VOLUME
+            state.vq.invalidate()
+        
         state.selection.clear()
-        state.vq.invalidate()  # Clear VQ conversion for new project
         state.audio.set_song(state.song)
         refresh_all()
         update_title()
@@ -110,7 +146,33 @@ def save_song_as(*args):
 def _save_file(path: str):
     if not path:
         return
-    ok, msg = save_project(state.song, path)
+    if not work_dir:
+        show_error("Save Error", "Working directory not initialized")
+        return
+    
+    # Build editor state from current state
+    editor_state = EditorState(
+        songline=state.songline,
+        row=state.row,
+        channel=state.channel,
+        column=state.column,
+        song_cursor_row=state.song_cursor_row,
+        song_cursor_col=state.song_cursor_col,
+        octave=state.octave,
+        step=state.step,
+        instrument=state.instrument,
+        volume=state.volume,
+        selected_pattern=state.selected_pattern,
+        hex_mode=state.hex_mode,
+        follow=state.follow,
+        focus=state.focus,
+        vq_converted=state.vq.is_valid,
+        vq_rate=state.vq.rate,
+        vq_vector_size=state.vq.vector_size,
+        vq_smoothness=state.vq.smoothness
+    )
+    
+    ok, msg = save_project(state.song, editor_state, path, work_dir)
     if ok:
         update_title()
         show_status(msg)
@@ -143,11 +205,11 @@ def _do_export_asm(path: str):
     else:
         show_error("Export Error", msg)
 
-def import_pokeyvq_file(*args):
-    """Import PokeyVQ conversion output (conversion_info.json)."""
-    show_file_dialog("Import PokeyVQ", [".json"], _do_import_pokeyvq)
+def import_vq_converter(*args):
+    """Import vq_converter output (conversion_info.json)."""
+    show_file_dialog("Import vq_converter", [".json"], _do_import_vq_converter)
 
-def _do_import_pokeyvq(path: str):
+def _do_import_vq_converter(path: str):
     if not path:
         return
     
@@ -170,7 +232,7 @@ def _do_import_pokeyvq(path: str):
                 break
     
     if loaded > 0:
-        save_undo("Import PokeyVQ")
+        save_undo("Import vq_converter")
         state.song.modified = True
         state.vq.invalidate()  # Invalidate VQ conversion
         refresh_instruments()
@@ -184,8 +246,12 @@ def _do_import_pokeyvq(path: str):
 # =============================================================================
 
 def add_sample(*args):
-    """Load sample file(s) - multi-select."""
-    show_file_dialog("Load Samples", [".wav", ".WAV"], _load_samples, multi=True)
+    """Load sample file(s) - multi-select, supports multiple audio formats."""
+    # Get list of supported extensions
+    extensions = get_supported_extensions()
+    # Create filter list like [".wav", ".mp3", ".ogg", ...]
+    filters = [ext.upper() for ext in extensions] + list(extensions)
+    show_file_dialog("Load Samples", filters, _load_samples, multi=True)
 
 def _load_samples(paths):
     if not paths:
@@ -193,19 +259,34 @@ def _load_samples(paths):
     if isinstance(paths, str):
         paths = [paths]
     
+    # Get samples directory from working directory
+    dest_dir = work_dir.samples if work_dir else "."
+    start_index = len(state.song.instruments)
+    
     count = 0
-    for path in paths:
+    for i, path in enumerate(paths):
         idx = state.song.add_instrument()
         if idx < 0:
             show_error("Error", "Maximum instruments reached")
             break
         inst = state.song.instruments[idx]
-        ok, msg = load_sample(inst, path)
-        if ok:
-            count += 1
-            state.instrument = idx
+        
+        # Import and convert to WAV if needed
+        dest_path, import_msg = import_audio_file(path, dest_dir, start_index + i)
+        
+        if dest_path:
+            ok, msg = load_sample(inst, dest_path)
+            if ok:
+                # Store original path for reference
+                inst.original_sample_path = path
+                count += 1
+                state.instrument = idx
+            else:
+                state.song.remove_instrument(idx)
+                show_status(f"Error: {msg}")
         else:
             state.song.remove_instrument(idx)
+            show_status(f"Import error: {import_msg}")
     
     if count > 0:
         save_undo("Add samples")
@@ -214,14 +295,18 @@ def _load_samples(paths):
         show_status(f"Loaded {count} sample(s)")
 
 def add_folder(*args):
-    """Load all samples from folder."""
+    """Load all samples from folder (supports multiple audio formats)."""
     show_file_dialog("Select Folder", [], _load_folder, dir_mode=True)
 
 def _load_folder(path: str):
     if not path:
         return
     
-    results = load_samples_folder(path)
+    # Get samples directory from working directory
+    dest_dir = work_dir.samples if work_dir else "."
+    start_index = len(state.song.instruments)
+    
+    results = import_samples_folder(path, dest_dir, recursive=True, start_index=start_index)
     count = 0
     for inst, ok, msg in results:
         if ok:
@@ -448,6 +533,26 @@ def enter_note(semitone: int):
     move_cursor(state.step, 0)
     refresh_editor()
 
+
+def enter_note_off():
+    """Enter note-off (silence) at cursor position.
+    
+    Note-off stops the currently playing sample on this channel.
+    Displayed as 'OFF' in the pattern editor.
+    Exported as note=0 in ASM format (interpreted as silence by player).
+    """
+    save_undo("Enter note-off")
+    state.clear_pending()
+    state.selection.clear()
+    
+    ptn = state.current_pattern()
+    row = ptn.get_row(state.row)
+    row.note = NOTE_OFF
+    # Note-off doesn't need instrument/volume - player will silence channel
+    
+    move_cursor(state.step, 0)
+    refresh_editor()
+
 def clear_cell(*args):
     """Clear current cell."""
     save_undo("Clear")
@@ -636,6 +741,9 @@ def move_cursor(drow: int, dcol: int, extend_selection: bool = False):
     
     max_len = state.song.max_pattern_length(state.songline)
     
+    # Max column depends on whether volume control is enabled
+    max_col = 2 if state.song.volume_control else 1
+    
     new_row = state.row + drow
     new_col = state.column + dcol
     
@@ -643,15 +751,15 @@ def move_cursor(drow: int, dcol: int, extend_selection: bool = False):
     if new_col < 0:
         if state.channel > 0:
             state.channel -= 1
-            new_col = 2
+            new_col = max_col
         else:
             new_col = 0
-    elif new_col > 2:
+    elif new_col > max_col:
         if state.channel < 2:
             state.channel += 1
             new_col = 0
         else:
-            new_col = 2
+            new_col = max_col
     
     # Handle row wrap
     if new_row < 0:
@@ -742,6 +850,12 @@ def set_step(val: int):
     state.step = max(0, min(16, val))
     if update_controls:
         update_controls()
+
+def change_step(delta: int):
+    """Change step by delta (+/- to increase/decrease)."""
+    set_step(state.step + delta)
+    if show_status:
+        show_status(f"Step: {state.step}")
 
 def set_speed(val: int):
     """Set song speed."""

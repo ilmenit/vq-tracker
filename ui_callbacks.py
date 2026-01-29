@@ -400,8 +400,23 @@ def on_speed_change(sender, value):
 
 
 def on_ptn_len_change(sender, value):
-    value = max(1, min(MAX_ROWS, value))
-    ops.set_pattern_length(value, state.selected_pattern)
+    """Handle pattern length change - supports hex and decimal input."""
+    try:
+        # Parse as hex or decimal based on mode
+        if isinstance(value, str):
+            value = value.strip()
+            if state.hex_mode:
+                parsed = int(value, 16)
+            else:
+                parsed = int(value)
+        else:
+            parsed = int(value)
+        
+        parsed = max(1, min(MAX_ROWS, parsed))
+        ops.set_pattern_length(parsed, state.selected_pattern)
+    except (ValueError, TypeError):
+        # Invalid input - restore original value
+        R.refresh_pattern_info()
 
 
 def on_pattern_select(sender, value):
@@ -485,6 +500,140 @@ def on_hex_toggle(sender, value):
 def on_autosave_toggle(sender, value):
     G.autosave_enabled = value
     G.save_config()
+
+
+def on_piano_keys_toggle(sender, value):
+    """Toggle between piano-style and tracker-style keyboard layout."""
+    G.piano_keys_mode = value
+    G.save_config()
+    mode_name = "Piano" if value else "Tracker"
+    G.show_status(f"Keyboard mode: {mode_name}")
+
+
+def on_highlight_change(sender, value):
+    """Change row highlight interval."""
+    try:
+        interval = int(value)
+        if interval in [2, 4, 8, 16]:
+            G.highlight_interval = interval
+            G.save_config()
+            R.refresh_editor()
+    except:
+        pass
+
+
+def on_volume_control_toggle(sender, value):
+    """Toggle volume control in export."""
+    state.song.volume_control = value
+    state.song.modified = True
+    G.update_title()
+    
+    # If disabling volume and cursor is in volume column, move to instrument column
+    if not value and state.column == COL_VOL:
+        state.column = COL_INST
+    
+    # Show/hide volume in CURRENT section
+    if dpg.does_item_exist("current_vol_group"):
+        dpg.configure_item("current_vol_group", show=value)
+    
+    # Trigger editor rebuild to show/hide volume column
+    if _rebuild_editor_grid:
+        _rebuild_editor_grid()
+    R.refresh_editor()
+    
+    # Show warning if rate is too high
+    if value and state.vq.settings.rate > 5757:
+        G.show_status("Warning: Volume requires sample rate ≤5757 Hz")
+    else:
+        mode = "enabled" if value else "disabled"
+        G.show_status(f"Volume control {mode}")
+
+
+def on_analyze_click():
+    """Show timing analysis dialog."""
+    show_analyze_dialog()
+
+
+def show_analyze_dialog():
+    """Display the timing analysis window."""
+    from analyze import analyze_song, format_analysis_report
+    
+    # Check if we have VQ settings
+    if not state.vq.converted:
+        G.show_status("Run CONVERT first to set sample rate and vector size")
+        return
+    
+    # Get VQ settings
+    rate = state.vq.settings.rate
+    vector_size = state.vq.settings.vector_size
+    
+    # Run analysis
+    result = analyze_song(state.song, rate, vector_size)
+    report = format_analysis_report(result)
+    
+    # Close existing dialog if any
+    if dpg.does_item_exist("analyze_dialog"):
+        dpg.delete_item("analyze_dialog")
+    
+    # Create dialog window
+    vp_w = dpg.get_viewport_width()
+    vp_h = dpg.get_viewport_height()
+    w, h = 600, 500
+    
+    with dpg.window(
+        tag="analyze_dialog",
+        label="Timing Analysis",
+        modal=True,
+        width=w,
+        height=h,
+        pos=[(vp_w - w) // 2, (vp_h - h) // 2],
+        no_resize=False,
+        no_collapse=True,
+        on_close=lambda: dpg.delete_item("analyze_dialog")
+    ):
+        # Status header
+        if result.is_safe:
+            dpg.add_text("✓ PASS - No timing issues detected", color=(100, 255, 100))
+        else:
+            pct = (result.over_budget_count / result.total_rows * 100) if result.total_rows > 0 else 0
+            dpg.add_text(f"✗ FAIL - {result.over_budget_count} rows overflow ({pct:.1f}%)", 
+                        color=(255, 100, 100))
+        
+        # Volume control warning
+        if state.song.volume_control and not result.volume_safe:
+            dpg.add_text(f"⚠ Volume control requires rate ≤5757 Hz (current: {rate})", 
+                        color=(255, 200, 100))
+        
+        dpg.add_separator()
+        
+        # Summary info
+        with dpg.group(horizontal=True):
+            dpg.add_text(f"Rate: {rate} Hz")
+            dpg.add_spacer(width=20)
+            dpg.add_text(f"Vector: {vector_size}")
+            dpg.add_spacer(width=20)
+            dpg.add_text(f"Budget: {result.available_cycles} cycles")
+        
+        dpg.add_spacer(height=5)
+        
+        # Log area with scrolling
+        with dpg.child_window(height=-40, border=True):
+            dpg.add_input_text(
+                tag="analyze_log",
+                default_value=report,
+                multiline=True,
+                readonly=True,
+                width=-1,
+                height=-1,
+                tab_input=False
+            )
+        
+        # Close button
+        dpg.add_spacer(height=5)
+        with dpg.group(horizontal=True):
+            dpg.add_spacer(width=(w - 100) // 2)
+            dpg.add_button(label="Close", width=100, 
+                          callback=lambda: dpg.delete_item("analyze_dialog"))
 
 
 def on_input_inst_change(sender, value):
@@ -847,10 +996,21 @@ def _load_converted_samples():
 
 
 def invalidate_vq_conversion():
-    """Mark VQ conversion as invalid."""
+    """Mark VQ conversion as invalid.
+    
+    SYNCHRONIZATION: When VQ conversion is invalidated, BUILD must also be disabled.
+    This happens when:
+    - Instruments are added, removed, or replaced
+    - User explicitly runs CONVERT again
+    - New project is loaded
+    
+    BUILD button is only enabled (green) when:
+    - state.vq.converted == True (CONVERT was successful)
+    - state.song.instruments is not empty
+    """
     state.vq.invalidate()
     
-    # Update UI
+    # Update CONVERT UI
     if dpg.does_item_exist("vq_size_label"):
         dpg.set_value("vq_size_label", "")
     
@@ -860,8 +1020,47 @@ def invalidate_vq_conversion():
     
     state.vq.use_converted = False
     
+    # Update BUILD button state (must be disabled when VQ is invalid)
+    update_build_button_state()
+    
     # Refresh instruments to show gray backgrounds
     R.refresh_instruments()
+
+
+def update_build_button_state():
+    """Update BUILD button appearance based on VQ conversion state.
+    
+    SYNCHRONIZATION: BUILD button state depends on:
+    1. VQ conversion being valid (state.vq.converted == True)
+    2. Instruments existing (len(state.song.instruments) > 0)
+    
+    When both conditions are met: Green button with "Ready" status
+    Otherwise: Disabled/gray button with appropriate status message
+    """
+    if not dpg.does_item_exist("build_btn"):
+        return
+    
+    has_instruments = len(state.song.instruments) > 0
+    vq_converted = state.vq.converted
+    
+    if vq_converted and has_instruments:
+        # Ready to build - green button
+        dpg.bind_item_theme("build_btn", "theme_btn_green")
+        if dpg.does_item_exist("build_status_label"):
+            dpg.set_value("build_status_label", "Ready")
+            dpg.configure_item("build_status_label", color=(100, 200, 100))
+    elif not has_instruments:
+        # No instruments - disabled
+        dpg.bind_item_theme("build_btn", "theme_btn_disabled")
+        if dpg.does_item_exist("build_status_label"):
+            dpg.set_value("build_status_label", "Add instruments first")
+            dpg.configure_item("build_status_label", color=(150, 150, 150))
+    else:
+        # Not converted - disabled
+        dpg.bind_item_theme("build_btn", "theme_btn_disabled")
+        if dpg.does_item_exist("build_status_label"):
+            dpg.set_value("build_status_label", "Run CONVERT first")
+            dpg.configure_item("build_status_label", color=(150, 150, 150))
 
 
 def on_vq_convert_click(sender, app_data):
@@ -994,6 +1193,9 @@ def poll_vq_conversion():
             state.vq.use_converted = True
             _load_converted_samples()
             state.audio.set_song(state.song)
+            
+            # SYNCHRONIZATION: Update BUILD button to green now that VQ is valid
+            update_build_button_state()
             
             # Refresh instruments (will show green because use_converted=True)
             R.refresh_instruments()

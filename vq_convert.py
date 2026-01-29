@@ -55,6 +55,27 @@ class VQState:
         self.completion_result: Optional[VQResult] = None
         self.conversion_complete = False
     
+    # Convenience properties for easier access
+    @property
+    def is_valid(self) -> bool:
+        """Alias for converted - check if VQ conversion is valid."""
+        return self.converted
+    
+    @property
+    def rate(self) -> int:
+        """Get current sample rate setting."""
+        return self.settings.rate
+    
+    @property
+    def vector_size(self) -> int:
+        """Get current vector size setting."""
+        return self.settings.vector_size
+    
+    @property
+    def smoothness(self) -> int:
+        """Get current smoothness setting."""
+        return self.settings.smoothness
+    
     def invalidate(self):
         """Mark conversion as invalid (needs re-conversion)."""
         self.converted = False
@@ -237,10 +258,10 @@ class VQConverter:
             self.vq_state.conversion_complete = True
             return
         
-        # Create output directory in tmp-convert folder (same dir as tracker)
+        # Create output directory in .tmp folder (same dir as tracker)
         tracker_dir = os.path.dirname(os.path.abspath(__file__))
         output_dirname = self._generate_output_dirname(len(input_files))
-        asm_output_dir = os.path.join(tracker_dir, "tmp-convert")
+        asm_output_dir = os.path.join(tracker_dir, ".tmp", "vq_output")
         output_name = os.path.join(asm_output_dir, output_dirname)  # XEX path
         
         # Ensure output directory exists

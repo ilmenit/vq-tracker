@@ -27,6 +27,14 @@ def refresh_all():
     refresh_instruments()
     refresh_editor()
     update_controls()
+    
+    # Update BUILD button state (depends on VQ conversion and instruments)
+    # Import here to avoid circular import
+    try:
+        from ui_callbacks import update_build_button_state
+        update_build_button_state()
+    except ImportError:
+        pass
 
 
 def refresh_all_pattern_combos():
@@ -142,10 +150,14 @@ def refresh_song_editor():
 
 
 def refresh_pattern_info():
-    """Update pattern length display."""
+    """Update pattern length display - respects hex/decimal mode."""
     if dpg.does_item_exist("ptn_len_input"):
         ptn = state.song.get_pattern(state.selected_pattern)
-        dpg.set_value("ptn_len_input", ptn.length)
+        # Format as hex or decimal based on mode
+        if state.hex_mode:
+            dpg.set_value("ptn_len_input", f"{ptn.length:02X}")
+        else:
+            dpg.set_value("ptn_len_input", str(ptn.length))
 
 
 def refresh_instruments():
@@ -242,6 +254,8 @@ def refresh_editor():
         row_idx = start_row + vis_row
         is_cursor_row = (row_idx == state.row)
         is_playing = (row_idx == G.play_row and state.songline == G.play_songline)
+        # Check if this row is a highlight row (beat marker)
+        is_highlight = (row_idx % G.highlight_interval == 0) if G.highlight_interval > 0 else False
         
         row_tag = f"row_num_{vis_row}"
         if dpg.does_item_exist(row_tag):
@@ -251,6 +265,8 @@ def refresh_editor():
                     theme = "theme_song_row_playing"
                 elif is_cursor_row:
                     theme = "theme_song_row_cursor"
+                elif is_highlight:
+                    theme = "theme_song_row_highlight"
                 else:
                     theme = "theme_song_row_normal"
                 dpg.bind_item_theme(row_tag, theme)
@@ -269,24 +285,28 @@ def refresh_editor():
             is_selected = state.selection.contains(row_idx, ch)
             has_note = r.note > 0 if r else False
             
+            # Helper to get cell theme with all conditions
+            def cell_theme(is_col_cursor: bool) -> str:
+                if is_col_cursor:
+                    return "theme_cell_cursor"
+                elif is_playing:
+                    return "theme_cell_playing"
+                elif is_cursor_row:
+                    return "theme_cell_current_row"
+                elif not ch_enabled:
+                    return "theme_cell_inactive"
+                elif is_highlight and not is_repeat:
+                    return "theme_cell_highlight"
+                else:
+                    return get_cell_theme(False, False, is_selected, is_repeat, has_note, not ch_enabled)
+            
             note_tag = f"cell_note_{vis_row}_{ch}"
             if dpg.does_item_exist(note_tag):
                 if r and row_idx < max_len:
                     note_str = note_to_str(r.note)
                     prefix = "~" if is_repeat and actual_row == 0 else " "
                     dpg.configure_item(note_tag, label=f"{prefix}{note_str}")
-                    is_note_cursor = is_cursor and state.column == COL_NOTE
-                    if is_note_cursor:
-                        theme = "theme_cell_cursor"
-                    elif is_playing:
-                        theme = "theme_cell_playing"
-                    elif is_cursor_row:
-                        theme = "theme_cell_current_row"
-                    elif not ch_enabled:
-                        theme = "theme_cell_inactive"
-                    else:
-                        theme = get_cell_theme(False, False, is_selected, is_repeat, has_note, not ch_enabled)
-                    dpg.bind_item_theme(note_tag, theme)
+                    dpg.bind_item_theme(note_tag, cell_theme(is_cursor and state.column == COL_NOTE))
                 else:
                     dpg.configure_item(note_tag, label="")
             
@@ -295,18 +315,7 @@ def refresh_editor():
                 if r and row_idx < max_len:
                     inst_str = G.fmt_inst(r.instrument) if r.note > 0 else ("--" if state.hex_mode else "---")
                     dpg.configure_item(inst_tag, label=inst_str)
-                    is_inst_cursor = is_cursor and state.column == COL_INST
-                    if is_inst_cursor:
-                        theme = "theme_cell_cursor"
-                    elif is_playing:
-                        theme = "theme_cell_playing"
-                    elif is_cursor_row:
-                        theme = "theme_cell_current_row"
-                    elif not ch_enabled:
-                        theme = "theme_cell_inactive"
-                    else:
-                        theme = get_cell_theme(False, False, is_selected, is_repeat, has_note, not ch_enabled)
-                    dpg.bind_item_theme(inst_tag, theme)
+                    dpg.bind_item_theme(inst_tag, cell_theme(is_cursor and state.column == COL_INST))
                 else:
                     dpg.configure_item(inst_tag, label="")
             
@@ -315,18 +324,7 @@ def refresh_editor():
                 if r and row_idx < max_len:
                     vol_str = G.fmt_vol(r.volume) if r.note > 0 else ("-" if state.hex_mode else "--")
                     dpg.configure_item(vol_tag, label=vol_str)
-                    is_vol_cursor = is_cursor and state.column == COL_VOL
-                    if is_vol_cursor:
-                        theme = "theme_cell_cursor"
-                    elif is_playing:
-                        theme = "theme_cell_playing"
-                    elif is_cursor_row:
-                        theme = "theme_cell_current_row"
-                    elif not ch_enabled:
-                        theme = "theme_cell_inactive"
-                    else:
-                        theme = get_cell_theme(False, False, is_selected, is_repeat, has_note, not ch_enabled)
-                    dpg.bind_item_theme(vol_tag, theme)
+                    dpg.bind_item_theme(vol_tag, cell_theme(is_cursor and state.column == COL_VOL))
                 else:
                     dpg.configure_item(vol_tag, label="")
 
@@ -339,9 +337,18 @@ def update_controls():
         dpg.set_value("step_input", state.step)
     if dpg.does_item_exist("ptn_len_input"):
         ptn = state.song.get_pattern(state.selected_pattern)
-        dpg.set_value("ptn_len_input", ptn.length)
+        # Format as hex or decimal based on mode
+        if state.hex_mode:
+            dpg.set_value("ptn_len_input", f"{ptn.length:02X}")
+        else:
+            dpg.set_value("ptn_len_input", str(ptn.length))
     if dpg.does_item_exist("hex_mode_cb"):
         dpg.set_value("hex_mode_cb", state.hex_mode)
+    if dpg.does_item_exist("volume_control_cb"):
+        dpg.set_value("volume_control_cb", state.song.volume_control)
+    # Show/hide volume in CURRENT section based on volume_control setting
+    if dpg.does_item_exist("current_vol_group"):
+        dpg.configure_item("current_vol_group", show=state.song.volume_control)
     if dpg.does_item_exist("title_input"):
         dpg.set_value("title_input", state.song.title)
     if dpg.does_item_exist("author_input"):

@@ -1,4 +1,4 @@
-"""Atari Sample Tracker - Main Entry Point (v3.16 - Refactored)
+"""Atari Sample Tracker - Main Entry Point (v3.17 - ZIP Project Format)
 
 This is the main entry point that ties together all UI modules:
 - ui_globals.py  - Global state, config, formatting functions
@@ -8,6 +8,8 @@ This is the main entry point that ties together all UI modules:
 """
 import dearpygui.dearpygui as dpg
 import logging
+import sys
+import os
 from constants import APP_NAME, APP_VERSION, WIN_WIDTH, WIN_HEIGHT
 from state import state
 from ui_theme import create_themes
@@ -19,6 +21,9 @@ import ui_globals as G
 import ui_refresh as R
 import ui_callbacks as C
 import ui_build as B
+
+# Import file_io for working directory
+import file_io
 
 # =============================================================================
 # LOGGING SETUP
@@ -62,6 +67,36 @@ def setup_operations_callbacks():
 # =============================================================================
 def main():
     logger.info(f"Starting {APP_NAME} v{APP_VERSION}")
+    
+    # Get application directory
+    app_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # Initialize working directory
+    work_dir = file_io.init_working_directory(app_dir)
+    logger.info(f"Working directory: {work_dir.root}")
+    
+    # Check instance lock
+    instance_lock = file_io.InstanceLock(app_dir)
+    ok, lock_msg = instance_lock.acquire()
+    if not ok:
+        # Show error dialog and exit
+        logger.error(f"Instance lock failed: {lock_msg}")
+        try:
+            import tkinter as tk
+            from tkinter import messagebox
+            root = tk.Tk()
+            root.withdraw()
+            messagebox.showerror(
+                "Instance Already Running",
+                f"{APP_NAME} is already running.\n\n{lock_msg}\n\n"
+                "Please close the other instance first."
+            )
+            root.destroy()
+        except:
+            print(f"ERROR: {lock_msg}")
+        sys.exit(1)
+    
+    logger.info("Instance lock acquired")
     
     # Load config first
     G.load_config()
@@ -123,6 +158,7 @@ def main():
     # Cleanup
     state.audio.stop()
     state.vq.cleanup()  # Clean up VQ temp directory
+    instance_lock.release()  # Release instance lock
     dpg.destroy_context()
     logger.info("Tracker closed")
 

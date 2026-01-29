@@ -4,6 +4,7 @@
 MAX_CHANNELS = 3
 MAX_OCTAVES = 3  # 3 octaves (C-1 to B-3, indices 0-35)
 MAX_NOTES = MAX_OCTAVES * 12  # 36 notes
+NOTE_OFF = 255  # Special value for note-off (silence/stop)
 MAX_VOLUME = 15
 MAX_INSTRUMENTS = 128
 MAX_PATTERNS = 256
@@ -49,9 +50,17 @@ COL_VOL = 2
 NOTE_NAMES = ['C-', 'C#', 'D-', 'D#', 'E-', 'F-', 'F#', 'G-', 'G#', 'A-', 'A#', 'B-']
 
 def note_to_str(note: int) -> str:
-    """Convert note number to string (e.g., 'C-2')."""
+    """Convert note number to string (e.g., 'C-2').
+    
+    Special values:
+    - 0 = empty/continue (---)
+    - 1-36 = actual notes (C-1 to B-3)
+    - 255 = note off (OFF)
+    """
     if note == 0:
         return "---"
+    if note == NOTE_OFF:
+        return "OFF"
     if note > MAX_NOTES:
         note = MAX_NOTES
     idx = (note - 1) % 12

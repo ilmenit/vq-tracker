@@ -1,0 +1,163 @@
+{
+    "config": {
+        "rate": 7917.174107142857,
+        "pokey_divisor": 7,
+        "quality": 50.0,
+        "codebook_size": 256,
+        "min_vector": 2,
+        "max_vector": 2,
+        "channels": 1,
+        "algorithm": "fixed"
+    },
+    "stats": {
+        "size_bytes": 18669,
+        "bitrate_bps": 33999,
+        "rmse": 0.0302,
+        "psnr_db": 36.41,
+        "lsd": 0.3763,
+        "duration_seconds": 4.39,
+        "state": "success"
+    },
+    "samples": [
+        {
+            "original_file": "AnalogString.wav",
+            "instrument_file": "/home/ilm/Documents/GitHub/vq-tracker/.tmp/vq_output/instruments/001.wav",
+            "index_start": 0,
+            "index_end": 790,
+            "original_path": "/home/ilm/Documents/GitHub/vq-tracker/samples/AnalogString.wav"
+        },
+        {
+            "original_file": "BassDrum3.wav",
+            "instrument_file": "/home/ilm/Documents/GitHub/vq-tracker/.tmp/vq_output/instruments/002.wav",
+            "index_start": 790,
+            "index_end": 1095,
+            "original_path": "/home/ilm/Documents/GitHub/vq-tracker/samples/BassDrum3.wav"
+        },
+        {
+            "original_file": "Claps1.wav",
+            "instrument_file": "/home/ilm/Documents/GitHub/vq-tracker/.tmp/vq_output/instruments/003.wav",
+            "index_start": 1095,
+            "index_end": 1301,
+            "original_path": "/home/ilm/Documents/GitHub/vq-tracker/samples/Claps1.wav"
+        },
+        {
+            "original_file": "DeepBass.wav",
+            "instrument_file": "/home/ilm/Documents/GitHub/vq-tracker/.tmp/vq_output/instruments/004.wav",
+            "index_start": 1301,
+            "index_end": 2037,
+            "original_path": "/home/ilm/Documents/GitHub/vq-tracker/samples/DeepBass.wav"
+        },
+        {
+            "original_file": "Detune.wav",
+            "instrument_file": "/home/ilm/Documents/GitHub/vq-tracker/.tmp/vq_output/instruments/005.wav",
+            "index_start": 2037,
+            "index_end": 2549,
+            "original_path": "/home/ilm/Documents/GitHub/vq-tracker/samples/Detune.wav"
+        },
+        {
+            "original_file": "EPiano.wav",
+            "instrument_file": "/home/ilm/Documents/GitHub/vq-tracker/.tmp/vq_output/instruments/006.wav",
+            "index_start": 2549,
+            "index_end": 3267,
+            "original_path": "/home/ilm/Documents/GitHub/vq-tracker/samples/EPiano.wav"
+        },
+        {
+            "original_file": "HeavySynth.wav",
+            "instrument_file": "/home/ilm/Documents/GitHub/vq-tracker/.tmp/vq_output/instruments/007.wav",
+            "index_start": 3267,
+            "index_end": 4147,
+            "original_path": "/home/ilm/Documents/GitHub/vq-tracker/samples/HeavySynth.wav"
+        },
+        {
+            "original_file": "Snare3.wav",
+            "instrument_file": "/home/ilm/Documents/GitHub/vq-tracker/.tmp/vq_output/instruments/008.wav",
+            "index_start": 4147,
+            "index_end": 4488,
+            "original_path": "/home/ilm/Documents/GitHub/vq-tracker/samples/Snare3.wav"
+        },
+        {
+            "original_file": "Snare4.wav",
+            "instrument_file": "/home/ilm/Documents/GitHub/vq-tracker/.tmp/vq_output/instruments/009.wav",
+            "index_start": 4488,
+            "index_end": 4668,
+            "original_path": "/home/ilm/Documents/GitHub/vq-tracker/samples/Snare4.wav"
+        },
+        {
+            "original_file": "Snare5.wav",
+            "instrument_file": "/home/ilm/Documents/GitHub/vq-tracker/.tmp/vq_output/instruments/010.wav",
+            "index_start": 4668,
+            "index_end": 5027,
+            "original_path": "/home/ilm/Documents/GitHub/vq-tracker/samples/Snare5.wav"
+        },
+        {
+            "original_file": "SoftBass.wav",
+            "instrument_file": "/home/ilm/Documents/GitHub/vq-tracker/.tmp/vq_output/instruments/011.wav",
+            "index_start": 5027,
+            "index_end": 5467,
+            "original_path": "/home/ilm/Documents/GitHub/vq-tracker/samples/SoftBass.wav"
+        },
+        {
+            "original_file": "Strings5.wav",
+            "instrument_file": "/home/ilm/Documents/GitHub/vq-tracker/.tmp/vq_output/instruments/012.wav",
+            "index_start": 5467,
+            "index_end": 6356,
+            "original_path": "/home/ilm/Documents/GitHub/vq-tracker/samples/Strings5.wav"
+        },
+        {
+            "original_file": "WowBass.wav",
+            "instrument_file": "/home/ilm/Documents/GitHub/vq-tracker/.tmp/vq_output/instruments/013.wav",
+            "index_start": 6356,
+            "index_end": 6805,
+            "original_path": "/home/ilm/Documents/GitHub/vq-tracker/samples/WowBass.wav"
+        },
+        {
+            "original_file": "bdrumyepp001.wav",
+            "instrument_file": "/home/ilm/Documents/GitHub/vq-tracker/.tmp/vq_output/instruments/014.wav",
+            "index_start": 6805,
+            "index_end": 7523,
+            "original_path": "/home/ilm/Documents/GitHub/vq-tracker/samples/bdrumyepp001.wav"
+        },
+        {
+            "original_file": "kef1tensebass.wav",
+            "instrument_file": "/home/ilm/Documents/GitHub/vq-tracker/.tmp/vq_output/instruments/015.wav",
+            "index_start": 7523,
+            "index_end": 10906,
+            "original_path": "/home/ilm/Documents/GitHub/vq-tracker/samples/kef1tensebass.wav"
+        },
+        {
+            "original_file": "searsnare2.wav",
+            "instrument_file": "/home/ilm/Documents/GitHub/vq-tracker/.tmp/vq_output/instruments/016.wav",
+            "index_start": 10906,
+            "index_end": 11627,
+            "original_path": "/home/ilm/Documents/GitHub/vq-tracker/samples/searsnare2.wav"
+        },
+        {
+            "original_file": "seartomtom.wav",
+            "instrument_file": "/home/ilm/Documents/GitHub/vq-tracker/.tmp/vq_output/instruments/017.wav",
+            "index_start": 11627,
+            "index_end": 12326,
+            "original_path": "/home/ilm/Documents/GitHub/vq-tracker/samples/seartomtom.wav"
+        },
+        {
+            "original_file": "slapbass2.wav",
+            "instrument_file": "/home/ilm/Documents/GitHub/vq-tracker/.tmp/vq_output/instruments/018.wav",
+            "index_start": 12326,
+            "index_end": 13206,
+            "original_path": "/home/ilm/Documents/GitHub/vq-tracker/samples/slapbass2.wav"
+        },
+        {
+            "original_file": "slight_string002.wav",
+            "instrument_file": "/home/ilm/Documents/GitHub/vq-tracker/.tmp/vq_output/instruments/019.wav",
+            "index_start": 13206,
+            "index_end": 16969,
+            "original_path": "/home/ilm/Documents/GitHub/vq-tracker/samples/slight_string002.wav"
+        },
+        {
+            "original_file": "wsnare1.wav",
+            "instrument_file": "/home/ilm/Documents/GitHub/vq-tracker/.tmp/vq_output/instruments/020.wav",
+            "index_start": 16969,
+            "index_end": 17389,
+            "original_path": "/home/ilm/Documents/GitHub/vq-tracker/samples/wsnare1.wav"
+        }
+    ]
+}

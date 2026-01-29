@@ -149,6 +149,12 @@ def create_themes():
             dpg.add_theme_color(dpg.mvThemeCol_Button, (25, 28, 35))
             dpg.add_theme_color(dpg.mvThemeCol_Text, (100, 100, 110))
     
+    # Highlighted row number (beat marker - slightly brighter)
+    with dpg.theme(tag="theme_song_row_highlight"):
+        with dpg.theme_component(dpg.mvButton):
+            dpg.add_theme_color(dpg.mvThemeCol_Button, (32, 36, 48))
+            dpg.add_theme_color(dpg.mvThemeCol_Text, (130, 130, 150))
+    
     # Cursor row number (bright blue)
     with dpg.theme(tag="theme_song_row_cursor"):
         with dpg.theme_component(dpg.mvButton):
@@ -166,6 +172,14 @@ def create_themes():
         with dpg.theme_component(dpg.mvButton):
             dpg.add_theme_color(dpg.mvThemeCol_Button, (20, 22, 28))
             dpg.add_theme_color(dpg.mvThemeCol_Text, (50, 50, 60))
+    
+    # === CELL HIGHLIGHT (beat rows) ===
+    
+    # Highlighted cell (beat marker row, not cursor/playing)
+    with dpg.theme(tag="theme_cell_highlight"):
+        with dpg.theme_component(dpg.mvButton):
+            dpg.add_theme_color(dpg.mvThemeCol_Button, (35, 40, 55))
+            dpg.add_theme_color(dpg.mvThemeCol_Text, COL_TEXT)
     
     # === INSTRUMENT THEMES (VQ conversion state) ===
     
@@ -202,6 +216,22 @@ def create_themes():
             dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (45, 90, 65))
             dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (55, 110, 80))
             dpg.add_theme_color(dpg.mvThemeCol_Text, (180, 255, 180))
+    
+    # Green button (BUILD ready, CONVERT done)
+    with dpg.theme(tag="theme_btn_green"):
+        with dpg.theme_component(dpg.mvButton):
+            dpg.add_theme_color(dpg.mvThemeCol_Button, (30, 80, 45))
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (40, 100, 60))
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (50, 120, 75))
+            dpg.add_theme_color(dpg.mvThemeCol_Text, (150, 255, 150))
+    
+    # Disabled/gray button
+    with dpg.theme(tag="theme_btn_disabled"):
+        with dpg.theme_component(dpg.mvButton):
+            dpg.add_theme_color(dpg.mvThemeCol_Button, (40, 40, 45))
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (45, 45, 50))
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (50, 50, 55))
+            dpg.add_theme_color(dpg.mvThemeCol_Text, (100, 100, 110))
 
 
 def get_inst_theme(is_selected: bool, is_converted: bool) -> str:

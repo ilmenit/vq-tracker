@@ -166,6 +166,7 @@ class Song:
     author: str = ""
     speed: int = DEFAULT_SPEED
     system: int = PAL_HZ
+    volume_control: bool = False  # Enable volume control in export (requires lower sample rate)
     songlines: List[Songline] = field(default_factory=list)
     patterns: List[Pattern] = field(default_factory=list)
     instruments: List[Instrument] = field(default_factory=list)
@@ -282,7 +283,8 @@ class Song:
             'version': 4,
             'meta': {
                 'title': self.title, 'author': self.author,
-                'system': self.system
+                'system': self.system,
+                'volume_control': self.volume_control
             },
             'songlines': [{'patterns': sl.patterns, 'speed': sl.speed} for sl in self.songlines],
             'patterns': [p.to_dict() for p in self.patterns],
@@ -296,7 +298,8 @@ class Song:
             title=meta.get('title', 'Untitled'),
             author=meta.get('author', ''),
             speed=meta.get('speed', DEFAULT_SPEED),  # Legacy global speed
-            system=meta.get('system', PAL_HZ)
+            system=meta.get('system', PAL_HZ),
+            volume_control=meta.get('volume_control', False)
         )
         
         # Handle songlines - both old format (list of pattern arrays) and new format (list of dicts with speed)

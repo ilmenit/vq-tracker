@@ -41,6 +41,10 @@ last_autosave = 0
 autosave_enabled = True
 recent_files = []
 
+# Editor settings (saved to config)
+piano_keys_mode = True  # True: number keys play sharps; False: 1-3 select octave (tracker style)
+highlight_interval = 4  # Row highlight interval: 2, 4, 8, or 16
+
 
 # =============================================================================
 # FORMATTING FUNCTIONS
@@ -85,7 +89,7 @@ def parse_int_value(text: str, default: int = 0) -> int:
 
 def load_config():
     """Load configuration from disk."""
-    global autosave_enabled, recent_files
+    global autosave_enabled, recent_files, piano_keys_mode, highlight_interval
     try:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         AUTOSAVE_DIR.mkdir(parents=True, exist_ok=True)
@@ -99,6 +103,12 @@ def load_config():
                 state.octave = ed.get('octave', 2)
                 state.step = ed.get('step', 1)
                 state.follow = ed.get('follow', True)
+                # New settings
+                piano_keys_mode = ed.get('piano_keys_mode', True)
+                highlight_interval = ed.get('highlight_interval', 4)
+                # Validate highlight_interval
+                if highlight_interval not in [2, 4, 8, 16]:
+                    highlight_interval = 4
                 logger.info("Config loaded")
     except Exception as e:
         logger.error(f"Config load error: {e}")
@@ -116,6 +126,9 @@ def save_config():
                 'octave': state.octave,
                 'step': state.step,
                 'follow': state.follow,
+                # New settings
+                'piano_keys_mode': piano_keys_mode,
+                'highlight_interval': highlight_interval,
             }
         }
         with open(CONFIG_FILE, 'w') as f:
@@ -150,7 +163,7 @@ def do_autosave():
         return
     
     try:
-        from file_io import save_project
+        from file_io import save_project, EditorState, work_dir
         
         # Save original file_path - autosave should not change it
         original_path = state.song.file_path
@@ -172,7 +185,29 @@ def do_autosave():
         title = "".join(c for c in title if c.isalnum() or c in "_ -")[:20]
         filename = autosave_dir / f"autosave_{title}_{timestamp}.pvq"
         
-        save_project(state.song, str(filename))
+        # Create editor state from current state
+        editor_state = EditorState(
+            songline=state.songline,
+            row=state.row,
+            channel=state.channel,
+            column=state.column,
+            song_cursor_row=state.song_cursor_row,
+            song_cursor_col=state.song_cursor_col,
+            octave=state.octave,
+            step=state.step,
+            instrument=state.instrument,
+            volume=state.volume,
+            selected_pattern=state.selected_pattern,
+            hex_mode=state.hex_mode,
+            follow=state.follow,
+            focus=state.focus,
+            vq_converted=state.vq.is_valid,
+            vq_rate=state.vq.rate,
+            vq_vector_size=state.vq.vector_size,
+            vq_smoothness=state.vq.smoothness
+        )
+        
+        save_project(state.song, editor_state, str(filename), work_dir)
         
         # Restore original path and modified flag - autosave is invisible to user
         state.song.file_path = original_path

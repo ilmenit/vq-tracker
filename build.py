@@ -85,6 +85,11 @@ def export_song_data(song: Song, output_path: str, output_func=None) -> Tuple[bo
         lines.append("; ==========================================================================")
         lines.append("")
         
+        # Volume control flag (must be defined before other modules use it)
+        vol_val = 1 if song.volume_control else 0
+        lines.append(f"VOLUME_CONTROL = {vol_val}  ; 1=enable volume scaling, 0=disable")
+        lines.append("")
+        
         # Song header
         num_songlines = len(song.songlines)
         num_patterns = len(song.patterns)
@@ -358,9 +363,9 @@ def build_xex_sync(song: Song, output_xex_path: str) -> BuildResult:
     _output(f"  Using MADS: {mads_path}\n")
     logger.info(f"Using MADS: {mads_path}")
     
-    # Create build directory in tmp-convert (persistent for debugging)
+    # Create build directory in .tmp (persistent for debugging)
     tracker_dir = os.path.dirname(os.path.abspath(__file__))
-    build_dir = os.path.join(tracker_dir, "tmp-convert", "build")
+    build_dir = os.path.join(tracker_dir, ".tmp", "build")
     
     # Clean and create build directory
     if os.path.exists(build_dir):
