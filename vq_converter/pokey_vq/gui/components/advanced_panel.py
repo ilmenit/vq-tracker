@@ -36,12 +36,11 @@ class AdvancedPanel:
             _add_tooltip(self.input_vmax, "Maximum vector length.")
 
             # Pitch/Tracker Replacement Control (Hidden by default)
-            # Reverse order 16..2 usually better so 16 is top? Or 2..16? 
-            # User list: 2, 4, 6, 8, 10, 12, 14, 16. Default 16.
-            self.vec_opts = [str(x) for x in range(2, 17, 2)] 
+            # User list: 2, 4, 8, 16. Default 16.
+            self.vec_opts = ["2", "4", "8", "16"]
             self.combo_veclen = dpg.add_combo(self.vec_opts, default_value="16", label="Vector Len", show=False,
                  callback=self._on_veclen_change)
-            _add_tooltip(self.combo_veclen, "Fixed Vector Size (Even values 2-16).\nThe smaller Vector size, the better quality but larger file size.")
+            _add_tooltip(self.combo_veclen, "Fixed Vector Size (2, 4, 8, or 16).\nSmaller vectors = better transients but larger file size.")
                  
             dpg.add_spacer(height=4)
                  
@@ -134,8 +133,5 @@ class AdvancedPanel:
                  dpg.configure_item(self.input_vmax, show=True)
                  dpg.configure_item(self.combo_veclen, show=False)
             
-            # Hide Optimize for Multi-Channel (Forced to Speed)
-            if mode == "vq_multi_channel":
-                 dpg.configure_item(self.group_optimize, show=False)
-            else:
-                 dpg.configure_item(self.group_optimize, show=True)
+            # Show Optimize for all modes (Multi-Channel defaults to Speed but user can change if they really want Packed/Size)
+            dpg.configure_item(self.group_optimize, show=True)

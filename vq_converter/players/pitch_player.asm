@@ -460,55 +460,59 @@ Output_Sample:
 .if CHANNELS == 1
     ; =========================================================
     ; SINGLE CHANNEL MODE
-    ; Data Format: Nibble-packed, 8 bytes per 16-sample vector
-    ; Byte n contains: [sample 2n+1 : sample 2n] (high:low nibbles)
     ; =========================================================
-    
-    ; Calculate byte address = VQ_base + (vector_offset / 2)
-    lda vector_offset
-    lsr                     ; A = byte offset within vector (0-7)
-    clc
-    adc VQ_LO,x             ; Add to codebook base low byte
-    sta sample_ptr
-    lda VQ_HI,x
-    adc #0                  ; Add carry to high byte
-    sta sample_ptr+1
-    
-    ; Determine which nibble based on vector_offset bit 0
-    ; Even samples (0,2,4...): LOW nibble
-    ; Odd samples (1,3,5...): HIGH nibble
-    lda vector_offset
-    and #$01
-    bne @high_nibble
 
-@low_nibble:
-    ; Even sample: extract LOW nibble (bits 0-3)
     .ifdef USE_FAST_CPU
-        ; Use lookup table for speed
+        ; --- FAST / BYTE MODE ---
+        ; 1 byte per sample (Pre-masked $10)
+        ; Vector blobs are fully expanded (16 bytes per 16 samples)
+         
+        lda vector_offset
+        clc
+        adc VQ_LO,x
+        sta sample_ptr
+        lda VQ_HI,x
+        adc #0
+        sta sample_ptr+1
+        
         ldy #0
         lda (sample_ptr),y
-        tax
-        lda LUT_LO,x        ; LUT_LO[byte] = (byte & $0F) | AUDC1_MASK
+        sta AUDC1
+        rts
+        
     .else
-        ; Manual extraction
+        ; --- PACKED NIBBLE MODE ---
+        ; Data Format: Nibble-packed, 8 bytes per 16-sample vector
+        ; Byte n contains: [sample 2n+1 : sample 2n] (high:low nibbles)
+        
+        ; Calculate byte address = VQ_base + (vector_offset / 2)
+        lda vector_offset
+        lsr                     ; A = byte offset within vector (0-7)
+        clc
+        adc VQ_LO,x             ; Add to codebook base low byte
+        sta sample_ptr
+        lda VQ_HI,x
+        adc #0                  ; Add carry to high byte
+        sta sample_ptr+1
+        
+        ; Determine which nibble based on vector_offset bit 0
+        ; Even samples (0,2,4...): LOW nibble
+        ; Odd samples (1,3,5...): HIGH nibble
+        lda vector_offset
+        and #$01
+        bne @high_nibble
+    
+    @low_nibble:
+        ; Even sample: extract LOW nibble (bits 0-3)
         ldy #0
         lda (sample_ptr),y
         and #$0F
         ora #AUDC1_MASK
-    .endif
-    sta AUDC1
-    rts
-
-@high_nibble:
-    ; Odd sample: extract HIGH nibble (bits 4-7)
-    .ifdef USE_FAST_CPU
-        ; Use lookup table for speed
-        ldy #0
-        lda (sample_ptr),y
-        tax
-        lda LUT_HI,x        ; LUT_HI[byte] = (byte >> 4) | AUDC1_MASK
-    .else
-        ; Manual extraction (shift right 4 times)
+        sta AUDC1
+        rts
+    
+    @high_nibble:
+        ; Odd sample: extract HIGH nibble (bits 4-7)
         ldy #0
         lda (sample_ptr),y
         lsr
@@ -516,9 +520,9 @@ Output_Sample:
         lsr
         lsr
         ora #AUDC1_MASK
+        sta AUDC1
+        rts
     .endif
-    sta AUDC1
-    rts
 
 .else ; CHANNELS == 2
 
@@ -616,10 +620,6 @@ note_names:       .byte $03, $43, $04, $44, $05, $06, $46, $07, $47, $01, $41, $
     icl "VQ_INDICES.asm"
 
 ; LUT for single-channel speed optimization
-.if CHANNELS == 1
-    .ifdef USE_FAST_CPU
-        icl "LUT_NIBBLES.asm"
-    .endif
-.endif
+
 
     run start

@@ -1,4 +1,4 @@
-"""Atari Sample Tracker - VQ Conversion Module
+"""POKEY VQ Tracker - VQ Conversion Module
 
 Handles conversion of instruments to VQ format using pokey_vq subprocess.
 """
@@ -13,7 +13,11 @@ import queue
 from typing import Optional, List, Dict, Callable
 from dataclasses import dataclass, field
 
-from constants import (VQ_RATE_DEFAULT, VQ_VECTOR_DEFAULT, VQ_SMOOTHNESS_DEFAULT)
+from constants import (VQ_RATE_DEFAULT, VQ_VECTOR_DEFAULT, VQ_SMOOTHNESS_DEFAULT,
+                       VQ_VECTOR_SIZES)
+
+# Valid vector sizes (must be powers of 2 for ASM optimization)
+VALID_VECTOR_SIZES = {2, 4, 8, 16}
 
 
 @dataclass
@@ -23,6 +27,22 @@ class VQSettings:
     vector_size: int = VQ_VECTOR_DEFAULT
     smoothness: int = VQ_SMOOTHNESS_DEFAULT
     enhance: bool = True
+    optimize_speed: bool = True  # True=speed (full bytes), False=size (nibble-packed)
+    
+    def __post_init__(self):
+        """Validate and fix vector_size if necessary."""
+        if self.vector_size not in VALID_VECTOR_SIZES:
+            # Find nearest valid size
+            if self.vector_size < 2:
+                self.vector_size = 2
+            elif self.vector_size > 16:
+                self.vector_size = 16
+            else:
+                # Round down to nearest power of 2
+                for valid in sorted(VALID_VECTOR_SIZES, reverse=True):
+                    if self.vector_size >= valid:
+                        self.vector_size = valid
+                        break
 
 
 @dataclass
@@ -162,8 +182,14 @@ class VQConverter:
         """
         settings = self.vq_state.settings
         
+        # Determine optimization mode
+        # speed = full bytes with $10 pre-baked (faster playback, 2x codebook size)
+        # size = nibble-packed (slower playback, compact codebook)
+        optimize_mode = "speed" if settings.optimize_speed else "size"
+        
         # vq_multi_channel requires mono (--channels 1)
-        # and we use --optimize speed for better tracker performance
+        # NOTE: We let it generate the player XEX even though we don't use it,
+        # because ASM files are generated as part of that process.
         cmd = [
             sys.executable, "-m", "pokey_vq.cli",
             *input_files,
@@ -175,9 +201,8 @@ class VQConverter:
             "-q", "50",  # Quality (default but explicit)
             "-s", str(settings.smoothness),
             "-e", "on" if settings.enhance else "off",
-            "--optimize", "speed",  # Fast 2-byte fetch for tracker
-            "--wav", "on",
-            "-o", output_name  # Output name (XEX created at this path)
+            "--optimize", optimize_mode,
+            "-o", output_name  # Output name
         ]
         return cmd
     

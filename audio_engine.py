@@ -1,4 +1,4 @@
-"""Atari Sample Tracker - Audio Engine"""
+"""POKEY VQ Tracker - Audio Engine"""
 import threading
 import numpy as np
 import logging
@@ -265,18 +265,32 @@ class AudioEngine:
         """Play current pattern."""
         self.play_from(songline, 0)
     
-    def play_song(self, from_start: bool = True, songline: int = 0):
-        """Play song."""
+    def play_song(self, from_start: bool = True, songline: int = 0, row: int = 0):
+        """Play song.
+        
+        Args:
+            from_start: If True, start from beginning (songline 0, row 0)
+            songline: Starting songline (ignored if from_start=True)
+            row: Starting row within songline (ignored if from_start=True)
+        """
         with self.lock:
             if not self.song:
                 return
             self._stop_all_channels()
             self.mode = 'song'
             self.songline = 0 if from_start else songline
-            self.row = 0
             self.tick = 0
             self.sample_count = 0
             self._update_patterns()
+            
+            # Set starting row (with bounds check)
+            if from_start:
+                self.row = 0
+            else:
+                # Clamp row to valid range for current songline patterns
+                max_len = max(self.lengths) if self.lengths else 64
+                self.row = min(row, max_len - 1) if max_len > 0 else 0
+            
             self._play_current_row()  # Play first row immediately
             self.playing = True
             # Fire callback for initial position

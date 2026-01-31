@@ -1,24 +1,63 @@
 ; ==========================================================================
-; SONG PLAYER - Atari 6502 Tracker (Fixed Version v2)
+; SONG PLAYER - POKEY VQ Tracker
 ; ==========================================================================
+; Version: 3.3
 ;
-; Plays songs exported from the Music Tracker application.
-; 3-channel polyphonic playback with per-songline speed control.
+; Plays songs exported from the POKEY VQ Tracker GUI application.
 ;
-; FIXES:
-;   - Unique local labels (no conflict with tracker_irq.asm)
-;   - All long branches use JMP patterns
-;   - Modular structure to reduce code size
+; Features:
+;   - 3-channel polyphonic playback via VQ-compressed samples
+;   - Per-songline speed control
+;   - Variable-length event encoding for compact pattern storage
+;   - Keyboard control (Space=play/stop, R=restart)
+;   - Optional volume control per note (VOLUME_CONTROL=1)
+;   - Two IRQ modes: speed or size optimized (OPTIMIZE_SPEED)
+;   - Optional blank screen mode for maximum CPU cycles (BLANK_SCREEN=1)
+;
+; Optimization Modes (set in SONG_CFG.asm):
+;   OPTIMIZE_SPEED=1: Full bytes with $10 pre-baked
+;                     ~58 cycles/channel, 2x codebook memory
+;                     Enables higher sample rates (7917 Hz)
+;   OPTIMIZE_SPEED=0: Nibble-packed data
+;                     ~83 cycles/channel, compact codebook
+;                     Better for memory-constrained projects
+;
+; BLANK_SCREEN Mode (set in SONG_CFG.asm):
+;   BLANK_SCREEN=0: Normal display with SONG/ROW/SPEED readout
+;   BLANK_SCREEN=1: Black screen, gains ~30% more CPU cycles for IRQ
+;                   ANTIC DMA disabled, simple keyboard control only
+;
+; Memory Map:
+;   $2000+: Player code and data
+;   $80-$BF: Zero page variables (see zeropage.inc)
+;
+; Timing Architecture:
+;   - Timer IRQ: Sample playback (high frequency, e.g., 7917 Hz)
+;   - VCOUNT polling: Sequencer timing at 50Hz (PAL)
+;   - NMI is DISABLED to avoid IRQ/NMI race conditions
+;     (NMI could corrupt IRQ registers mid-execution)
 ;
 ; ==========================================================================
 
     icl "common/atari.inc"
     
+    ; Enable tracker mode for zero page layout
     TRACKER = 1
     icl "common/zeropage.inc" 
     icl "common/macros.inc"
     icl "common/copy_os_ram.asm"
     icl "VQ_CFG.asm"
+    
+    ; Include SONG_CFG.asm for VOLUME_CONTROL equate (needed for conditional assembly)
+    ; NOTE: This file contains ONLY equates, no .byte data!
+    ; The actual song data is in SONG_DATA.asm, included at the END with other data.
+    icl "SONG_CFG.asm"
+    
+    ; === Configuration Defaults ===
+    ; BLANK_SCREEN: Set to 1 to disable display and gain ~30% more CPU cycles
+    .ifndef BLANK_SCREEN
+        BLANK_SCREEN = 0    ; Default: display enabled
+    .endif
     
     ; === Configuration Validation ===
     .ifndef MULTI_SAMPLE
@@ -39,68 +78,71 @@
 SILENCE     = $10               ; POKEY volume-only mode, volume=0
 
 ; ==========================================================================
-; SEQUENCER STATE
+; SEQUENCER STATE (Regular memory - not zero page)
 ; ==========================================================================
-seq_songline:     .byte 0       ; Current songline index
-seq_row:          .byte 0       ; Current row within patterns
-seq_tick:         .byte 0       ; Tick counter (0 to speed-1)
-seq_speed:        .byte 6       ; Current speed (VBLANKs per row)
-seq_max_len:      .byte 64      ; Max pattern length for current songline
-seq_playing:      .byte 0       ; $FF=playing, $00=stopped
+; Per-channel event pointers (current position in pattern data)
+seq_evt_ptr_lo:   .byte 0,0,0   ; Low byte of event pointer
+seq_evt_ptr_hi:   .byte 0,0,0   ; High byte of event pointer
+seq_evt_row:      .byte $FF,$FF,$FF  ; Next event's row number ($FF=end)
 
-; --- Per-Channel Event Pointers ---
-seq_evt_ptr_lo:   .byte 0,0,0
-seq_evt_ptr_hi:   .byte 0,0,0
-seq_evt_row:      .byte $FF,$FF,$FF
+; Pattern loop tracking (for different-length patterns)
+seq_ptn_len:      .byte 64,64,64    ; Pattern length per channel
+seq_local_row:    .byte 0,0,0       ; Local row within each pattern (0 to len-1)
+seq_ptn_start_lo: .byte 0,0,0       ; Pattern start address (for reset on loop)
+seq_ptn_start_hi: .byte 0,0,0       ; Pattern start address high byte
 
-; --- Per-Channel Last Values ---
-seq_last_inst:    .byte 0,0,0
-seq_last_vol:     .byte 15,15,15
+; Per-channel last values (for delta encoding)
+seq_last_inst:    .byte 0,0,0   ; Last instrument per channel
+seq_last_vol:     .byte 15,15,15 ; Last volume per channel
 
-; --- Parsed Event Data ---
-evt_note:         .byte 0,0,0
-evt_inst:         .byte 0,0,0
-evt_vol:          .byte 0,0,0
-evt_trigger:      .byte 0,0,0
+; Parsed event data (current row)
+evt_note:         .byte 0,0,0   ; Note for each channel (0=none)
+evt_inst:         .byte 0,0,0   ; Instrument for each channel
+evt_vol:          .byte 0,0,0   ; Volume for each channel
+evt_trigger:      .byte 0,0,0   ; Trigger flag ($FF=trigger note)
 
-; --- Temporaries ---
-nmi_save_a:       .byte 0
-nmi_save_x:       .byte 0
-nmi_save_y:       .byte 0
-parse_temp:       .byte 0
-parse_channel:    .byte 0
-last_key_state:   .byte 0       ; For edge detection: 0=released, 4=pressed
-
-; NOTE: seq_ptr is defined in zeropage.inc at $BC (separate from IRQ's trk_ptr)
+; VBLANK polling state (replaces NMI-based timing)
+; Detects VCOUNT transition from high (>=128) to low (<128) = new frame
+vcount_phase:     .byte 0       ; $00=low phase, $80=high phase
 
 ; ==========================================================================
-; DISPLAY LIST
+; DISPLAY LIST 
 ; ==========================================================================
+.if BLANK_SCREEN = 0
+; --- NORMAL MODE: Full status display ---
+; Each line must be exactly 40 characters for Atari text mode 2
 text_line1:
-    dta d"   ATARI SAMPLE TRACKER   "
+;         1234567890123456789012345678901234567890
+    dta d" VQ TRACKER - [SPACE] play, [R] reset   "
 text_line2:
-    dta d"SONG:"
+;        1234567890123456789012345678901234567890
+    dta d"  SONG:"
 song_pos_display:
     dta d"00"
-    dta d" ROW:"
+    dta d"   ROW:"
 row_display:
     dta d"00"
-    dta d" SPD:"
+    dta d"   SPD:"
 speed_display:
     dta d"06"
-    dta d"      "
-text_line3:
-    dta d" SPACE=PLAY/STOP  R=RESET "
-
+    dta d"             "
 dlist:
-    .byte $70,$70,$70
+    .byte $70,$70,$70           ; 3 blank lines
     .byte $42,<text_line1,>text_line1
-    .byte $70
-    .byte $42,<text_line2,>text_line2
-    .byte $70
-    .byte $42,<text_line3,>text_line3
-    .byte $70,$70
-    .byte $41,<dlist,>dlist
+    .byte $02                   ; Mode 2 text
+    .byte $41,<dlist,>dlist     ; Jump back
+.else
+; --- BLANK SCREEN MODE: Minimal display for maximum CPU cycles ---
+; ANTIC DMA disabled = no cycle stealing = ~30% more CPU time for IRQ
+; Minimal display list shown only briefly during startup
+text_line1:
+;         1234567890123456789012345678901234567890
+    dta d" VQ TRACKER - [SPACE] play, [R] reset   "
+dlist:
+    .byte $70,$70,$70           ; 3 blank lines
+    .byte $42,<text_line1,>text_line1
+    .byte $41,<dlist,>dlist     ; Jump back
+.endif
 
 ; ==========================================================================
 ; MAIN ENTRY POINT
@@ -108,42 +150,82 @@ dlist:
 start:
     sei
     ldx #$FF
-    txs
+    txs                         ; Reset stack
     
+    ; Disable interrupts and DMA during setup
     lda #0
     sta NMIEN
     sta IRQEN
     sta DMACTL
     lda #$FE
-    sta PORTB
+    sta PORTB                   ; Enable RAM under ROM
     
-    lda #<nmi_handler
+    ; Setup interrupt vectors
+    ; NMI points to minimal handler (just RTI) since we use polling instead
+    lda #<nmi_stub
     sta $FFFA
-    lda #>nmi_handler
+    lda #>nmi_stub
     sta $FFFA+1
     
     lda #<Tracker_IRQ
     sta $FFFE
     lda #>Tracker_IRQ
     sta $FFFE+1
-
+    
+    ; Setup display
     lda #<dlist
     sta DLISTL
     lda #>dlist
     sta DLISTH
+    
+.if BLANK_SCREEN = 0
+    ; --- NORMAL MODE: Enable display DMA ---
+    lda #34                     ; Enable DMA (narrow playfield)
+    sta DMACTL
+.else
+    ; --- BLANK SCREEN MODE: Brief flash then disable DMA ---
+    ; Show instructions for ~1 second then go dark
     lda #34
     sta DMACTL
-    lda #$C0
+    ; Wait ~50 frames (1 second on PAL)
+    ldx #50
+blank_wait:
+    lda #$14                    ; Wait for VBLANK
+@wait_vbl:
+    cmp VCOUNT
+    bne @wait_vbl
+@wait_end:
+    cmp VCOUNT
+    beq @wait_end
+    dex
+    bne blank_wait
+    ; Now disable DMA for maximum CPU time
+    lda #0
+    sta DMACTL
+.endif
+    
+    ; NMI disabled - we use polling instead to avoid IRQ/NMI race conditions
+    ; NMI can corrupt IRQ's working registers mid-execution, causing audio glitches
+    ; and register corruption visible as COLBK color stripes
+    lda #$00                    ; Disable NMI completely
     sta NMIEN
     
+    ; Initialize VCOUNT phase tracking for polling-based VBLANK detection
+    lda VCOUNT
+    and #$80                    ; Get current phase (bit 7)
+    sta vcount_phase
+    
+    ; Init keyboard
     lda #0
     sta SKCTL
     lda #3
     sta SKCTL
     
+    ; Initialize sequencer and audio
     jsr seq_init
     jsr Pokey_Setup
     
+    ; Enable timer IRQ
     lda #IRQ_MASK
     sta IRQEN
     lda #$00
@@ -152,37 +234,91 @@ start:
     cli
 
 ; ==========================================================================
-; MAIN LOOP
+; MAIN LOOP - Keyboard handling, VBLANK polling, status display
+; ==========================================================================
+; VBLANK is detected by polling VCOUNT instead of using NMI.
+; This eliminates the IRQ/NMI race condition that caused register corruption.
+;
+; VCOUNT behavior (PAL):
+;   Scanlines 0-255:   VCOUNT = 0-127  (bit 7 = 0) - active display
+;   Scanlines 256-311: VCOUNT = 128-155 (bit 7 = 1) - VBLANK region
+;   Then wraps to 0
+;
+; We detect the transition from high (bit7=1) to low (bit7=0) = new frame
 ; ==========================================================================
 main_loop:
+    ; === VBLANK POLLING (replaces NMI) ===
+    ; Check for VCOUNT phase transition
+    lda VCOUNT
+    and #$80                    ; Get bit 7 (phase indicator): $00 or $80
+    tax                         ; Save phase in X (preserves A)
+    cmp vcount_phase
+    beq ml_no_vblank            ; Same phase, no transition
+    
+    ; Phase changed! Update tracking
+    stx vcount_phase
+    
+    ; Check if this is high->low transition (new frame)
+    ; TXA sets Z flag based on X: Z=1 if X=$00, Z=0 if X=$80
+    txa                         ; A=X, and SETS FLAGS based on value
+    bne ml_no_vblank            ; If A=$80, we entered VBLANK, wait for exit
+    
+    ; === NEW FRAME (A=$00) - Run sequencer tick ===
+    lda seq_playing
+    beq ml_skip_seq
+    
+    inc seq_tick
+    lda seq_tick
+    cmp seq_speed
+    bcc ml_skip_seq
+    
+    ; Time for next row
+    lda #0
+    sta seq_tick
+    jsr process_row
+    
+ml_skip_seq:
+.if BLANK_SCREEN = 0
+    jsr update_display
+.endif
+
+ml_no_vblank:
+    ; === Visual feedback ===
+    ; NOTE: If you see color stripes here, it indicates register corruption!
     lda seq_playing
     beq ml_idle_color
-    lda #$40
-    jmp ml_set_color
+    lda #$40                    ; Green
+    bne ml_set_color            ; Always taken
 ml_idle_color:
-    lda #$20
+    lda #$20                    ; Dark gray
 ml_set_color:
     sta COLBK
     
-    ; --- Edge Detection Keyboard Handling ---
-    ; Only trigger on key DOWN edge (not held, not release)
+    ; === Keyboard State Machine ===
+    ; last_key_code: $FF = waiting for keydown, other = key held
+    ; SKSTAT bit 2: 0 = key pressed, 4 = no key
+    
+    lda last_key_code
+    cmp #$FF
+    bne ml_check_release        ; Key held, check for release
+    
+    ; --- Waiting for keydown ---
     lda SKSTAT
-    and #4                      ; Bit 2: 0=no key, 4=key pressed
-    cmp last_key_state          ; Compare with previous state
-    beq main_loop               ; Same state = no change, continue
-    sta last_key_state          ; Store new state
+    and #$04
+    bne main_loop               ; No key pressed
+    ; Double-check (debounce)
+    lda SKSTAT
+    and #$04
+    bne main_loop
     
-    ; State changed - check direction
-    cmp #0
-    beq main_loop               ; Went to 0 = key released, ignore
-    
-    ; Key just pressed (edge: 0 -> 4)
+    ; Key pressed - read and process
     lda KBCODE
     and #$3F
+    sta last_key_code
     
-    cmp #$21                    ; SPACE
-    bne ml_check_r
-    ; Toggle play/stop
+    ; Check SPACE (play/stop)
+    cmp #$21
+    bne ml_check_r_down
     lda seq_playing
     bne ml_do_stop
     lda #$FF
@@ -192,42 +328,42 @@ ml_do_stop:
     jsr seq_stop
     jmp main_loop
     
-ml_check_r:
-    cmp #$28                    ; R
+    ; Check R (restart)
+ml_check_r_down:
+    cmp #$28
     bne main_loop
     jsr seq_init
     jmp main_loop
 
+ml_check_release:
+    ; --- Key held, check for release ---
+    lda SKSTAT
+    and #$04
+    beq main_loop               ; Still pressed
+    lda SKSTAT
+    and #$04  
+    beq main_loop               ; Debounce
+    
+    ; Key released
+    lda #$FF
+    sta last_key_code
+    jmp main_loop
+
 ; ==========================================================================
-; NMI HANDLER - Compact version
+; NMI STUB - Minimal handler since we use polling instead
 ; ==========================================================================
-nmi_handler:
-    sta nmi_save_a
-    stx nmi_save_x
-    sty nmi_save_y
-    
-    lda seq_playing
-    beq nmi_exit
-    
-    inc seq_tick
-    lda seq_tick
-    cmp seq_speed
-    bcc nmi_exit
-    
-    ; Process row
-    lda #0
-    sta seq_tick
-    jsr process_row
-    
-nmi_exit:
-    jsr update_display
-    lda nmi_save_a
-    ldx nmi_save_x
-    ldy nmi_save_y
+; NMI is disabled (NMIEN=0) but we need a handler just in case.
+; The sequencer now runs via VCOUNT polling in main_loop to avoid
+; the IRQ/NMI race condition that caused register corruption.
+; ==========================================================================
+nmi_stub:
     rti
 
 ; ==========================================================================
-; PROCESS_ROW - Called from NMI when tick reaches speed
+; PROCESS_ROW - Parse events and trigger notes
+; ==========================================================================
+; Each channel tracks its own local row within its pattern.
+; Shorter patterns loop when they reach their end.
 ; ==========================================================================
 process_row:
     ; Clear trigger flags
@@ -236,9 +372,9 @@ process_row:
     sta evt_trigger+1
     sta evt_trigger+2
     
-    ; Parse channel 0
+    ; Parse each channel if event matches LOCAL row (not global seq_row)
     lda seq_evt_row
-    cmp seq_row
+    cmp seq_local_row           ; Compare with channel 0's local row
     bne pr_no_ch0
     ldx #0
     jsr parse_event
@@ -246,9 +382,8 @@ process_row:
     sta evt_trigger
 pr_no_ch0:
 
-    ; Parse channel 1
     lda seq_evt_row+1
-    cmp seq_row
+    cmp seq_local_row+1         ; Compare with channel 1's local row
     bne pr_no_ch1
     ldx #1
     jsr parse_event
@@ -256,9 +391,8 @@ pr_no_ch0:
     sta evt_trigger+1
 pr_no_ch1:
 
-    ; Parse channel 2
     lda seq_evt_row+2
-    cmp seq_row
+    cmp seq_local_row+2         ; Compare with channel 2's local row
     bne pr_no_ch2
     ldx #2
     jsr parse_event
@@ -289,72 +423,113 @@ pr_no_trig2:
 
     cli
     
-    ; Advance row
+    ; === Advance local rows and check for pattern wrap ===
+    ldx #2
+pr_advance_local:
+    inc seq_local_row,x
+    lda seq_local_row,x
+    cmp seq_ptn_len,x
+    bcc pr_no_wrap              ; local_row < ptn_len, no wrap needed
+    
+    ; Pattern reached end - reset to beginning
+    lda #0
+    sta seq_local_row,x
+    
+    ; Reset event pointer to pattern start
+    lda seq_ptn_start_lo,x
+    sta seq_evt_ptr_lo,x
+    lda seq_ptn_start_hi,x
+    sta seq_evt_ptr_hi,x
+    
+    ; Reload first event's row number
+    sta seq_ptr+1
+    lda seq_ptn_start_lo,x
+    sta seq_ptr
+    stx parse_temp              ; Save X
+    ldy #0
+    lda (seq_ptr),y
+    ldx parse_temp              ; Restore X
+    sta seq_evt_row,x
+    
+pr_no_wrap:
+    dex
+    bpl pr_advance_local
+    
+    ; Advance global row counter
     inc seq_row
     lda seq_row
     cmp seq_max_len
     bcc pr_done
     
-    ; End of pattern
+    ; End of pattern - advance songline
     lda #0
     sta seq_row
     
     inc seq_songline
     lda seq_songline
-    cmp #SONG_LENGTH
-    bcc pr_next_songline
+    cmp #SONG_LENGTH            ; Use immediate mode for equate comparison
+    bcc pr_load_new
     
-    ; Loop song
+    ; End of song - loop back
     lda #0
     sta seq_songline
-
-pr_next_songline:
+    
+pr_load_new:
     jsr seq_load_songline
     
 pr_done:
     rts
 
 ; ==========================================================================
-; PARSE_EVENT - Decode variable-length event
+; PARSE_EVENT - Read variable-length event data
+; ==========================================================================
 ; Input: X = channel (0-2)
+; Reads from seq_evt_ptr and advances pointer
+;
+; Event format:
+;   BYTE 0: row number
+;   BYTE 1: note (bits 0-5) + flags (bits 6-7)
+;   BYTE 2: [optional] instrument + flag
+;   BYTE 3: [optional] volume
 ; ==========================================================================
 parse_event:
     stx parse_channel
     
+    ; Setup pointer
     lda seq_evt_ptr_lo,x
     sta seq_ptr
     lda seq_evt_ptr_hi,x
     sta seq_ptr+1
     
-    ; Read note byte (skip row at offset 0)
+    ; Read note byte (offset 1, skip row at offset 0)
     ldy #1
     lda (seq_ptr),y
     sta parse_temp
-    and #$3F
+    and #$3F                    ; Extract note (bits 0-5)
     ldx parse_channel
     sta evt_note,x
     iny
     
-    ; Check inst flag
+    ; Check instrument flag (bit 7)
     lda parse_temp
-    bpl pe_use_last
+    bpl pe_use_last             ; No instrument follows
     
     ; Read instrument
     lda (seq_ptr),y
     sta parse_temp
-    and #$7F
+    and #$7F                    ; Extract instrument (bits 0-6)
     ldx parse_channel
     sta evt_inst,x
     sta seq_last_inst,x
     iny
     
-    ; Check vol flag
+    ; Check volume flag (bit 7 of instrument byte)
     lda parse_temp
-    bpl pe_use_last_vol
+    bpl pe_use_last_vol         ; No volume follows
     
     ; Read volume
     lda (seq_ptr),y
-    and #$0F
+    and #$0F                    ; Extract volume (bits 0-3)
     ldx parse_channel
     sta evt_vol,x
     sta seq_last_vol,x
@@ -375,6 +550,7 @@ pe_use_last:
     sta evt_vol,x
     
 pe_advance:
+    ; Advance pointer by Y bytes
     ldx parse_channel
     tya
     clc
@@ -384,7 +560,7 @@ pe_advance:
     inc seq_evt_ptr_hi,x
 pe_no_carry:
 
-    ; Load next event's row
+    ; Load next event's row number
     lda seq_evt_ptr_lo,x
     sta seq_ptr
     lda seq_evt_ptr_hi,x
@@ -396,28 +572,62 @@ pe_no_carry:
 
 ; ==========================================================================
 ; TRIGGER_NOTE - Play note on channel
+; ==========================================================================
 ; Input: X = channel (0-2)
+; Uses evt_note, evt_inst, evt_vol arrays
+;
+; Note encoding:
+;   GUI note 1 (C-1) -> pitch index 0 -> 1.0x speed
+;   GUI note 13 (C-2) -> pitch index 12 -> 2.0x speed
+;   GUI note 25 (C-3) -> pitch index 24 -> 4.0x speed
 ; ==========================================================================
 trigger_note:
     lda evt_note,x
-    beq tn_note_off
+    beq tn_note_off             ; Note 0 = note off
     
     stx parse_channel
     
-    ; Convert note 1-36 to index 0-35
+    ; Convert GUI note (1-36) to pitch table index (0-35)
     sec
     sbc #1
     sta parse_temp
     
+.if VOLUME_CONTROL = 1
+    ; Set volume for this channel (vol * 16 for LUT indexing)
+    ldx parse_channel
+    lda evt_vol,x
+    asl                         ; vol * 2
+    asl                         ; vol * 4
+    asl                         ; vol * 8
+    asl                         ; vol * 16
+    
+    ; Store in appropriate channel volume variable
+    cpx #0
+    bne @tn_not_vol0
+    sta trk0_vol_shift
+    jmp @tn_vol_done
+@tn_not_vol0:
+    cpx #1
+    bne @tn_not_vol1
+    sta trk1_vol_shift
+    jmp @tn_vol_done
+@tn_not_vol1:
+    sta trk2_vol_shift
+@tn_vol_done:
+.endif
+    
+    ; Get instrument
     ldx parse_channel
     lda evt_inst,x
     and #$7F
     
-    ldx parse_temp              ; X = note index
-    ldy parse_channel           ; Y = channel
+    ; Call Tracker_PlayNote: A=sample, X=note, Y=channel
+    ldx parse_temp
+    ldy parse_channel
     jmp Tracker_PlayNote
 
 tn_note_off:
+    ; Silence the channel
     cpx #0
     bne tn_not_ch0
     lda #0
@@ -427,13 +637,13 @@ tn_note_off:
     rts
 tn_not_ch0:
     cpx #1
-    bne tn_ch2
+    bne tn_not_ch1
     lda #0
     sta trk1_active
     lda #SILENCE
     sta AUDC2
     rts
-tn_ch2:
+tn_not_ch1:
     lda #0
     sta trk2_active
     lda #SILENCE
@@ -441,7 +651,7 @@ tn_ch2:
     rts
 
 ; ==========================================================================
-; SEQ_INIT
+; SEQ_INIT - Initialize sequencer to beginning of song
 ; ==========================================================================
 seq_init:
     lda #0
@@ -449,20 +659,39 @@ seq_init:
     sta seq_row
     sta seq_tick
     sta seq_playing
-    sta last_key_state          ; Reset keyboard edge detection
     
+    lda #6                      ; Default speed
+    sta seq_speed
+    lda #64                     ; Default pattern length
+    sta seq_max_len
+    lda #$FF
+    sta last_key_code
+    
+    ; Initialize per-channel state
     ldx #2
 si_loop:
     lda #0
     sta seq_last_inst,x
     sta evt_trigger,x
+    sta seq_local_row,x         ; Initialize local row counter
     lda #$FF
     sta seq_evt_row,x
     lda #15
     sta seq_last_vol,x
+    lda #64
+    sta seq_ptn_len,x           ; Default pattern length
     dex
     bpl si_loop
     
+.if VOLUME_CONTROL = 1
+    ; Initialize volume shift values to max (15 * 16 = $F0)
+    lda #$F0
+    sta trk0_vol_shift
+    sta trk1_vol_shift
+    sta trk2_vol_shift
+.endif
+    
+    ; Silence all channels
     lda #0
     sta trk0_active
     sta trk1_active
@@ -476,7 +705,7 @@ si_loop:
     rts
 
 ; ==========================================================================
-; SEQ_STOP
+; SEQ_STOP - Stop playback
 ; ==========================================================================
 seq_stop:
     lda #0
@@ -491,136 +720,216 @@ seq_stop:
     rts
 
 ; ==========================================================================
-; SEQ_LOAD_SONGLINE
+; SEQ_LOAD_SONGLINE - Load patterns for current songline
+; ==========================================================================
+; Initializes all three channels with their pattern data.
+; Stores pattern length and start address for loop handling.
 ; ==========================================================================
 seq_load_songline:
     ldx seq_songline
     
+    ; Get speed for this songline
     lda SONG_SPEED,x
     sta seq_speed
     
+    ; Reset row positions
     lda #0
     sta seq_row
     sta seq_max_len
+    sta seq_local_row           ; Reset channel 0 local row
+    sta seq_local_row+1         ; Reset channel 1 local row
+    sta seq_local_row+2         ; Reset channel 2 local row
     
-    ; Channel 0
+    ; === Channel 0 ===
     lda SONG_PTN_CH0,x
     tay
+    
+    ; Store pattern length
     lda PATTERN_LEN,y
+    sta seq_ptn_len             ; Store for channel 0
     cmp seq_max_len
     bcc sls_no_max0
     sta seq_max_len
 sls_no_max0:
+
+    ; Store pattern start address
     lda PATTERN_PTR_LO,y
-    sta seq_evt_ptr_lo
+    sta seq_ptn_start_lo        ; Store start for looping
+    sta seq_evt_ptr_lo          ; Current position = start
     lda PATTERN_PTR_HI,y
-    sta seq_evt_ptr_hi
+    sta seq_ptn_start_hi        ; Store start for looping
+    sta seq_evt_ptr_hi          ; Current position = start
+    
+    ; Load first event's row
     sta seq_ptr+1
-    lda seq_evt_ptr_lo
+    lda seq_ptn_start_lo
     sta seq_ptr
     ldy #0
     lda (seq_ptr),y
     sta seq_evt_row
     
-    ; Channel 1
+    ; === Channel 1 ===
     ldx seq_songline
     lda SONG_PTN_CH1,x
     tay
+    
+    ; Store pattern length
     lda PATTERN_LEN,y
+    sta seq_ptn_len+1           ; Store for channel 1
     cmp seq_max_len
     bcc sls_no_max1
     sta seq_max_len
 sls_no_max1:
+
+    ; Store pattern start address
     lda PATTERN_PTR_LO,y
-    sta seq_evt_ptr_lo+1
+    sta seq_ptn_start_lo+1      ; Store start for looping
+    sta seq_evt_ptr_lo+1        ; Current position = start
     lda PATTERN_PTR_HI,y
-    sta seq_evt_ptr_hi+1
+    sta seq_ptn_start_hi+1      ; Store start for looping
+    sta seq_evt_ptr_hi+1        ; Current position = start
+    
+    ; Load first event's row
     sta seq_ptr+1
-    lda seq_evt_ptr_lo+1
+    lda seq_ptn_start_lo+1
     sta seq_ptr
     ldy #0
     lda (seq_ptr),y
     sta seq_evt_row+1
     
-    ; Channel 2
+    ; === Channel 2 ===
     ldx seq_songline
     lda SONG_PTN_CH2,x
     tay
+    
+    ; Store pattern length
     lda PATTERN_LEN,y
+    sta seq_ptn_len+2           ; Store for channel 2
     cmp seq_max_len
     bcc sls_no_max2
     sta seq_max_len
 sls_no_max2:
+
+    ; Store pattern start address
     lda PATTERN_PTR_LO,y
-    sta seq_evt_ptr_lo+2
+    sta seq_ptn_start_lo+2      ; Store start for looping
+    sta seq_evt_ptr_lo+2        ; Current position = start
     lda PATTERN_PTR_HI,y
-    sta seq_evt_ptr_hi+2
+    sta seq_ptn_start_hi+2      ; Store start for looping
+    sta seq_evt_ptr_hi+2        ; Current position = start
+    
+    ; Load first event's row
     sta seq_ptr+1
-    lda seq_evt_ptr_lo+2
+    lda seq_ptn_start_lo+2
     sta seq_ptr
     ldy #0
     lda (seq_ptr),y
     sta seq_evt_row+2
     
+    ; Reset last values for new patterns
+    ldx #2
+sls_reset_last:
+    lda #0
+    sta seq_last_inst,x
+    lda #15
+    sta seq_last_vol,x
+    dex
+    bpl sls_reset_last
+    
     rts
 
 ; ==========================================================================
-; UPDATE_DISPLAY
+; UPDATE_DISPLAY - Update on-screen status
 ; ==========================================================================
+.if BLANK_SCREEN = 0
 update_display:
+    ; Update songline display
     lda seq_songline
-    jsr byte_to_hex
-    stx song_pos_display
-    sta song_pos_display+1
+    jsr byte_to_dec
+    stx song_pos_display        ; X = tens (left digit)
+    sta song_pos_display+1      ; A = ones (right digit)
     
+    ; Update row display
     lda seq_row
-    jsr byte_to_hex
-    stx row_display
-    sta row_display+1
+    jsr byte_to_dec
+    stx row_display             ; X = tens (left digit)
+    sta row_display+1           ; A = ones (right digit)
     
+    ; Update speed display
     lda seq_speed
-    jsr byte_to_hex
-    stx speed_display
-    sta speed_display+1
+    jsr byte_to_dec
+    stx speed_display           ; X = tens (left digit)
+    sta speed_display+1         ; A = ones (right digit)
     rts
 
-byte_to_hex:
-    sta parse_temp
-    lsr
-    lsr
-    lsr
-    lsr
-    tax
-    lda hex_chars,x
-    tax
-    lda parse_temp
-    and #$0F
-    tay
-    lda hex_chars,y
+; Convert A to 2-digit decimal for screen display
+; Input:  A = value (0-99)
+; Output: X = tens digit (screen code), A = ones digit (screen code)
+byte_to_dec:
+    ldx #0
+btd_loop:
+    cmp #10
+    bcc btd_done
+    sec
+    sbc #10
+    inx
+    jmp btd_loop
+btd_done:
+    ; A = ones (0-9), X = tens (0-9)
+    clc
+    adc #$10                    ; Convert ones to screen code '0'-'9'
+    pha                         ; Save ones
+    txa                         ; A = tens
+    clc
+    adc #$10                    ; Convert tens to screen code
+    tax                         ; X = tens (screen code)
+    pla                         ; A = ones (screen code)
     rts
-
-hex_chars:
-    dta d"0123456789ABCDEF"
+.endif
 
 ; ==========================================================================
-; INCLUDED MODULES
+; INCLUDE MODULES
 ; ==========================================================================
     icl "tracker/tracker_api.asm"
-    icl "tracker/tracker_irq.asm"
+    
+    ; Select IRQ handler based on VQ optimization mode
+.if OPTIMIZE_SPEED = 1
+    ; Speed mode: full bytes with $10 pre-baked, direct load/store
+    icl "tracker/tracker_irq_speed.asm"
+.else
+    ; Size mode: nibble-packed data, requires LUT unpacking
+    icl "tracker/tracker_irq_size.asm"
+.endif
 
 ; ==========================================================================
-; DATA TABLES
+; INCLUDE DATA
 ; ==========================================================================
     icl "pitch/pitch_tables.asm"
+    
+    ; LUT_NIBBLES only needed for size mode (nibble unpacking)
+.if OPTIMIZE_SPEED = 0
     icl "pitch/LUT_NIBBLES.asm"
+.endif
+
+    icl "pitch/VOLUME_SCALE.asm"
     icl "common/pokey_setup.asm"
-    
+
+    ; Song data - MUST be included here (after code) to avoid being overwritten!
+    ; SONG_CFG.asm was included early for the VOLUME_CONTROL equate.
     icl "SONG_DATA.asm"
-    
+
     icl "SAMPLE_DIR.asm"
     icl "VQ_LO.asm"
     icl "VQ_HI.asm"
     icl "VQ_BLOB.asm"
     icl "VQ_INDICES.asm"
+
+; ==========================================================================
+; VOLUME CONTROL VARIABLES (when VOLUME_CONTROL=1)
+; ==========================================================================
+; Channel 2 volume stored in regular memory (no ZP space left)
+.if VOLUME_CONTROL = 1
+trk2_vol_shift:   .byte $F0     ; Volume * 16 (default = max)
+.endif
 
     run start

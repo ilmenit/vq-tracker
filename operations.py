@@ -1,17 +1,24 @@
-"""Atari Sample Tracker - Operations"""
+"""POKEY VQ Tracker - Operations"""
 import os
+import file_io
 from constants import (MAX_OCTAVES, MAX_NOTES, MAX_VOLUME, MAX_ROWS,
                        MAX_INSTRUMENTS, NOTE_KEYS, PAL_HZ, NTSC_HZ, FOCUS_EDITOR,
                        NOTE_OFF)
 from state import state
 from file_io import (save_project, load_project, load_sample, export_asm,
                      export_binary, import_samples_multi, import_samples_folder,
-                     EditorState, work_dir, import_audio_file, get_supported_extensions,
+                     EditorState, import_audio_file, get_supported_extensions,
                      import_pokeyvq)
 
-# Legacy compatibility aliases
-load_samples_multi = lambda paths: import_samples_multi(paths, work_dir.samples if work_dir else ".", 0)
-load_samples_folder = lambda folder, recursive=True: import_samples_folder(folder, work_dir.samples if work_dir else ".", recursive, 0)
+# Legacy compatibility aliases - access file_io.work_dir at runtime (not import time)
+def _get_samples_dir():
+    """Get samples directory, falling back to .tmp/samples if work_dir not initialized."""
+    if file_io.work_dir:
+        return file_io.work_dir.samples
+    return ".tmp/samples"
+
+load_samples_multi = lambda paths: import_samples_multi(paths, _get_samples_dir(), 0)
+load_samples_folder = lambda folder, recursive=True: import_samples_folder(folder, _get_samples_dir(), recursive, 0)
 
 # UI callbacks (set by main module)
 refresh_all = None
@@ -26,6 +33,7 @@ update_controls = None
 show_status = None
 update_title = None
 show_error = None
+rebuild_recent_menu = None  # Rebuild recent files menu
 show_confirm = None
 show_file_dialog = None
 show_rename_dialog = None
@@ -73,8 +81,8 @@ def _do_new():
     state.selection.clear()
     state.vq.invalidate()  # Clear VQ conversion for new project
     # Clear working directory for new project
-    if work_dir:
-        work_dir.clear_all()
+    if file_io.work_dir:
+        file_io.work_dir.clear_all()
     state.audio.set_song(state.song)
     refresh_all()
     update_title()
@@ -87,11 +95,11 @@ def open_song(*args):
 def _load_file(path: str):
     if not path:
         return
-    if not work_dir:
+    if not file_io.work_dir:
         show_error("Load Error", "Working directory not initialized")
         return
     
-    song, editor_state, msg = load_project(path, work_dir)
+    song, editor_state, msg = load_project(path, file_io.work_dir)
     if song:
         state.audio.stop_playback()
         state.song = song
@@ -112,10 +120,16 @@ def _load_file(path: str):
             state.selected_pattern = editor_state.selected_pattern
             state.hex_mode = editor_state.hex_mode
             state.follow = editor_state.follow
-            # Restore VQ state
-            if editor_state.vq_converted:
-                state.vq.output_dir = work_dir.vq_output
-                state.vq.is_valid = True
+            
+            # Restore VQ settings (conversion will happen automatically)
+            state.vq.settings.rate = editor_state.vq_rate
+            state.vq.settings.vector_size = editor_state.vq_vector_size
+            state.vq.settings.smoothness = editor_state.vq_smoothness
+            state.vq.settings.enhance = editor_state.vq_enhance
+            state.vq.settings.optimize_speed = editor_state.vq_optimize_speed
+            
+            # VQ output not loaded from archive - will be regenerated
+            state.vq.invalidate()
         else:
             # Default state for legacy files
             state.songline = state.row = state.channel = 0
@@ -129,8 +143,41 @@ def _load_file(path: str):
         refresh_all()
         update_title()
         show_status(msg)
+        
+        # Add to recent files
+        import ui_globals as G
+        G.add_recent_file(path)
+        if rebuild_recent_menu:
+            rebuild_recent_menu()
+        
+        # Auto-convert if there are samples (ensures latest VQ algorithm is used)
+        _trigger_auto_conversion()
     else:
         show_error("Load Error", msg)
+
+
+def _trigger_auto_conversion():
+    """Auto-trigger VQ conversion after loading a project.
+    
+    Uses sample_path (extracted files in work_dir) rather than original_sample_path,
+    since the original files may no longer exist on the user's disk.
+    """
+    # Collect input files from extracted samples
+    input_files = []
+    for inst in state.song.instruments:
+        # Use sample_path (extracted file) - guaranteed to exist after load
+        if inst.sample_path and os.path.exists(inst.sample_path):
+            input_files.append(inst.sample_path)
+    
+    if not input_files:
+        # No samples to convert
+        return
+    
+    # Import here to avoid circular import at module load time
+    from ui_callbacks import show_vq_conversion_window
+    
+    # Trigger conversion with extracted samples
+    show_vq_conversion_window(input_files)
 
 def save_song(*args):
     """Save project (JSON format)."""
@@ -146,7 +193,7 @@ def save_song_as(*args):
 def _save_file(path: str):
     if not path:
         return
-    if not work_dir:
+    if not file_io.work_dir:
         show_error("Save Error", "Working directory not initialized")
         return
     
@@ -169,13 +216,21 @@ def _save_file(path: str):
         vq_converted=state.vq.is_valid,
         vq_rate=state.vq.rate,
         vq_vector_size=state.vq.vector_size,
-        vq_smoothness=state.vq.smoothness
+        vq_smoothness=state.vq.smoothness,
+        vq_enhance=state.vq.settings.enhance,
+        vq_optimize_speed=state.vq.settings.optimize_speed
     )
     
-    ok, msg = save_project(state.song, editor_state, path, work_dir)
+    ok, msg = save_project(state.song, editor_state, path, file_io.work_dir)
     if ok:
         update_title()
         show_status(msg)
+        
+        # Add to recent files
+        import ui_globals as G
+        G.add_recent_file(path)
+        if rebuild_recent_menu:
+            rebuild_recent_menu()
     else:
         show_error("Save Error", msg)
 
@@ -246,12 +301,9 @@ def _do_import_vq_converter(path: str):
 # =============================================================================
 
 def add_sample(*args):
-    """Load sample file(s) - multi-select, supports multiple audio formats."""
-    # Get list of supported extensions
-    extensions = get_supported_extensions()
-    # Create filter list like [".wav", ".mp3", ".ogg", ...]
-    filters = [ext.upper() for ext in extensions] + list(extensions)
-    show_file_dialog("Load Samples", filters, _load_samples, multi=True)
+    """Load sample file(s) - multi-select with audio preview."""
+    from ui_browser import show_sample_browser
+    show_sample_browser('file', _load_samples)
 
 def _load_samples(paths):
     if not paths:
@@ -260,7 +312,7 @@ def _load_samples(paths):
         paths = [paths]
     
     # Get samples directory from working directory
-    dest_dir = work_dir.samples if work_dir else "."
+    dest_dir = _get_samples_dir()
     start_index = len(state.song.instruments)
     
     count = 0
@@ -295,15 +347,37 @@ def _load_samples(paths):
         show_status(f"Loaded {count} sample(s)")
 
 def add_folder(*args):
-    """Load all samples from folder (supports multiple audio formats)."""
-    show_file_dialog("Select Folder", [], _load_folder, dir_mode=True)
+    """Load all samples from selected folder(s).
+    
+    Uses custom browser where user can select one or more folders.
+    All audio files in the selected folders will be imported.
+    """
+    from ui_browser import show_sample_browser
+    show_sample_browser('folder', _load_folders)
 
-def _load_folder(path: str):
-    if not path:
+def _load_folders(paths):
+    """Load samples from multiple folders."""
+    if not paths:
         return
+    if isinstance(paths, str):
+        paths = [paths]
+    
+    total_count = 0
+    for folder_path in paths:
+        if os.path.isdir(folder_path):
+            count = _load_folder_internal(folder_path)
+            total_count += count
+    
+    if total_count > 0:
+        show_status(f"Loaded {total_count} sample(s) from {len(paths)} folder(s)")
+
+def _load_folder_internal(path: str) -> int:
+    """Load samples from a single folder. Returns count loaded."""
+    if not path:
+        return 0
     
     # Get samples directory from working directory
-    dest_dir = work_dir.samples if work_dir else "."
+    dest_dir = _get_samples_dir()
     start_index = len(state.song.instruments)
     
     results = import_samples_folder(path, dest_dir, recursive=True, start_index=start_index)
@@ -321,7 +395,8 @@ def _load_folder(path: str):
         save_undo("Add folder")
         state.vq.invalidate()  # Invalidate VQ conversion
         refresh_instruments()
-        show_status(f"Loaded {count} sample(s) from folder")
+    
+    return count
 
 def remove_instrument(*args):
     """Remove current instrument."""
@@ -484,9 +559,9 @@ def play_song_start(*args):
     show_status("Playing song...")
 
 def play_song_here(*args):
-    """Play song from current position."""
-    state.audio.play_song(from_start=False, songline=state.songline)
-    show_status(f"Playing from {fmt(state.songline)}...")
+    """Play song from current position (songline and row)."""
+    state.audio.play_song(from_start=False, songline=state.songline, row=state.row)
+    show_status(f"Playing from line {fmt(state.songline)} row {fmt(state.row)}...")
 
 def stop_playback(*args):
     """Stop playback."""
@@ -530,8 +605,8 @@ def enter_note(semitone: int):
         if inst.is_loaded():
             state.audio.preview_note(state.channel, note, inst, row.volume)
     
+    # Advance cursor by step (move_cursor handles refresh and cross-songline navigation)
     move_cursor(state.step, 0)
-    refresh_editor()
 
 
 def enter_note_off():
@@ -550,8 +625,8 @@ def enter_note_off():
     row.note = NOTE_OFF
     # Note-off doesn't need instrument/volume - player will silence channel
     
+    # Advance cursor by step (move_cursor handles refresh and cross-songline navigation)
     move_cursor(state.step, 0)
-    refresh_editor()
 
 def clear_cell(*args):
     """Clear current cell."""
@@ -608,7 +683,8 @@ def enter_digit(d: int):
             save_undo("Enter instrument")
             row.instrument = min(val, MAX_INSTRUMENTS - 1)
             state.clear_pending()
-            move_cursor(state.step, 0)
+            move_cursor(state.step, 0)  # Handles refresh and cross-songline
+            return
         else:
             state.pending_digit = d & 0xF
             state.pending_col = 1
@@ -617,9 +693,10 @@ def enter_digit(d: int):
         save_undo("Enter volume")
         row.volume = min(d & 0xF, MAX_VOLUME)
         state.clear_pending()
-        move_cursor(state.step, 0)
+        move_cursor(state.step, 0)  # Handles refresh and cross-songline
+        return
     
-    refresh_editor()
+    refresh_editor()  # Only for partial input case
 
 def enter_digit_decimal(d: int):
     """Enter decimal digit for instrument/volume in decimal mode."""
@@ -637,7 +714,8 @@ def enter_digit_decimal(d: int):
                 save_undo("Enter instrument")
                 row.instrument = min(val, MAX_INSTRUMENTS - 1)
                 state.clear_pending()
-                move_cursor(state.step, 0)
+                move_cursor(state.step, 0)  # Handles refresh and cross-songline
+                return
             else:  # Have 1 digit, now 2
                 state.pending_digit = state.pending_digit * 10 + d
                 row.instrument = min(state.pending_digit, MAX_INSTRUMENTS - 1)
@@ -651,13 +729,14 @@ def enter_digit_decimal(d: int):
             save_undo("Enter volume")
             row.volume = min(val, MAX_VOLUME)
             state.clear_pending()
-            move_cursor(state.step, 0)
+            move_cursor(state.step, 0)  # Handles refresh and cross-songline
+            return
         else:
             state.pending_digit = d
             state.pending_col = 2
             row.volume = min(d, MAX_VOLUME)
     
-    refresh_editor()
+    refresh_editor()  # Only for partial input case
 
 # =============================================================================
 # COPY/PASTE (Multi-cell)
@@ -736,7 +815,13 @@ def redo(*args):
 # =============================================================================
 
 def move_cursor(drow: int, dcol: int, extend_selection: bool = False):
-    """Move cursor with optional selection extension."""
+    """Move cursor with optional selection extension.
+    
+    Cross-songline navigation:
+    - Moving past first row goes to previous songline's last row
+    - Moving past last row goes to next songline's first row
+    - At song boundaries (first songline row 0, last songline last row): stop
+    """
     state.clear_pending()
     
     max_len = state.song.max_pattern_length(state.songline)
@@ -746,6 +831,7 @@ def move_cursor(drow: int, dcol: int, extend_selection: bool = False):
     
     new_row = state.row + drow
     new_col = state.column + dcol
+    new_songline = state.songline
     
     # Handle column wrap to next/prev channel
     if new_col < 0:
@@ -761,11 +847,42 @@ def move_cursor(drow: int, dcol: int, extend_selection: bool = False):
         else:
             new_col = max_col
     
-    # Handle row wrap
+    # Handle row navigation with cross-songline support
     if new_row < 0:
-        new_row = max_len - 1
+        # Moving up past first row
+        if new_songline > 0:
+            # Go to previous songline
+            new_songline -= 1
+            prev_max_len = state.song.max_pattern_length(new_songline)
+            new_row = prev_max_len + new_row  # new_row is negative, so this gives last row + offset
+            # Handle case where we jumped more than one songline's worth
+            while new_row < 0 and new_songline > 0:
+                new_songline -= 1
+                prev_max_len = state.song.max_pattern_length(new_songline)
+                new_row = prev_max_len + new_row
+            if new_row < 0:
+                new_row = 0  # At absolute beginning of song
+        else:
+            new_row = 0  # Stay at first row of first songline
     elif new_row >= max_len:
-        new_row = 0
+        # Moving down past last row
+        total_songlines = len(state.song.songlines)
+        if new_songline < total_songlines - 1:
+            # Go to next songline
+            overflow = new_row - max_len
+            new_songline += 1
+            new_row = overflow
+            # Handle case where we jumped more than one songline's worth
+            next_max_len = state.song.max_pattern_length(new_songline)
+            while new_row >= next_max_len and new_songline < total_songlines - 1:
+                overflow = new_row - next_max_len
+                new_songline += 1
+                new_row = overflow
+                next_max_len = state.song.max_pattern_length(new_songline)
+            if new_row >= next_max_len:
+                new_row = next_max_len - 1  # At absolute end of song
+        else:
+            new_row = max_len - 1  # Stay at last row of last songline
     
     # Handle selection
     if extend_selection:
@@ -775,9 +892,19 @@ def move_cursor(drow: int, dcol: int, extend_selection: bool = False):
     else:
         state.selection.clear()
     
+    # Check if songline changed
+    songline_changed = (new_songline != state.songline)
+    
+    state.songline = new_songline
     state.row = new_row
     state.column = new_col
-    refresh_editor()
+    
+    # Keep song editor cursor in sync
+    if songline_changed:
+        state.song_cursor_row = new_songline
+        refresh_all()
+    else:
+        refresh_editor()
 
 def next_channel():
     """Move to next channel."""
@@ -798,12 +925,53 @@ def prev_channel():
         refresh_editor()
 
 def jump_rows(delta: int):
-    """Jump multiple rows."""
+    """Jump multiple rows with cross-songline support.
+    
+    Used by:
+    - PageUp/PageDown (±16 rows)
+    - Ctrl+Up/Down (±step rows)  
+    - Backspace (-step rows after clear)
+    """
     state.clear_pending()
     state.selection.clear()
+    
     max_len = state.song.max_pattern_length(state.songline)
-    state.row = max(0, min(state.row + delta, max_len - 1))
-    refresh_editor()
+    new_row = state.row + delta
+    new_songline = state.songline
+    total_songlines = len(state.song.songlines)
+    
+    # Handle cross-songline navigation
+    if new_row < 0:
+        # Moving up past first row
+        while new_row < 0 and new_songline > 0:
+            new_songline -= 1
+            prev_max_len = state.song.max_pattern_length(new_songline)
+            new_row = prev_max_len + new_row  # new_row is negative
+        if new_row < 0:
+            new_row = 0  # At absolute beginning of song
+    elif new_row >= max_len:
+        # Moving down past last row
+        while new_row >= state.song.max_pattern_length(new_songline) and new_songline < total_songlines - 1:
+            current_max = state.song.max_pattern_length(new_songline)
+            new_row = new_row - current_max
+            new_songline += 1
+        # Clamp to last row of current songline
+        final_max = state.song.max_pattern_length(new_songline)
+        if new_row >= final_max:
+            new_row = final_max - 1
+    
+    # Check if songline changed
+    songline_changed = (new_songline != state.songline)
+    
+    state.songline = new_songline
+    state.row = new_row
+    
+    # Keep song editor cursor in sync
+    if songline_changed:
+        state.song_cursor_row = new_songline
+        refresh_all()
+    else:
+        refresh_editor()
 
 def jump_start():
     """Jump to first row."""
@@ -875,6 +1043,8 @@ def octave_up(*args):
         if update_controls:
             update_controls()
         show_status(f"Octave: {state.octave}")
+    else:
+        show_status(f"Octave: {state.octave} (max)")
 
 def octave_down(*args):
     """Decrease octave."""
@@ -883,6 +1053,8 @@ def octave_down(*args):
         if update_controls:
             update_controls()
         show_status(f"Octave: {state.octave}")
+    else:
+        show_status(f"Octave: {state.octave} (min)")
 
 def next_instrument():
     """Select next instrument."""

@@ -1,4 +1,4 @@
-"""Atari Sample Tracker - Data Model"""
+"""POKEY VQ Tracker - Data Model"""
 from dataclasses import dataclass, field
 from typing import List, Optional
 import numpy as np
@@ -167,6 +167,7 @@ class Song:
     speed: int = DEFAULT_SPEED
     system: int = PAL_HZ
     volume_control: bool = False  # Enable volume control in export (requires lower sample rate)
+    blank_screen: bool = False    # Disable display for maximum CPU cycles (gains ~30%)
     songlines: List[Songline] = field(default_factory=list)
     patterns: List[Pattern] = field(default_factory=list)
     instruments: List[Instrument] = field(default_factory=list)
@@ -184,6 +185,8 @@ class Song:
         self.author = ""
         self.speed = DEFAULT_SPEED
         self.system = PAL_HZ
+        self.volume_control = False
+        self.blank_screen = False
         self.songlines = [Songline(patterns=[0, 1, 2])]
         self.patterns = [Pattern() for _ in range(3)]
         self.instruments = []
@@ -284,7 +287,8 @@ class Song:
             'meta': {
                 'title': self.title, 'author': self.author,
                 'system': self.system,
-                'volume_control': self.volume_control
+                'volume_control': self.volume_control,
+                'blank_screen': self.blank_screen
             },
             'songlines': [{'patterns': sl.patterns, 'speed': sl.speed} for sl in self.songlines],
             'patterns': [p.to_dict() for p in self.patterns],
@@ -299,7 +303,8 @@ class Song:
             author=meta.get('author', ''),
             speed=meta.get('speed', DEFAULT_SPEED),  # Legacy global speed
             system=meta.get('system', PAL_HZ),
-            volume_control=meta.get('volume_control', False)
+            volume_control=meta.get('volume_control', False),
+            blank_screen=meta.get('blank_screen', False)
         )
         
         # Handle songlines - both old format (list of pattern arrays) and new format (list of dicts with speed)

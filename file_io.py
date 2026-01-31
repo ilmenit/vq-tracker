@@ -1,18 +1,20 @@
 """
-Atari Sample Tracker - File I/O Module
+POKEY VQ Tracker - File I/O Module
 =======================================
 
 Project file format (.pvq):
     ZIP archive containing:
     - project.json: Song data, editor state, VQ settings
-    - samples/: WAV audio files (embedded)
-    - vq_output/: VQ conversion output (ASM files, if converted)
+    - samples/: WAV audio files (original sources)
     - metadata.json: Format version, timestamps
+    
+    NOTE: VQ output is NOT saved in archives. It is auto-regenerated
+    on load to ensure the latest conversion algorithm is always used.
 
 Working directory:
     .tmp/ folder in application directory with subdirectories:
     - samples/: Imported/extracted sample files
-    - vq_output/: VQ conversion results
+    - vq_output/: VQ conversion results (regenerated on load)
     - build/: Build artifacts
 
 Instance locking:
@@ -108,6 +110,8 @@ class EditorState:
     vq_rate: int = 7917
     vq_vector_size: int = 2
     vq_smoothness: int = 0
+    vq_enhance: bool = True
+    vq_optimize_speed: bool = True  # True=speed (full bytes), False=size (nibble-packed)
     
     def to_dict(self) -> dict:
         return asdict(self)
@@ -388,6 +392,7 @@ def save_project(song: Song, editor_state: EditorState,
                 "author": song.author,
                 "system": song.system,
                 "volume_control": song.volume_control,
+                "blank_screen": song.blank_screen,
                 "created": datetime.now().isoformat(),
             },
             "editor": editor_state.to_dict(),
@@ -422,27 +427,16 @@ def save_project(song: Song, editor_state: EditorState,
             # Add project.json
             zf.writestr("project.json", json.dumps(project_data, indent=2))
             
-            # Add VQ output if exists and converted
-            if editor_state.vq_converted and os.path.isdir(work_dir.vq_output):
-                vq_files = []
-                for root, dirs, files in os.walk(work_dir.vq_output):
-                    for file in files:
-                        src = os.path.join(root, file)
-                        arc = os.path.relpath(src, work_dir.vq_output)
-                        arc_path = f"{VQ_OUTPUT_DIR}/{arc}"
-                        zf.write(src, arc_path)
-                        vq_files.append(arc_path)
-                
-                if vq_files:
-                    logger.info(f"Added {len(vq_files)} VQ output files to archive")
+            # NOTE: VQ output is NOT saved - it will be auto-regenerated on load
+            # This ensures loaded projects use the latest conversion algorithm
             
             # Add metadata
             metadata = {
-                "format": "Atari Sample Tracker Project",
+                "format": "POKEY VQ Tracker Project",
                 "format_version": FORMAT_VERSION,
-                "app_version": "3.0",
-                "created": datetime.now().isoformat(),
-                "vq_converted": editor_state.vq_converted
+                "app_version": "3.1",
+                "created": datetime.now().isoformat()
+                # NOTE: vq_converted not saved - VQ is auto-regenerated on load
             }
             zf.writestr("metadata.json", json.dumps(metadata, indent=2))
         
@@ -495,7 +489,8 @@ def load_project(path: str, work_dir: WorkingDirectory
             title=meta.get('title', 'Untitled'),
             author=meta.get('author', ''),
             system=meta.get('system', PAL_HZ),
-            volume_control=meta.get('volume_control', False)
+            volume_control=meta.get('volume_control', False),
+            blank_screen=meta.get('blank_screen', False)
         )
         song.file_path = path
         song.modified = False
@@ -555,15 +550,9 @@ def load_project(path: str, work_dir: WorkingDirectory
         editor_data = data.get('editor', {})
         editor_state = EditorState.from_dict(editor_data)
         
-        # Check if VQ output exists
-        vq_dir = os.path.join(work_dir.root, VQ_OUTPUT_DIR)
-        if os.path.isdir(vq_dir) and os.listdir(vq_dir):
-            # Copy to proper vq_output location
-            if vq_dir != work_dir.vq_output:
-                if os.path.exists(work_dir.vq_output):
-                    shutil.rmtree(work_dir.vq_output)
-                shutil.copytree(vq_dir, work_dir.vq_output)
-            editor_state.vq_converted = True
+        # NOTE: VQ output is NOT loaded from archive
+        # Auto-conversion will happen after load with the latest algorithm
+        editor_state.vq_converted = False
         
         # Build message
         msg = f"Loaded: {os.path.basename(path)}"
@@ -571,8 +560,6 @@ def load_project(path: str, work_dir: WorkingDirectory
             msg += f" ({loaded_samples} samples)"
         if missing_samples:
             msg += f" ({missing_samples} missing)"
-        if editor_state.vq_converted:
-            msg += " [VQ ready]"
         
         return song, editor_state, msg
         
@@ -799,7 +786,7 @@ def export_asm(song: Song, out_dir: str) -> Tuple[bool, str]:
         
         with open(os.path.join(out_dir, "SONG_DATA.asm"), 'w') as f:
             f.write("; ==========================================================================\n")
-            f.write("; SONG DATA - Generated by Atari Sample Tracker\n")
+            f.write("; SONG DATA - Generated by POKEY VQ Tracker\n")
             f.write("; ==========================================================================\n")
             f.write(f"; Song: {song.title}\n")
             f.write(f"; Author: {song.author}\n")

@@ -1,4 +1,4 @@
-# Atari Sample Tracker v3.0
+# POKEY VQ Tracker v3.0
 
 A cross-platform music tracker for composing sample-based music targeting Atari XL/XE 8-bit computers.
 
@@ -43,6 +43,14 @@ Press **F4** in the tracker to see keyboard shortcuts including this workflow.
 3. Compose music using piano keyboard (Z-M, Q-P keys)
 4. Convert samples: Song → VQ Convert
 5. Build executable: Song → Build XEX
+
+## File Browser
+
+The custom file browser supports:
+- **Multi-select** with checkboxes
+- **Audio preview** - click Play to hear samples before adding
+- **Sorting** by name, size, or date
+- **Folder mode** - select folders to import all audio files inside
 
 ## Project Format (.pvq)
 
@@ -131,25 +139,34 @@ The **ANALYZE** button simulates Atari IRQ timing to detect potential playback i
 - **Problem rows** that exceed the cycle budget
 - **Recommendations** for fixing timing issues
 
+### Optimization Modes
+
+The **Optimize** setting controls CPU usage vs memory trade-off:
+
+| Mode | Cycles/Channel | Codebook | Max Rate (3ch) |
+|------|----------------|----------|----------------|
+| **Speed** | ~58 | 4KB | 7917 Hz |
+| **Size** | ~83 | 2KB | 5278 Hz |
+
+**Speed mode** (default) uses full bytes with pre-baked POKEY bits, enabling faster sample rates. **Size mode** uses nibble-packed data for compact memory but limits maximum sample rate.
+
 ### Cycle Budget
 
 The Atari CPU runs at 1.77 MHz (PAL). Each IRQ has limited cycles:
 
-| Sample Rate | Available Cycles | Status |
-|-------------|------------------|--------|
-| 15834 Hz    | 69               | Very tight |
-| 7917 Hz     | 181              | Standard |
-| 5757 Hz     | 265              | Volume OK |
-| 3958 Hz     | 405              | Safe |
-
-Each active channel uses ~83 cycles (more with high pitches). Three active channels playing octave 3 notes can exceed the budget at standard rates.
+| Sample Rate | Available Cycles | Speed Mode | Size Mode |
+|-------------|------------------|------------|-----------|
+| 15834 Hz    | ~112             | ❌ Over    | ❌ Over   |
+| 7917 Hz     | ~224             | ✅ OK      | ❌ Over   |
+| 5278 Hz     | ~336             | ✅✅ Easy  | ✅ OK     |
+| 3958 Hz     | ~448             | ✅✅ Easy  | ✅✅ Easy |
 
 ## Volume Control
 
 Enable **Volume** checkbox in SONG INFO to include per-note volume in export.
 
 **Requirements:**
-- Sample rate ≤5757 Hz (adds ~13 cycles per active channel)
+- Sample rate ≤5757 Hz (adds ~10 cycles per active channel)
 - Use ANALYZE to verify timing with volume enabled
 
 When disabled, the volume column is hidden (data preserved). This saves cycles and allows higher sample rates.

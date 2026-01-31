@@ -1,7 +1,9 @@
-"""Atari Sample Tracker - UI Callbacks"""
+"""POKEY VQ Tracker - UI Callbacks"""
 import dearpygui.dearpygui as dpg
 import os
+import subprocess
 import logging
+import time
 from constants import (MAX_CHANNELS, MAX_VOLUME, MAX_ROWS, PAL_HZ, NTSC_HZ,
                        FOCUS_SONG, FOCUS_EDITOR, FOCUS_INSTRUMENTS,
                        COL_NOTE, COL_INST, COL_VOL, ROW_HEIGHT)
@@ -15,6 +17,14 @@ logger = logging.getLogger("tracker.callbacks")
 # Reference to rebuild_editor_grid set by main
 _rebuild_editor_grid = None
 _show_confirm = None
+
+# Last built XEX path (for RUN button)
+_last_built_xex = None
+
+# Blink state for attention buttons
+_blink_state = False
+_last_blink_time = 0
+BLINK_INTERVAL = 0.5  # seconds
 
 
 def init_callbacks(rebuild_fn, confirm_fn):
@@ -549,6 +559,16 @@ def on_volume_control_toggle(sender, value):
         G.show_status(f"Volume control {mode}")
 
 
+def on_blank_screen_toggle(sender, value):
+    """Toggle blank screen mode in export."""
+    state.song.blank_screen = value
+    state.song.modified = True
+    G.update_title()
+    
+    mode = "enabled" if value else "disabled"
+    G.show_status(f"Blank screen mode {mode}" + (" (~30% more CPU)" if value else ""))
+
+
 def on_analyze_click():
     """Show timing analysis dialog."""
     show_analyze_dialog()
@@ -566,9 +586,10 @@ def show_analyze_dialog():
     # Get VQ settings
     rate = state.vq.settings.rate
     vector_size = state.vq.settings.vector_size
+    optimize_speed = state.vq.settings.optimize_speed
     
     # Run analysis
-    result = analyze_song(state.song, rate, vector_size)
+    result = analyze_song(state.song, rate, vector_size, optimize_speed)
     report = format_analysis_report(result)
     
     # Close existing dialog if any
@@ -617,7 +638,7 @@ def show_analyze_dialog():
         dpg.add_spacer(height=5)
         
         # Log area with scrolling
-        with dpg.child_window(height=-40, border=True):
+        with dpg.child_window(tag="analyze_log_scroll", height=-40, border=True):
             dpg.add_input_text(
                 tag="analyze_log",
                 default_value=report,
@@ -634,6 +655,12 @@ def show_analyze_dialog():
             dpg.add_spacer(width=(w - 100) // 2)
             dpg.add_button(label="Close", width=100, 
                           callback=lambda: dpg.delete_item("analyze_dialog"))
+    
+    # Auto-scroll to bottom after dialog is created
+    # Use split_frame to ensure layout is computed before scrolling
+    dpg.split_frame()
+    if dpg.does_item_exist("analyze_log_scroll"):
+        dpg.set_y_scroll("analyze_log_scroll", dpg.get_y_scroll_max("analyze_log_scroll"))
 
 
 def on_input_inst_change(sender, value):
@@ -923,6 +950,13 @@ def on_vq_setting_change(sender, app_data):
     
     state.vq.settings.enhance = dpg.get_value("vq_enhance_cb") if dpg.does_item_exist("vq_enhance_cb") else True
     
+    # Optimize mode: "Speed" -> True, "Size" -> False
+    try:
+        opt_value = dpg.get_value("vq_optimize_combo")
+        state.vq.settings.optimize_speed = (opt_value == "Speed")
+    except:
+        pass
+    
     # Invalidate conversion
     invalidate_vq_conversion()
 
@@ -1061,6 +1095,22 @@ def update_build_button_state():
         if dpg.does_item_exist("build_status_label"):
             dpg.set_value("build_status_label", "Run CONVERT first")
             dpg.configure_item("build_status_label", color=(150, 150, 150))
+    
+    # Also update ANALYZE button state
+    update_analyze_button_state()
+
+
+def update_analyze_button_state():
+    """Update ANALYZE button to green when CONVERT is done."""
+    if not dpg.does_item_exist("analyze_btn"):
+        return
+    
+    if state.vq.converted:
+        # Converted - green button (ready to analyze)
+        dpg.bind_item_theme("analyze_btn", "theme_btn_green")
+    else:
+        # Not converted - normal/disabled
+        dpg.bind_item_theme("analyze_btn", "theme_btn_disabled")
 
 
 def on_vq_convert_click(sender, app_data):
@@ -1135,7 +1185,7 @@ def show_vq_conversion_window(input_files: list):
         dpg.add_spacer(height=5)
         
         # Output text area
-        with dpg.child_window(height=-50, border=True):
+        with dpg.child_window(tag="vq_output_scroll", height=-50, border=True):
             dpg.add_input_text(tag="vq_output_text", multiline=True, readonly=True,
                                width=-1, height=-1, default_value="")
         
@@ -1169,6 +1219,9 @@ def poll_vq_conversion():
         current = dpg.get_value("vq_output_text")
         new_text = current + "".join(lines)
         dpg.set_value("vq_output_text", new_text)
+        # Auto-scroll to bottom
+        if dpg.does_item_exist("vq_output_scroll"):
+            dpg.set_y_scroll("vq_output_scroll", dpg.get_y_scroll_max("vq_output_scroll"))
     
     # Check for completion
     result = state.vq.check_completion()
@@ -1254,52 +1307,17 @@ def on_build_click(sender, app_data):
         show_error("Cannot Build", "Song has no notes.\n\nAdd some notes to patterns before building.")
         return
     
-    # Show save file dialog
-    default_path = build.get_default_xex_path(state.song)
-    default_dir = os.path.dirname(default_path)
-    default_name = os.path.basename(default_path)
+    # Build directly to app directory with sanitized song name
+    # Sanitize title for filename (cross-platform safe)
+    title = state.song.title or "untitled"
+    # Keep only alphanumeric, spaces, hyphens, underscores
+    safe_title = "".join(c if c.isalnum() or c in "_ -" else "_" for c in title)
+    safe_title = safe_title.strip()[:50] or "song"
     
-    # Block keyboard input while dialog is open
-    state.set_input_active(True)
+    # Build path: app_dir/songname.xex
+    xex_path = os.path.join(str(G.APP_DIR), f"{safe_title}.xex")
     
-    # Create file dialog for saving XEX
-    if dpg.does_item_exist("build_save_dialog"):
-        dpg.delete_item("build_save_dialog")
-    
-    def on_cancel(sender, app_data):
-        state.set_input_active(False)
-    
-    with dpg.file_dialog(
-        tag="build_save_dialog",
-        directory_selector=False,
-        show=True,
-        modal=True,
-        callback=_on_build_save_selected,
-        cancel_callback=on_cancel,
-        default_path=default_dir,
-        default_filename=default_name,
-        width=600,
-        height=400
-    ):
-        dpg.add_file_extension(".xex", color=(0, 255, 0, 255))
-        dpg.add_file_extension(".*")
-
-
-def _on_build_save_selected(sender, app_data):
-    """Handle build save file selection."""
-    # Clear input block from file dialog
-    state.set_input_active(False)
-    
-    if not app_data or 'file_path_name' not in app_data:
-        return
-    
-    xex_path = app_data['file_path_name']
-    
-    # Ensure .xex extension
-    if not xex_path.lower().endswith('.xex'):
-        xex_path += '.xex'
-    
-    # Show build progress window
+    # Show build progress window directly
     show_build_progress_window(xex_path)
 
 
@@ -1331,7 +1349,7 @@ def show_build_progress_window(xex_path: str):
         dpg.add_spacer(height=5)
         
         # Output text area
-        with dpg.child_window(height=-50, border=True):
+        with dpg.child_window(tag="build_output_scroll", height=-50, border=True):
             dpg.add_input_text(tag="build_output_text", multiline=True, readonly=True,
                                width=-1, height=-1, default_value="")
         
@@ -1350,6 +1368,7 @@ def show_build_progress_window(xex_path: str):
 
 def poll_build_progress():
     """Poll build progress (called from main loop)."""
+    global _last_built_xex
     import build
     
     if not dpg.does_item_exist("build_progress_window"):
@@ -1367,6 +1386,9 @@ def poll_build_progress():
         if dpg.does_item_exist("build_output_text"):
             current = dpg.get_value("build_output_text")
             dpg.set_value("build_output_text", current + text)
+            # Auto-scroll to bottom
+            if dpg.does_item_exist("build_output_scroll"):
+                dpg.set_y_scroll("build_output_scroll", dpg.get_y_scroll_max("build_output_scroll"))
     
     # Check completion
     if build.build_state.build_complete:
@@ -1376,12 +1398,111 @@ def poll_build_progress():
         if dpg.does_item_exist("build_close_btn"):
             dpg.configure_item("build_close_btn", enabled=True)
         
-        # Update status
+        # Update status and RUN button
         if result and result.success:
             G.show_status(f"Build complete: {os.path.basename(result.xex_path)}")
+            # Store XEX path and enable RUN button
+            _last_built_xex = result.xex_path
+            update_run_button_state()
+            
+            # Auto-run the XEX after successful build
+            # Close the progress window first
+            if dpg.does_item_exist("build_progress_window"):
+                state.set_input_active(False)
+                dpg.delete_item("build_progress_window")
+            # Run the built XEX
+            on_run_click(None, None)
         else:
             error_msg = result.error_message if result else "Unknown error"
             G.show_status(f"Build failed: {error_msg[:50]}...")
         
         # Reset completion flag so we don't keep triggering
         build.build_state.build_complete = False
+
+
+def update_run_button_state():
+    """Update RUN button enabled/disabled state."""
+    if not dpg.does_item_exist("run_btn"):
+        return
+    
+    if _last_built_xex and os.path.exists(_last_built_xex):
+        dpg.configure_item("run_btn", enabled=True)
+        dpg.bind_item_theme("run_btn", "theme_btn_green")
+    else:
+        dpg.configure_item("run_btn", enabled=False)
+        dpg.bind_item_theme("run_btn", "theme_btn_disabled")
+
+
+def on_run_click(sender, app_data):
+    """Run the last built XEX in emulator."""
+    from ui_dialogs import show_error
+    import sys
+    import platform
+    
+    if not _last_built_xex or not os.path.exists(_last_built_xex):
+        show_error("Cannot Run", "No XEX file found.\n\nBuild the project first.")
+        return
+    
+    G.show_status(f"Running: {os.path.basename(_last_built_xex)}")
+    
+    try:
+        # Try to open with default application (works on most systems)
+        if platform.system() == 'Windows':
+            os.startfile(_last_built_xex)
+        elif platform.system() == 'Darwin':  # macOS
+            subprocess.Popen(['open', _last_built_xex])
+        else:  # Linux
+            subprocess.Popen(['xdg-open', _last_built_xex])
+    except Exception as e:
+        show_error("Run Failed", f"Could not launch XEX:\n{e}\n\n"
+                   f"File: {_last_built_xex}\n\n"
+                   "You may need to configure your system to open .xex files with an Atari emulator.")
+
+
+# =============================================================================
+# BUTTON BLINK (Attention indicators)
+# =============================================================================
+
+def poll_button_blink():
+    """Update blinking buttons for attention indicators.
+    
+    - ADD/FOLDER buttons blink when no instruments loaded
+    - CONVERT button blinks when instruments loaded but not converted
+    """
+    global _blink_state, _last_blink_time
+    
+    current_time = time.time()
+    if current_time - _last_blink_time < BLINK_INTERVAL:
+        return
+    
+    _last_blink_time = current_time
+    _blink_state = not _blink_state
+    
+    has_instruments = len(state.song.instruments) > 0
+    vq_converted = state.vq.converted
+    
+    # Choose blink theme based on current phase
+    blink_theme = "theme_btn_blink_bright" if _blink_state else "theme_btn_blink_dim"
+    
+    # ADD and FOLDER buttons - blink when no instruments
+    if dpg.does_item_exist("inst_add_btn") and dpg.does_item_exist("inst_folder_btn"):
+        if not has_instruments:
+            # No instruments - blink to draw attention
+            dpg.bind_item_theme("inst_add_btn", blink_theme)
+            dpg.bind_item_theme("inst_folder_btn", blink_theme)
+        else:
+            # Has instruments - use disabled theme (normal button look)
+            dpg.bind_item_theme("inst_add_btn", "theme_btn_disabled")
+            dpg.bind_item_theme("inst_folder_btn", "theme_btn_disabled")
+    
+    # CONVERT button - blink when instruments exist but not converted
+    if dpg.does_item_exist("vq_convert_btn"):
+        if has_instruments and not vq_converted:
+            # Need conversion - blink
+            dpg.bind_item_theme("vq_convert_btn", blink_theme)
+        elif has_instruments and vq_converted:
+            # Converted - green (solid)
+            dpg.bind_item_theme("vq_convert_btn", "theme_btn_green")
+        else:
+            # No instruments - disabled/gray
+            dpg.bind_item_theme("vq_convert_btn", "theme_btn_disabled")

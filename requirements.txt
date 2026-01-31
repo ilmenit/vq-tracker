@@ -9,3 +9,6 @@ sounddevice>=0.4.5
 
 # Better WAV support (optional)
 scipy>=1.7.0
+
+# Better file format support (optional)
+pydub>=0.25.1

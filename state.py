@@ -1,4 +1,4 @@
-"""Atari Sample Tracker - Application State"""
+"""POKEY VQ Tracker - Application State"""
 from typing import List, Tuple, Optional
 from constants import (DEFAULT_OCTAVE, DEFAULT_STEP, VISIBLE_ROWS, MAX_CHANNELS,
                        MAX_VOLUME, FOCUS_EDITOR)

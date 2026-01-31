@@ -1,4 +1,4 @@
-"""Atari Sample Tracker - Constants (v3.0)"""
+"""POKEY VQ Tracker - Constants (v3.0)"""
 
 # === LIMITS ===
 MAX_CHANNELS = 3
@@ -29,7 +29,7 @@ VQ_RATES = [
     5278, 4872, 4524, 4222, 3958, 3725, 3518, 3333
 ]
 VQ_RATE_DEFAULT = 7917
-VQ_VECTOR_SIZES = [2, 4, 6, 8, 10, 12, 14, 16]
+VQ_VECTOR_SIZES = [2, 4, 8, 16]  # Must be powers of 2 for ASM optimization
 VQ_VECTOR_DEFAULT = 2
 VQ_SMOOTHNESS_VALUES = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
 VQ_SMOOTHNESS_DEFAULT = 0
@@ -110,7 +110,7 @@ WIN_HEIGHT = 900
 ROW_HEIGHT = 28
 
 # === APP INFO ===
-APP_NAME = "Atari Sample Tracker"
+APP_NAME = "POKEY VQ Tracker"
 APP_VERSION = "3.0"
 PROJECT_EXT = ".pvq"
 BINARY_EXT = ".pvg"

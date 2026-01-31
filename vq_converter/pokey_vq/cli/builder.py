@@ -839,7 +839,7 @@ class PokeyVQBuilder:
             else:
                 artifacts = ["VQ_LENS.asm", "VQ_LO.asm", "VQ_HI.asm", "VQ_BLOB.asm", "VQ_INDICES.asm", "VQ_CFG.asm"]
             
-            if (self.args.fast or self.args.optimize == 'speed') and self.args.channels == 1:
+            if self.args.channels == 1 and not (self.args.fast or self.args.optimize == 'speed'):
                 artifacts.append("LUT_NIBBLES.asm")
             
             # Add sample directory if generated (multi-sample OR special players)
@@ -1026,9 +1026,7 @@ class PokeyVQBuilder:
         # Export
         exporter.export(self.output_asm, codebook, stream_indices, table, map_full, fast=(self.args.fast or (self.args.optimize == 'speed')), channels=self.args.channels)
 
-        # Generate LUTs if Speed + Single Channel
-        if (self.args.fast or self.args.optimize == 'speed') and self.args.channels == 1:
-             exporter.generate_lut_nibbles(self.output_asm)
+
         
         # Export Sample Directory if multi-sample mode OR pitch/tracker (which depend on it)
         if (self.is_multi_sample or getattr(self.args, 'pitch', False) or getattr(self.args, 'tracker', False) or self.player_mode == 'vq_samples') and self.sample_boundaries:

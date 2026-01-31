@@ -1,4 +1,4 @@
-"""Atari Sample Tracker - UI Refresh Functions"""
+"""POKEY VQ Tracker - UI Refresh Functions"""
 import dearpygui.dearpygui as dpg
 from constants import (MAX_CHANNELS, MAX_VOLUME, note_to_str, FOCUS_SONG,
                        COL_NOTE, COL_INST, COL_VOL)
@@ -346,6 +346,8 @@ def update_controls():
         dpg.set_value("hex_mode_cb", state.hex_mode)
     if dpg.does_item_exist("volume_control_cb"):
         dpg.set_value("volume_control_cb", state.song.volume_control)
+    if dpg.does_item_exist("blank_screen_cb"):
+        dpg.set_value("blank_screen_cb", state.song.blank_screen)
     # Show/hide volume in CURRENT section based on volume_control setting
     if dpg.does_item_exist("current_vol_group"):
         dpg.configure_item("current_vol_group", show=state.song.volume_control)
@@ -355,4 +357,17 @@ def update_controls():
         dpg.set_value("author_input", state.song.author)
     if dpg.does_item_exist("input_vol_combo"):
         dpg.set_value("input_vol_combo", G.fmt_vol(state.volume))
+    
+    # Update VQ settings combos
+    if dpg.does_item_exist("vq_rate_combo"):
+        dpg.set_value("vq_rate_combo", f"{state.vq.settings.rate} Hz")
+    if dpg.does_item_exist("vq_vector_combo"):
+        dpg.set_value("vq_vector_combo", str(state.vq.settings.vector_size))
+    if dpg.does_item_exist("vq_smooth_combo"):
+        dpg.set_value("vq_smooth_combo", str(state.vq.settings.smoothness))
+    if dpg.does_item_exist("vq_enhance_cb"):
+        dpg.set_value("vq_enhance_cb", state.vq.settings.enhance)
+    if dpg.does_item_exist("vq_optimize_combo"):
+        dpg.set_value("vq_optimize_combo", "Speed" if state.vq.settings.optimize_speed else "Size")
+    
     G.update_title()

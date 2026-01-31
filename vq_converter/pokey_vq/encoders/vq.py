@@ -194,7 +194,30 @@ class VQEncoder(Encoder):
             vec = codebook_entries[idx]
             full_vectors.extend(vec)
             
-        full_vectors = np.array(full_vectors)
+        # Single Channel Mode: No hardware glitch simulation needed (single channel is stable).
+        # We just output the stepped waveform.
+        if self.channels == 1:
+             # Find nearest voltage in single channel table
+             # Note: full_vectors are normalized 0-1 values.
+             # POKEY_VOLTAGE_TABLE is 0-0.55. 
+             # Wait, training normalized them to POKEY_VOLTAGE_TABLE domain.
+             # So full_vectors should match table values closely.
+             # We just replicate them.
+             
+             # Expand to high res
+             period_int = int(period_cycles)
+             high_res = np.repeat(full_vectors, period_int)
+             
+             # Resample
+             num_target_samples = int(len(high_res) * target_sr / POKEY_CLOCK)
+             resampled = scipy.signal.resample(high_res, num_target_samples)
+             
+             # Center
+             # full_vectors is 0..1 (Normalized Audio Domain)
+             # Just map to -1..1 for WAV output
+             resampled = (resampled - 0.5) * 2.0
+             
+             return resampled
         
         # 2. Quantize to Ch1/Ch2 Nibbles
         # We need to reverse the POKEY Table mapping.
@@ -233,15 +256,22 @@ class VQEncoder(Encoder):
         
         # Find nearest index in DUAL table for each target sample
         dual_table = POKEY_VOLTAGE_TABLE_DUAL
+        
         # Scale input to match table if needed (it is 0..1 normalized?)
-        # Yes, audio_norm was 0..1
+        # full_vectors is 0..1.
+        # dual_table is 0..MaxVol (~0.82).
+        # We need to scale full_vectors to Voltage Domain before search?
+        # NO. VQ Training (VariableCodebookGenerator) normalizes POKEY levels to 0..1.
+        #   self.pokey_levels = np.array(table) / max_val
+        # So full_vectors (trained codebook entries) are Indices into that 0..1 space.
+        # So we should compare full_vectors (0..1) against dual_table normalized (0..1).
+        
+        max_dual_vol = dual_table[-1]
+        dual_table_norm = dual_table / max_dual_vol
         
         # Find indices in 31-level table
         # We iterate and find closest
-        # Vectorized search:
-        # diffs = abs(full - table) ...
-        # Faster:
-        indices_31 = np.abs(full_vectors[:, None] - dual_table).argmin(axis=1)
+        indices_31 = np.abs(full_vectors[:, None] - dual_table_norm).argmin(axis=1)
         
         # Convert to (v1, v2)
         v1_vals = indices_31 // 2
@@ -289,8 +319,24 @@ class VQEncoder(Encoder):
         
         # Glitch Vol = vol1_levels + old_v2_levels
         # Stable Vol = vol1_levels + vol2_levels
-        glitch_vols = vol1_levels + old_v2_levels
-        stable_vols = vol1_levels + vol2_levels
+        
+        # Apply POKEY Non-Linear Saturation
+        # Model: Input 1.0 -> Output 1.0 (Linear)
+        #        Input > 1.0 -> Output 1.0 + (Input-1.0)*0.5 (Compressed)
+        
+        max_single_vol = POKEY_VOLTAGE_TABLE[-1] # This is the knee point
+        
+        glitch_sum = vol1_levels + old_v2_levels
+        stable_sum = vol1_levels + vol2_levels
+        
+        # Saturation Function
+        def saturate(v_sum, limit):
+            # If v_sum <= limit: v_sum
+            # Else: limit + (v_sum - limit) * 0.5
+            return np.where(v_sum <= limit, v_sum, limit + (v_sum - limit) * 0.5)
+
+        glitch_vols = saturate(glitch_sum, max_single_vol)
+        stable_vols = saturate(stable_sum, max_single_vol)
         
         # Interleave
         # Stack: [[G0, S0], [G1, S1], ...]
@@ -314,11 +360,12 @@ class VQEncoder(Encoder):
         num_target_samples = int(len(high_res) * target_sr / POKEY_CLOCK)
         resampled = scipy.signal.resample(high_res, num_target_samples)
         
-        # Normalize (0..2 is range sum, map to -1..1 or similar)
-        # Original was 0..1 in logic, but Sum can be up to 1.0 (since table is normalized to 1.0 max)
-        # Wait, POKEY_VOLTAGE_TABLE max is ~0.5? 
-        # POKEY_VOLTAGE_TABLE_DUAL max is ~1.0.
-        # Sum of 2 channels (each max ~0.5) is ~1.0.
+        # Normalize (0..MaxVol -> -1..1)
+        # We need to determine the max possible value to normalize correctly.
+        # It's max_dual_vol (from the table we used/generated).
+        
+        if max_dual_vol > 0:
+             resampled = resampled / max_dual_vol
         
         # Center AC
         resampled = (resampled - 0.5) * 2.0

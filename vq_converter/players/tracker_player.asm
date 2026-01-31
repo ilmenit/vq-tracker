@@ -336,8 +336,10 @@ note_names:       .byte $03, $43, $04, $44, $05, $06, $46, $07, $47, $01, $41, $
     ; Pitch Tables
     icl "pitch/pitch_tables.asm"
     
-    ; Nibble Extraction LUTs (for optimized IRQ)
-    icl "pitch/LUT_NIBBLES.asm"
+    ; Nibble Extraction LUTs (Only needed for Packed Mode)
+    .ifndef USE_FAST_CPU
+        icl "pitch/LUT_NIBBLES.asm"
+    .endif
     
     ; POKEY Setup
     icl "common/pokey_setup.asm"

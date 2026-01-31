@@ -1,4 +1,4 @@
-"""Atari Sample Tracker - UI Themes"""
+"""POKEY VQ Tracker - UI Themes"""
 import dearpygui.dearpygui as dpg
 from constants import (COL_BG, COL_BG2, COL_BG3, COL_TEXT, COL_DIM, COL_MUTED,
                        COL_ACCENT, COL_GREEN, COL_RED, COL_YELLOW, COL_CYAN,
@@ -232,6 +232,22 @@ def create_themes():
             dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (45, 45, 50))
             dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (50, 50, 55))
             dpg.add_theme_color(dpg.mvThemeCol_Text, (100, 100, 110))
+    
+    # Blinking button - bright phase (green highlight)
+    with dpg.theme(tag="theme_btn_blink_bright"):
+        with dpg.theme_component(dpg.mvButton):
+            dpg.add_theme_color(dpg.mvThemeCol_Button, (45, 100, 60))
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (55, 120, 75))
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (65, 140, 90))
+            dpg.add_theme_color(dpg.mvThemeCol_Text, (200, 255, 200))
+    
+    # Blinking button - dim phase (grayish)
+    with dpg.theme(tag="theme_btn_blink_dim"):
+        with dpg.theme_component(dpg.mvButton):
+            dpg.add_theme_color(dpg.mvThemeCol_Button, (50, 55, 50))
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (60, 70, 60))
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (70, 85, 70))
+            dpg.add_theme_color(dpg.mvThemeCol_Text, (150, 160, 150))
 
 
 def get_inst_theme(is_selected: bool, is_converted: bool) -> str:

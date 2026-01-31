@@ -1,4 +1,4 @@
-"""Atari Sample Tracker - Build Module
+"""POKEY VQ Tracker - Build Module
 
 Exports song data to ASM format and builds standalone Atari XEX executables.
 """
@@ -67,6 +67,9 @@ build_state = BuildState()
 def export_song_data(song: Song, output_path: str, output_func=None) -> Tuple[bool, str]:
     """Export song data to SONG_DATA.asm format.
     
+    Also generates SONG_CFG.asm with equates that need to be included early
+    (before ORG) for conditional assembly.
+    
     Args:
         song: Song object to export
         output_path: Path to write SONG_DATA.asm
@@ -76,18 +79,46 @@ def export_song_data(song: Song, output_path: str, output_func=None) -> Tuple[bo
         (success, error_message)
     """
     try:
+        # Generate SONG_CFG.asm - equates needed BEFORE the ORG directive
+        # These must be separate because SONG_DATA.asm contains .byte directives
+        # that would be placed at the wrong address if included before ORG
+        cfg_path = output_path.replace("SONG_DATA.asm", "SONG_CFG.asm")
+        cfg_lines = []
+        cfg_lines.append("; ==========================================================================")
+        cfg_lines.append("; SONG_CFG.asm - Song Configuration (include before ORG)")
+        cfg_lines.append("; ==========================================================================")
+        cfg_lines.append("; This file contains only equates (no .byte data) and must be included")
+        cfg_lines.append("; before the ORG directive for conditional assembly to work correctly.")
+        cfg_lines.append("; The actual song data is in SONG_DATA.asm (include after code).")
+        cfg_lines.append("; ==========================================================================")
+        cfg_lines.append("")
+        vol_val = 1 if song.volume_control else 0
+        cfg_lines.append(f"VOLUME_CONTROL = {vol_val}  ; 1=enable volume scaling, 0=disable")
+        cfg_lines.append("")
+        # VQ optimization mode: 1=speed (full bytes), 0=size (nibble-packed)
+        # Read from state.vq.settings (matches what was used during CONVERT)
+        opt_speed_val = 1 if state.vq.settings.optimize_speed else 0
+        cfg_lines.append(f"OPTIMIZE_SPEED = {opt_speed_val}  ; 1=full bytes (fast), 0=nibble-packed (compact)")
+        cfg_lines.append("")
+        # Blank screen mode: 1=disable display for max CPU cycles
+        blank_val = 1 if song.blank_screen else 0
+        cfg_lines.append(f"BLANK_SCREEN = {blank_val}  ; 1=no display (~30% more CPU), 0=normal display")
+        cfg_lines.append("")
+        
+        with open(cfg_path, 'w') as f:
+            f.write('\n'.join(cfg_lines))
+        
+        # Generate SONG_DATA.asm - actual data (include AFTER code)
         lines = []
         lines.append("; ==========================================================================")
-        lines.append("; SONG_DATA.asm - Exported from Atari Sample Tracker")
+        lines.append("; SONG_DATA.asm - Exported from POKEY VQ Tracker")
         lines.append("; ==========================================================================")
         lines.append(f"; Title:  {song.title}")
         lines.append(f"; Author: {song.author}")
         lines.append("; ==========================================================================")
-        lines.append("")
-        
-        # Volume control flag (must be defined before other modules use it)
-        vol_val = 1 if song.volume_control else 0
-        lines.append(f"VOLUME_CONTROL = {vol_val}  ; 1=enable volume scaling, 0=disable")
+        lines.append("; NOTE: Include this file AFTER your code (in the data section).")
+        lines.append("; Include SONG_CFG.asm before ORG for VOLUME_CONTROL equate.")
+        lines.append("; ==========================================================================")
         lines.append("")
         
         # Song header
@@ -205,16 +236,25 @@ def _encode_pattern_events(pattern: Pattern, pattern_idx: int, output_func=None)
         if row.note == 0:
             continue  # Skip empty rows
         
-        # Export GUI note as-is (1-48 for C-1 through B-4)
-        # The ASM player subtracts 1 to get pitch table index (0-47)
-        note = row.note
+        # Handle NOTE_OFF (255 in GUI -> 0 in ASM for silence)
+        if row.note == 255:  # NOTE_OFF
+            note = 0  # ASM player treats note 0 as note-off
+        else:
+            # Export GUI note as-is (1-48 for C-1 through B-4)
+            # The ASM player subtracts 1 to get pitch table index (0-47)
+            note = row.note
+        
         inst = row.instrument
         vol = row.volume
         
         # Convert note to display string for debug
         NOTE_NAMES = ['C-', 'C#', 'D-', 'D#', 'E-', 'F-', 'F#', 'G-', 'G#', 'A-', 'A#', 'B-']
-        note_name = NOTE_NAMES[(note-1) % 12] + str(((note-1) // 12) + 1) if note > 0 else "---"
-        pitch_idx = note - 1
+        if note == 0:
+            note_name = "OFF"
+            pitch_idx = -1  # N/A for note-off
+        else:
+            note_name = NOTE_NAMES[(note-1) % 12] + str(((note-1) // 12) + 1)
+            pitch_idx = note - 1
         
         if output_func:
             output_func(f"    Row {row_num:02d}: {note_name} (note={note:2d} -> pitch_idx={pitch_idx:2d}) inst={inst} vol={vol:2d}")

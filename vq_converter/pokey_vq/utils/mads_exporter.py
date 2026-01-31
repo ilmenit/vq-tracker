@@ -55,19 +55,27 @@ class MADSExporter:
                 elif idx > 0 and np.abs(val - table[idx-1]) < np.abs(val - table[idx]): idx -= 1
 
                 if channels == 1:
-                    # --- Single Channel Packing ---
-                    # idx is the value (0-15) directly (assuming linear table passed)
-                    nibble = idx & 0x0F
-                    
-                    if nibble_buffer is None:
-                        # Store Low Nibble (Frame T) - even samples
-                        nibble_buffer = nibble
+                    # --- Single Channel ---
+                    if fast:
+                        # Optimization: 1 byte per sample (unpacked)
+                        # Pre-bake AUDC mask ($10) into the byte to save ORA instruction
+                        # Format: $1V where V is 4-bit volume
+                        byte_val = (idx & 0x0F) | 0x10  # Hardcoded AUDC mask for now (usually $10)
+                        blob_bytes.append(byte_val)
                     else:
-                        # Pack High Nibble (Frame T+1) - odd samples
-                        # Byte format: [Hi=T+1 | Lo=T]
-                        packed = (nibble << 4) | nibble_buffer
-                        blob_bytes.append(packed)
-                        nibble_buffer = None
+                        # --- Single Channel Packing (Size Optimized) ---
+                        # idx is the value (0-15) directly (assuming linear table passed)
+                        nibble = idx & 0x0F
+                        
+                        if nibble_buffer is None:
+                            # Store Low Nibble (Frame T) - even samples
+                            nibble_buffer = nibble
+                        else:
+                            # Pack High Nibble (Frame T+1) - odd samples
+                            # Byte format: [Hi=T+1 | Lo=T]
+                            packed = (nibble << 4) | nibble_buffer
+                            blob_bytes.append(packed)
+                            nibble_buffer = None
                         
                 else:
                     # --- Dual Channel ---
@@ -174,8 +182,12 @@ class MADSExporter:
         write_asm("VQ_INDICES.asm", "\n".join(lines))
         
         # FIX: Generate LUT for single-channel player optimization
-        # This was missing - the method existed but was never called!
-        if channels == 1:
+        # Only needed if NOT using fast byte stream (which doesn't need LUT)
+        # Wait, strictly speaking, existing players might expect LUT if USE_FAST_CPU is handled via LUT.
+        # But we correspond USE_FAST_CPU to byte stream now.
+        # However, for safety/completeness or mixed modes, we can leave it or disable it.
+        # Since we are redefining 'fast' to mean 'bytes', the LUT is useless and wastes space.
+        if channels == 1 and not fast:
             self.generate_lut_nibbles(filepath)
         
         # Print summary
@@ -184,8 +196,11 @@ class MADSExporter:
         print(f"  - VQ_INDICES: {len(indices)} entries")
         print(f"  - Codebook: {len(codebook_entries)} vectors")
         if channels == 1:
-            print(f"  - Format: Single channel, nibble-packed (8 bytes/16 samples)")
-            print(f"  - LUT_NIBBLES.asm generated for USE_FAST_CPU optimization")
+            if fast:
+                print(f"  - Format: Single channel unpacked (Pre-masked $10, 16 bytes/16 samples)")
+            else:
+                print(f"  - Format: Single channel, nibble-packed (8 bytes/16 samples)")
+                print(f"  - LUT_NIBBLES.asm generated for USE_FAST_CPU optimization")
         elif fast:
             print(f"  - Format: Dual channel interleaved (32 bytes/16 samples)")
         else:

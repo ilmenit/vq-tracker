@@ -1,4 +1,4 @@
-"""Atari Sample Tracker - UI Building Functions"""
+"""POKEY VQ Tracker - UI Building Functions"""
 import dearpygui.dearpygui as dpg
 from constants import (MAX_CHANNELS, MAX_VOLUME, MAX_ROWS, ROW_HEIGHT, COL_CH,
                        COL_NOTE, COL_INST, COL_VOL, COL_DIM,
@@ -372,6 +372,21 @@ def build_top_row():
                     dpg.add_text("When disabled, volume column")
                     dpg.add_text("is hidden but data preserved.")
                 dpg.add_spacer(width=10)
+                dpg.add_checkbox(tag="blank_screen_cb", label="Blank", 
+                                default_value=state.song.blank_screen,
+                                callback=C.on_blank_screen_toggle)
+                with dpg.tooltip(dpg.last_item()):
+                    dpg.add_text("Blank Screen Mode", color=(255, 255, 150))
+                    dpg.add_separator()
+                    dpg.add_text("Disable display in exported player.")
+                    dpg.add_spacer(height=3)
+                    dpg.add_text("Benefits:", color=(100, 255, 100))
+                    dpg.add_text("  ~30% more CPU cycles for IRQ")
+                    dpg.add_text("  Enables higher sample rates")
+                    dpg.add_spacer(height=3)
+                    dpg.add_text("Player shows controls briefly,")
+                    dpg.add_text("then screen goes black.")
+                dpg.add_spacer(width=10)
                 dpg.add_button(label="RESET", width=60, callback=C.on_reset_song)
                 with dpg.tooltip(dpg.last_item()):
                     dpg.add_text("Reset Song", color=(255, 255, 150))
@@ -407,6 +422,15 @@ def build_top_row():
                     dpg.add_text("Requirements:", color=(255, 200, 150))
                     dpg.add_text("  1. Click CONVERT first")
                     dpg.add_text("  2. Song must have patterns/notes")
+                dpg.add_spacer(width=5)
+                dpg.add_button(tag="run_btn", label="RUN", width=60, callback=C.on_run_click, enabled=False)
+                with dpg.tooltip(dpg.last_item()):
+                    dpg.add_text("Run in Emulator", color=(255, 255, 150))
+                    dpg.add_separator()
+                    dpg.add_text("Launches the built .XEX file")
+                    dpg.add_text("in the default emulator.")
+                    dpg.add_spacer(height=3)
+                    dpg.add_text("Available after successful BUILD.", color=(255, 200, 150))
                 dpg.add_spacer(width=10)
                 dpg.add_text(tag="build_status_label", default_value="", color=COL_DIM)
 
@@ -593,18 +617,22 @@ def build_bottom_row():
             with dpg.child_window(tag="instlist", height=-130, border=False):
                 pass
             with dpg.group(horizontal=True):
-                dpg.add_button(label="Add", width=35, callback=ops.add_sample)
+                # Add/Folder buttons start with blink theme (no samples yet)
+                dpg.add_button(tag="inst_add_btn", label="Add", width=35, callback=ops.add_sample)
+                dpg.bind_item_theme("inst_add_btn", "theme_btn_blink_bright")
                 with dpg.tooltip(dpg.last_item()):
                     dpg.add_text("Add Sample", color=(255, 255, 150))
                     dpg.add_separator()
-                    dpg.add_text("Load a WAV file as new instrument.")
-                    dpg.add_text("Supports 8/16/24/32-bit, mono/stereo.")
-                dpg.add_button(label="Folder", width=50, callback=ops.add_folder)
+                    dpg.add_text("Browse and select audio files.")
+                    dpg.add_text("Preview before adding!")
+                    dpg.add_text("Multi-select supported.")
+                dpg.add_button(tag="inst_folder_btn", label="Folder", width=50, callback=ops.add_folder)
+                dpg.bind_item_theme("inst_folder_btn", "theme_btn_blink_bright")
                 with dpg.tooltip(dpg.last_item()):
                     dpg.add_text("Add Folder", color=(255, 255, 150))
                     dpg.add_separator()
-                    dpg.add_text("Load all WAV files from a folder")
-                    dpg.add_text("(including subfolders).")
+                    dpg.add_text("Select folders containing audio files.")
+                    dpg.add_text("All samples inside will be imported.")
                     dpg.add_text("Great for sample packs!")
                 dpg.add_button(label="Rename", width=55, callback=ops.rename_instrument)
                 with dpg.tooltip(dpg.last_item()):
@@ -648,7 +676,11 @@ def build_bottom_row():
                     dpg.add_text("Higher = better audio quality, more CPU.")
                     dpg.add_text("Lower = less CPU, reduced frequency range.")
                     dpg.add_spacer(height=3)
-                    dpg.add_text("Recommended: 7917 Hz (balanced)", color=(150, 200, 150))
+                    dpg.add_text("Max rate depends on Optimize mode:", color=(200, 200, 255))
+                    dpg.add_text("  Speed mode: up to 7917 Hz (3 ch)")
+                    dpg.add_text("  Size mode:  up to 5278 Hz (3 ch)")
+                    dpg.add_spacer(height=3)
+                    dpg.add_text("Recommended: 5278-7917 Hz", color=(150, 200, 150))
                 
                 dpg.add_spacer(width=8)
                 dpg.add_text("Vec:")
@@ -699,6 +731,33 @@ def build_bottom_row():
                     dpg.add_text("  - Frequency optimization for POKEY")
                     dpg.add_spacer(height=3)
                     dpg.add_text("Recommended: ON", color=(150, 200, 150))
+            
+            # Second row: Optimize mode
+            with dpg.group(horizontal=True):
+                dpg.add_text("Optimize:")
+                dpg.add_combo(tag="vq_optimize_combo", items=["Speed", "Size"], 
+                              default_value="Speed", width=70, callback=C.on_vq_setting_change)
+                with dpg.tooltip(dpg.last_item()):
+                    dpg.add_text("IRQ Optimization Mode", color=(255, 255, 150))
+                    dpg.add_separator()
+                    dpg.add_text("Controls CPU usage vs memory trade-off:")
+                    dpg.add_spacer(height=5)
+                    dpg.add_text("SPEED (recommended):", color=(100, 255, 100))
+                    dpg.add_text("  + ~58 cycles/channel (fast!)")
+                    dpg.add_text("  + Enables 7917 Hz sample rate")
+                    dpg.add_text("  + Smoother playback")
+                    dpg.add_text("  - 2x codebook memory (4KB)")
+                    dpg.add_spacer(height=5)
+                    dpg.add_text("SIZE:", color=(255, 200, 100))
+                    dpg.add_text("  + Compact codebook (2KB)")
+                    dpg.add_text("  - ~83 cycles/channel (slower)")
+                    dpg.add_text("  - Max 5278 Hz for 3 channels")
+                    dpg.add_spacer(height=5)
+                    dpg.add_text("Max Rate with 3 Channels:", color=(200, 200, 255))
+                    dpg.add_text("  Speed mode: 7917 Hz")
+                    dpg.add_text("  Size mode:  5278 Hz")
+                    dpg.add_spacer(height=3)
+                    dpg.add_text("Recommended: Speed", color=(150, 200, 150))
             
             dpg.add_spacer(height=3)
             

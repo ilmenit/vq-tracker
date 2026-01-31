@@ -1,4 +1,4 @@
-"""Atari Sample Tracker - UI Dialogs"""
+"""POKEY VQ Tracker - UI Dialogs"""
 import dearpygui.dearpygui as dpg
 from constants import COL_DIM, COL_ACCENT, COL_TEXT, APP_NAME, APP_VERSION
 from state import state
@@ -9,7 +9,18 @@ _file_multi = False
 
 def show_file_dialog(title: str, extensions: list, callback, 
                      save_mode: bool = False, dir_mode: bool = False, multi: bool = False):
-    """Show file dialog."""
+    """Show file dialog.
+    
+    Args:
+        title: Dialog title
+        extensions: List of file extensions to filter (e.g., ['.wav', '.mp3'])
+        callback: Function to call with selected path(s)
+        save_mode: If True, show save dialog
+        dir_mode: If True, select directories instead of files
+        multi: If True, allow multiple file selection
+    
+    Note: When dir_mode=True, files are not shown (DearPyGui limitation).
+    """
     global _file_callback, _file_multi
     _file_callback = callback
     _file_multi = multi
@@ -29,6 +40,7 @@ def show_file_dialog(title: str, extensions: list, callback,
         height=450,
         modal=True
     ):
+        # Add file extensions for filtering (only effective when dir_mode=False)
         if extensions:
             for ext in extensions:
                 dpg.add_file_extension(ext)
@@ -325,17 +337,17 @@ def show_shortcuts():
         dpg.add_text("  Delete           Delete row (shift up)")
         dpg.add_text("  Backspace        Clear cell + jump up")
         dpg.add_text("  Insert           Insert row (shift down)")
-        dpg.add_text("  * (numpad)       Octave up")
-        dpg.add_text("  - (minus)        Octave down")
+        dpg.add_text("  = / +            Octave up")
+        dpg.add_text("  -                Octave down")
         dpg.add_text("  [ / ]            Prev/next instrument")
         
         dpg.add_spacer(height=8)
         dpg.add_text("OCTAVE & PLAYBACK", color=COL_ACCENT)
         dpg.add_text("  F1 / F2 / F3     Select Octave 1/2/3")
         dpg.add_text("  F4               Show this help")
-        dpg.add_text("  F5               Play pattern")
+        dpg.add_text("  F5               Play pattern from start")
         dpg.add_text("  F6               Play song from start")
-        dpg.add_text("  F7               Play from current line")
+        dpg.add_text("  F7               Play from cursor position")
         dpg.add_text("  F8               Stop")
         dpg.add_text("  Space            Play/stop toggle")
         dpg.add_text("  Enter            Preview current row")

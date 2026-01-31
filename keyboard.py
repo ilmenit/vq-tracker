@@ -1,4 +1,4 @@
-"""Atari Sample Tracker - Keyboard Handler"""
+"""POKEY VQ Tracker - Keyboard Handler"""
 import dearpygui.dearpygui as dpg
 from constants import NOTE_KEYS, FOCUS_EDITOR, FOCUS_SONG, FOCUS_INSTRUMENTS, MAX_CHANNELS, MAX_VOLUME, MAX_NOTES, NOTE_OFF
 from state import state
@@ -22,11 +22,25 @@ KEY_MAP = {
     dpg.mvKey_NumPad3: '3', dpg.mvKey_NumPad4: '4', dpg.mvKey_NumPad5: '5',
     dpg.mvKey_NumPad6: '6', dpg.mvKey_NumPad7: '7', dpg.mvKey_NumPad8: '8',
     dpg.mvKey_NumPad9: '9',
+    # Special keys for octave/note-off
+    # DearPyGUI key constants
+    dpg.mvKey_Minus: '-',
+    dpg.mvKey_Subtract: '-',
+    dpg.mvKey_Add: '+',
+    dpg.mvKey_Multiply: '*',
+    # Actual key codes discovered on user's system (DearPyGUI internal codes)
+    606: '`',   # Backtick/grave accent key
+    602: '=',   # Equal/plus key (=/+ on same physical key)
+    # GLFW codes (may vary by platform)
+    96: '`',    # GLFW_KEY_GRAVE_ACCENT
+    45: '-',    # GLFW_KEY_MINUS
+    61: '=',    # GLFW_KEY_EQUAL
 }
 
 # Keys that need special handling (checked by keycode directly)
 # Backtick/grave accent key for note-off
-KEY_GRAVE = 192  # VK code for backtick/grave accent
+# DearPyGUI uses GLFW key codes internally: GLFW_KEY_GRAVE_ACCENT = 96
+KEY_GRAVE = 96
 
 # Pending hex digit for song editor
 _song_pending_digit = None
@@ -118,21 +132,16 @@ def handle_key(sender, key):
             ops.jump_first_songline()
         elif key == dpg.mvKey_End:
             ops.jump_last_songline()
+        # Ctrl+Shift+Arrow: Change Step (works anywhere)
+        elif key == dpg.mvKey_Up and shift:
+            ops.change_step(1)
+        elif key == dpg.mvKey_Down and shift:
+            ops.change_step(-1)
         # Ctrl+Arrow: Jump by Step rows (pattern editor only)
         elif key == dpg.mvKey_Up and state.focus == FOCUS_EDITOR:
-            if shift:
-                # Ctrl+Shift+Up: Increase Edit Step
-                ops.change_step(1)
-            else:
-                # Ctrl+Up: Jump up by Step rows
-                ops.jump_rows(-state.step)
+            ops.jump_rows(-state.step)
         elif key == dpg.mvKey_Down and state.focus == FOCUS_EDITOR:
-            if shift:
-                # Ctrl+Shift+Down: Decrease Edit Step
-                ops.change_step(-1)
-            else:
-                # Ctrl+Down: Jump down by Step rows
-                ops.jump_rows(state.step)
+            ops.jump_rows(state.step)
         return
     
     # === OCTAVE SELECTION (F1-F3) - Always available ===
@@ -314,9 +323,15 @@ def handle_key(sender, key):
         ops.insert_row()
     
     # Octave change
+    # Support both numpad and regular keyboard keys
+    # Regular keyboard: - (minus) for down, = or + (with shift) for up
+    # Numpad: - (subtract) for down, + (add) for up
+    # Note: Also handled in handle_char() as fallback
     elif key == dpg.mvKey_Multiply:  # Numpad *
         ops.octave_up()
-    elif key in (dpg.mvKey_Subtract, dpg.mvKey_Minus):  # Numpad - or -
+    elif key == dpg.mvKey_Add:  # Numpad +
+        ops.octave_up()
+    elif key in (dpg.mvKey_Subtract, dpg.mvKey_Minus):  # Numpad -, regular -
         ops.octave_down()
     
     # Instrument change
@@ -325,16 +340,16 @@ def handle_key(sender, key):
     elif key == dpg.mvKey_Close_Brace:  # ]
         ops.next_instrument()
     
-    # Note-off key: backtick/grave accent (`) - always enters note-off
-    elif key == KEY_GRAVE:
-        if state.column == 0:  # Only in note column
-            ops.enter_note_off()
+    # Note-off key: handled in handle_char() now
     
-    # Character input (notes and hex digits)
+    # Character input (notes, hex digits, octave change, note-off)
     else:
         char = KEY_MAP.get(key)
         if char:
             handle_char(char)
+        # Uncomment for debugging unknown keys:
+        # else:
+        #     print(f"DEBUG: Unhandled key code: {key}")
 
 
 def _play_instrument_preview(note: int):
@@ -351,44 +366,65 @@ def handle_char(char: str):
     Key behavior depends on G.piano_keys_mode:
     - Piano mode (True): Number keys 2,3,5,6,7,9,0 play sharp notes
     - Tracker mode (False): Number keys 1,2,3 select octave, '1' enters note-off in note column
-    """
-    char = char.lower()
     
-    # In note column
+    Special keys (work in any column):
+    - Backtick (`) enters note-off (only in note column)
+    - = or + raises octave
+    - - lowers octave
+    """
+    # Don't lowercase special characters
+    char_lower = char.lower()
+    
+    # === SPECIAL KEYS (work in any column) ===
+    
+    # Octave change: = or + (up), - (down)
+    if char in '=+*':
+        ops.octave_up()
+        return
+    if char == '-':
+        ops.octave_down()
+        return
+    
+    # Note-off: backtick (only in note column)
+    if char == '`' and state.column == 0:
+        ops.enter_note_off()
+        return
+    
+    # === NOTE COLUMN ===
     if state.column == 0:
         # Tracker mode special handling for '1' key = note-off
-        if not G.piano_keys_mode and char == '1':
+        if not G.piano_keys_mode and char_lower == '1':
             ops.enter_note_off()
             return
         
         # Tracker mode: '2' and '3' select octave (but only if not in NOTE_KEYS)
-        if not G.piano_keys_mode and char in '23':
-            octave = int(char)
+        if not G.piano_keys_mode and char_lower in '23':
+            octave = int(char_lower)
             ops.set_octave(octave)
             G.show_status(f"Octave: {octave}")
             return
         
         # Piano mode: all NOTE_KEYS work normally
         # Tracker mode: NOTE_KEYS without number sharps work
-        if char in NOTE_KEYS:
+        if char_lower in NOTE_KEYS:
             # In tracker mode, skip number keys (they're used for octave selection)
-            if not G.piano_keys_mode and char in '2356790':
+            if not G.piano_keys_mode and char_lower in '2356790':
                 return  # Ignore - these don't play notes in tracker mode
-            ops.enter_note(NOTE_KEYS[char])
+            ops.enter_note(NOTE_KEYS[char_lower])
             return
     
-    # Digits for instrument/volume columns
+    # === INSTRUMENT/VOLUME COLUMNS ===
     if state.column > 0:
         if state.hex_mode:
             # Hex mode: 0-9 and a-f
-            if char in '0123456789':
-                ops.enter_digit(int(char))
-            elif char in 'abcdef':
-                ops.enter_digit(10 + ord(char) - ord('a'))
+            if char_lower in '0123456789':
+                ops.enter_digit(int(char_lower))
+            elif char_lower in 'abcdef':
+                ops.enter_digit(10 + ord(char_lower) - ord('a'))
         else:
             # Decimal mode: only 0-9
-            if char in '0123456789':
-                ops.enter_digit_decimal(int(char))
+            if char_lower in '0123456789':
+                ops.enter_digit_decimal(int(char_lower))
 
 
 def handle_song_hex_input(char: str):

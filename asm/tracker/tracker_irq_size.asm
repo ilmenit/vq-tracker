@@ -1,40 +1,53 @@
 ; ==========================================================================
-; TRACKER IRQ HANDLER - 3-Channel Sample Playback
+; TRACKER IRQ HANDLER - SIZE OPTIMIZED (Nibble-packed)
 ; ==========================================================================
 ; Timer-driven interrupt handler for playing VQ-compressed samples
 ; with pitch control on 3 independent POKEY channels.
 ;
+; SIZE OPTIMIZATION (--optimize size in VQ converter):
+;   - Nibble-packed data (2 samples per byte)
+;   - Requires LUT for nibble extraction
+;   - Uses stream_ptr directly for VQ index fetch (no temp pointer copy)
+;   - More compact codebook, slightly more cycles per channel
+;
+; OPTIMIZATION: Instead of looping for each boundary crossed, we calculate
+; the total crosses using division (shifts) and handle all at once.
+; This makes high-pitch notes O(1) instead of O(N) where N = crosses.
+;
+; For MIN_VECTOR = 2, 4, 8, or 16 (powers of 2):
+;   crosses = vector_offset >> log2(MIN_VECTOR)
+;   new_offset = vector_offset & (MIN_VECTOR - 1)
+;
 ; Features:
 ;   - 8.8 fixed-point pitch accumulator per channel
-;   - LUT-based nibble extraction (saves ~5 cycles/sample)
-;   - Boundary loop for high-pitch notes that skip multiple vectors
-;   - Output BEFORE advance ensures sample 0 is played
+;   - LUT-based nibble extraction
+;   - O(1) boundary handling using shifts/masks
 ;   - Optional volume control (.if VOLUME_CONTROL = 1)
 ;
-; Data Format:
-;   - 16 samples per VQ vector = 8 bytes (nibble-packed)
-;   - Byte N contains: [sample 2N+1 : sample 2N] (high:low nibbles)
+; Cycle Budget (per channel, OPTIMIZED):
+;   - Inactive: 5 cycles
+;   - Active (no boundary cross): ~75 cycles
+;   - Active (with boundary cross): ~125 cycles
 ;
-; Cycle Budget (per channel, typical, NO volume control):
-;   - Active check: ~5 cycles
-;   - Nibble output with LUT: ~25 cycles
-;   - Pitch advance: ~25 cycles
-;   - Boundary check: ~10 cycles
-;   - Total: ~65 cycles/channel = ~195 cycles for 3 channels
-;
-; With VOLUME_CONTROL=1: Add ~13 cycles per active channel
+; With VOLUME_CONTROL=1: Add ~11 cycles per active channel
 ;
 ; ==========================================================================
 
-.if VOLUME_CONTROL = 1
-; Volume scaling lookup table: VOLUME_SCALE[sample + vol_shifted]
-; Where sample = 0-15, vol_shifted = volume * 16 (0, 16, 32, ... 240)
-; Result = (sample * volume / 15) | $10
-; This is 256 bytes, placed after IRQ code
+; Masks for modulo operation (MIN_VECTOR - 1)
+.if MIN_VECTOR = 2
+    VECTOR_MASK = $01
+.elif MIN_VECTOR = 4
+    VECTOR_MASK = $03
+.elif MIN_VECTOR = 8
+    VECTOR_MASK = $07
+.elif MIN_VECTOR = 16
+    VECTOR_MASK = $0F
+.else
+    .error "MIN_VECTOR must be 2, 4, 8, or 16"
 .endif
 
 Tracker_IRQ:
-    ; Save registers
+    ; Save registers (zero-page saves are faster than stack)
     sta irq_save_a
     stx irq_save_x
     sty irq_save_y
@@ -65,15 +78,14 @@ Tracker_IRQ:
     
 @ch0_low:
 .if VOLUME_CONTROL = 1
-    ; Volume scaling: get raw nibble, combine with volume, lookup scaled
-    lda LUT_NIBBLE_LO,x         ; Get low nibble (0-15, no $10 mask yet)
-    and #$0F                    ; Ensure just nibble
-    ora trk0_vol_shift          ; Combine with volume (vol * 16)
+    lda LUT_NIBBLE_LO,x
+    and #$0F
+    ora trk0_vol_shift
     tax
-    lda VOLUME_SCALE,x          ; Look up scaled value (includes $10)
+    lda VOLUME_SCALE,x
     sta AUDC1
 .else
-    lda LUT_NIBBLE_LO,x         ; Low nibble + $10 mask
+    lda LUT_NIBBLE_LO,x
     sta AUDC1
 .endif
     jmp @ch0_advance
@@ -87,7 +99,7 @@ Tracker_IRQ:
     lda VOLUME_SCALE,x
     sta AUDC1
 .else
-    lda LUT_NIBBLE_HI,x         ; High nibble + $10 mask
+    lda LUT_NIBBLE_HI,x
     sta AUDC1
 .endif
     
@@ -95,10 +107,10 @@ Tracker_IRQ:
     ; --- Pitch accumulator (8.8 fixed-point) ---
     clc
     lda trk0_pitch_frac
-    adc trk0_pitch_step         ; Add fractional part
+    adc trk0_pitch_step
     sta trk0_pitch_frac
     lda trk0_pitch_int
-    adc trk0_pitch_step+1       ; Add integer part with carry
+    adc trk0_pitch_step+1
     sta trk0_pitch_int
     
     beq @skip_ch0               ; No advancement if pitch_int = 0
@@ -112,49 +124,65 @@ Tracker_IRQ:
     lda #0
     sta trk0_pitch_int          ; Reset integer accumulator
     
-    ; --- Check vector boundary (with loop for high pitches) ---
-@ch0_check_boundary:
+    ; --- OPTIMIZED BOUNDARY CHECK (O(1), no loop!) ---
     lda trk0_vector_offset
     cmp #MIN_VECTOR
-    bcc @skip_ch0               ; Still within current vector
+    bcc @skip_ch0               ; No boundary cross? Done.
     
-    ; Crossed boundary - wrap and advance stream
-    sec
-    sbc #MIN_VECTOR
+    ; Calculate crosses and new offset using shifts/masks
+    ; Save original offset for mask operation
+    tax                         ; X = original offset
+    
+    ; Divide to get number of boundaries crossed
+.if MIN_VECTOR = 2
+    lsr                         ; A = offset / 2
+.elif MIN_VECTOR = 4
+    lsr
+    lsr                         ; A = offset / 4
+.elif MIN_VECTOR = 8
+    lsr
+    lsr
+    lsr                         ; A = offset / 8
+.elif MIN_VECTOR = 16
+    lsr
+    lsr
+    lsr
+    lsr                         ; A = offset / 16
+.endif
+    
+    ; A = number of boundaries crossed, add to stream_ptr
+    clc
+    adc trk0_stream_ptr
+    sta trk0_stream_ptr
+    bcc @ch0_no_carry
+    inc trk0_stream_ptr+1
+@ch0_no_carry:
+    
+    ; Calculate new offset: original % MIN_VECTOR
+    txa                         ; A = original offset
+    and #VECTOR_MASK            ; A = offset mod MIN_VECTOR
     sta trk0_vector_offset
     
-    ; Advance stream pointer
-    inc trk0_stream_ptr
-    bne @ch0_check_end
-    inc trk0_stream_ptr+1
-    
-@ch0_check_end:
-    ; 16-bit end-of-sample check
+    ; Check end of sample (16-bit compare)
     lda trk0_stream_ptr+1
     cmp trk0_stream_end+1
-    bcc @ch0_update_cache       ; High byte less = not at end
+    bcc @ch0_load_vector        ; High byte less = not at end
     bne @ch0_end                ; High byte greater = past end
     lda trk0_stream_ptr
     cmp trk0_stream_end
     bcs @ch0_end                ; Low byte >= end = done
     
-@ch0_update_cache:
-    ; Load next VQ vector
-    lda trk0_stream_ptr
-    sta trk_ptr
-    lda trk0_stream_ptr+1
-    sta trk_ptr+1
-    
+@ch0_load_vector:
+    ; Load the new VQ vector (optimized: use stream_ptr directly)
     ldy #0
-    lda (trk_ptr),y             ; Get VQ codebook index
+    lda (trk0_stream_ptr),y     ; Get VQ codebook index
     tay
     
     lda VQ_LO,y
     sta trk0_sample_ptr
     lda VQ_HI,y
     sta trk0_sample_ptr+1
-    
-    jmp @ch0_check_boundary     ; Check if more vectors to skip (high pitch)
+    jmp @skip_ch0
     
 @ch0_end:
     lda #0
@@ -226,44 +254,59 @@ Tracker_IRQ:
     lda #0
     sta trk1_pitch_int
     
-@ch1_check_boundary:
+    ; --- OPTIMIZED BOUNDARY CHECK ---
     lda trk1_vector_offset
     cmp #MIN_VECTOR
     bcc @skip_ch1
     
-    sec
-    sbc #MIN_VECTOR
+    tax
+    
+.if MIN_VECTOR = 2
+    lsr
+.elif MIN_VECTOR = 4
+    lsr
+    lsr
+.elif MIN_VECTOR = 8
+    lsr
+    lsr
+    lsr
+.elif MIN_VECTOR = 16
+    lsr
+    lsr
+    lsr
+    lsr
+.endif
+    
+    clc
+    adc trk1_stream_ptr
+    sta trk1_stream_ptr
+    bcc @ch1_no_carry
+    inc trk1_stream_ptr+1
+@ch1_no_carry:
+    
+    txa
+    and #VECTOR_MASK
     sta trk1_vector_offset
     
-    inc trk1_stream_ptr
-    bne @ch1_check_end
-    inc trk1_stream_ptr+1
-    
-@ch1_check_end:
     lda trk1_stream_ptr+1
     cmp trk1_stream_end+1
-    bcc @ch1_update_cache
+    bcc @ch1_load_vector
     bne @ch1_end
     lda trk1_stream_ptr
     cmp trk1_stream_end
     bcs @ch1_end
     
-@ch1_update_cache:
-    lda trk1_stream_ptr
-    sta trk_ptr
-    lda trk1_stream_ptr+1
-    sta trk_ptr+1
-    
+@ch1_load_vector:
+    ; Load the new VQ vector (optimized: use stream_ptr directly)
     ldy #0
-    lda (trk_ptr),y
+    lda (trk1_stream_ptr),y
     tay
     
     lda VQ_LO,y
     sta trk1_sample_ptr
     lda VQ_HI,y
     sta trk1_sample_ptr+1
-    
-    jmp @ch1_check_boundary
+    jmp @skip_ch1
     
 @ch1_end:
     lda #0
@@ -293,7 +336,7 @@ Tracker_IRQ:
 .if VOLUME_CONTROL = 1
     lda LUT_NIBBLE_LO,x
     and #$0F
-    ora trk2_vol_shift          ; Regular memory, not ZP
+    ora trk2_vol_shift
     tax
     lda VOLUME_SCALE,x
     sta AUDC3
@@ -335,44 +378,59 @@ Tracker_IRQ:
     lda #0
     sta trk2_pitch_int
     
-@ch2_check_boundary:
+    ; --- OPTIMIZED BOUNDARY CHECK ---
     lda trk2_vector_offset
     cmp #MIN_VECTOR
     bcc @skip_ch2
     
-    sec
-    sbc #MIN_VECTOR
+    tax
+    
+.if MIN_VECTOR = 2
+    lsr
+.elif MIN_VECTOR = 4
+    lsr
+    lsr
+.elif MIN_VECTOR = 8
+    lsr
+    lsr
+    lsr
+.elif MIN_VECTOR = 16
+    lsr
+    lsr
+    lsr
+    lsr
+.endif
+    
+    clc
+    adc trk2_stream_ptr
+    sta trk2_stream_ptr
+    bcc @ch2_no_carry
+    inc trk2_stream_ptr+1
+@ch2_no_carry:
+    
+    txa
+    and #VECTOR_MASK
     sta trk2_vector_offset
     
-    inc trk2_stream_ptr
-    bne @ch2_check_end
-    inc trk2_stream_ptr+1
-    
-@ch2_check_end:
     lda trk2_stream_ptr+1
     cmp trk2_stream_end+1
-    bcc @ch2_update_cache
+    bcc @ch2_load_vector
     bne @ch2_end
     lda trk2_stream_ptr
     cmp trk2_stream_end
     bcs @ch2_end
     
-@ch2_update_cache:
-    lda trk2_stream_ptr
-    sta trk_ptr
-    lda trk2_stream_ptr+1
-    sta trk_ptr+1
-    
+@ch2_load_vector:
+    ; Load the new VQ vector (optimized: use stream_ptr directly)
     ldy #0
-    lda (trk_ptr),y
+    lda (trk2_stream_ptr),y
     tay
     
     lda VQ_LO,y
     sta trk2_sample_ptr
     lda VQ_HI,y
     sta trk2_sample_ptr+1
-    
-    jmp @ch2_check_boundary
+    jmp @skip_ch2
     
 @ch2_end:
     lda #0
@@ -382,7 +440,7 @@ Tracker_IRQ:
 @skip_ch2:
 
     ; =========================================================================
-    ; EXIT - Restore registers
+    ; EXIT
     ; =========================================================================
     lda irq_save_a
     ldx irq_save_x

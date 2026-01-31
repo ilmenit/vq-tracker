@@ -180,11 +180,15 @@ class StateManager:
              if old_mode not in ["vq_pitch", "vq_multi_channel"]:
                  self.saved_state['vectors'] = (self.config['vec_min'], self.config['vec_max'])
                  
+             # Set default to 16 if it was something wild, or if we want to ensure good start
+             # But don't strictly enforce it if user changes it later.
+             # However, we DO need Min to equal Max for these players.
+             # Let's set both to 16 as a safe default start.
              self.config['vec_min'] = 16
              self.config['vec_max'] = 16
              
              self.eb.publish(EventType.STATE_CHANGED, {'vec_min': 16, 'vec_max': 16})
-             self.eb.publish(EventType.CONSTRAINT_APPLIED, "Forced Vector Size to 16/16 (Required for Pitch/Multi-Channel).")
+             self.eb.publish(EventType.CONSTRAINT_APPLIED, "Reset Vector Size to 16 (Fixed Size required).")
              
         elif old_mode in ["vq_pitch", "vq_multi_channel"] and not is_raw:
              # Restore
@@ -209,7 +213,7 @@ class StateManager:
              self.config['optimize'] = "Speed"
              self.eb.publish(EventType.STATE_CHANGED, {'optimize': "Speed"})
              
-             self.eb.publish(EventType.CONSTRAINT_APPLIED, "Forced 'Single' Channel & 'Speed' Opt (Required for Multi-Channel).")
+             self.eb.publish(EventType.CONSTRAINT_APPLIED, "Forced 'Single' Channel (Required). Defaulted Optimize to 'Speed'.")
              
         elif old_mode == "vq_multi_channel":
              # Restore

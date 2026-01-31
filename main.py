@@ -1,4 +1,4 @@
-"""Atari Sample Tracker - Main Entry Point (v3.17 - ZIP Project Format)
+"""POKEY VQ Tracker - Main Entry Point (v3.17 - ZIP Project Format)
 
 This is the main entry point that ties together all UI modules:
 - ui_globals.py  - Global state, config, formatting functions
@@ -58,8 +58,99 @@ def setup_operations_callbacks():
     ops.show_confirm = B.show_confirm_centered
     ops.show_file_dialog = show_file_dialog
     ops.show_rename_dialog = show_rename_dialog
+    ops.rebuild_recent_menu = B.rebuild_recent_menu
     ops.set_playback_row_callback(C.on_playback_row)
     ops.set_playback_stop_callback(C.on_playback_stop)
+
+
+def try_load_last_project():
+    """Try to load the most recent project on startup."""
+    from file_io import load_project
+    from constants import MAX_VOLUME
+    
+    if not G.recent_files:
+        logger.info("No recent files to load")
+        return
+    
+    # Try the most recent file
+    last_file = G.recent_files[0]
+    if not os.path.exists(last_file):
+        logger.info(f"Last project not found: {last_file}")
+        return
+    
+    logger.info(f"Loading last project: {last_file}")
+    
+    try:
+        song, editor_state, msg = load_project(last_file, file_io.work_dir)
+        if song:
+            state.audio.stop_playback()
+            state.song = song
+            state.undo.clear()
+            
+            # Restore editor state if available
+            if editor_state:
+                state.songline = editor_state.songline
+                state.row = editor_state.row
+                state.channel = editor_state.channel
+                state.column = editor_state.column
+                state.song_cursor_row = editor_state.song_cursor_row
+                state.song_cursor_col = editor_state.song_cursor_col
+                state.octave = editor_state.octave
+                state.step = editor_state.step
+                state.instrument = editor_state.instrument
+                state.volume = editor_state.volume
+                state.selected_pattern = editor_state.selected_pattern
+                state.hex_mode = editor_state.hex_mode
+                state.follow = editor_state.follow
+                
+                # Restore VQ settings (conversion will happen automatically)
+                state.vq.settings.rate = editor_state.vq_rate
+                state.vq.settings.vector_size = editor_state.vq_vector_size
+                state.vq.settings.smoothness = editor_state.vq_smoothness
+                state.vq.settings.enhance = editor_state.vq_enhance
+                state.vq.settings.optimize_speed = editor_state.vq_optimize_speed
+                
+                # VQ output not loaded - will be regenerated
+                state.vq.invalidate()
+            else:
+                state.songline = state.row = state.channel = 0
+                state.instrument = 0
+                state.song_cursor_row = state.song_cursor_col = 0
+                state.volume = MAX_VOLUME
+                state.vq.invalidate()
+            
+            state.selection.clear()
+            state.audio.set_song(state.song)
+            R.refresh_all()
+            G.update_title()
+            G.show_status(f"Loaded: {os.path.basename(last_file)}")
+            logger.info(f"Successfully loaded: {last_file}")
+            
+            # Auto-convert samples to regenerate VQ data with latest algorithm
+            _trigger_auto_conversion_startup()
+        else:
+            logger.warning(f"Failed to load last project: {msg}")
+    except Exception as e:
+        logger.error(f"Error loading last project: {e}")
+
+
+def _trigger_auto_conversion_startup():
+    """Auto-trigger VQ conversion after loading project at startup.
+    
+    Uses sample_path (extracted files in work_dir) rather than original_sample_path,
+    since the original files may no longer exist on the user's disk.
+    """
+    # Collect input files from extracted samples
+    input_files = []
+    for inst in state.song.instruments:
+        if inst.sample_path and os.path.exists(inst.sample_path):
+            input_files.append(inst.sample_path)
+    
+    if not input_files:
+        return
+    
+    # Trigger conversion with extracted samples
+    C.show_vq_conversion_window(input_files)
 
 
 # =============================================================================
@@ -98,6 +189,9 @@ def main():
     
     logger.info("Instance lock acquired")
     
+    # Initialize config paths (must be before load_config)
+    G.init_paths(app_dir)
+    
     # Load config first
     G.load_config()
     
@@ -116,6 +210,10 @@ def main():
     # Build UI
     B.build_ui()
     B.rebuild_recent_menu()
+    
+    # Initialize custom file browser (must be after DPG context created)
+    from ui_browser import get_file_browser
+    get_file_browser()  # Creates the browser window
     
     # Setup operations callbacks
     setup_operations_callbacks()
@@ -147,15 +245,20 @@ def main():
     state.audio.set_song(state.song)  # Link song to audio engine
     logger.info("Audio engine started")
     
+    # Try to load last project on startup
+    try_load_last_project()
+    
     # Main loop with autosave check
     while dpg.is_dearpygui_running():
         state.audio.process_callbacks()  # Process audio engine callbacks
         G.check_autosave()
         C.poll_vq_conversion()  # Poll VQ conversion status (thread-safe)
         C.poll_build_progress()  # Poll build progress (thread-safe)
+        C.poll_button_blink()   # Update blinking attention buttons
         dpg.render_dearpygui_frame()
     
     # Cleanup
+    G.save_config()  # Save config (including recent files) on exit
     state.audio.stop()
     state.vq.cleanup()  # Clean up VQ temp directory
     instance_lock.release()  # Release instance lock

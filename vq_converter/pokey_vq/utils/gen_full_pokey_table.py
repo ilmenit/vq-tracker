@@ -3,10 +3,27 @@ import os
 
 # Base Single Channel Table (Normalized to 0.0-1.0 roughly, but values < 0.6)
 # Ideally we should use raw values if we want absolute precision, but these are from empirical measurements/emulation
-POKEY_VOLTAGE_TABLE = np.array([
-0.000000, 0.049931, 0.097507, 0.142837, 0.186029, 0.227182, 0.266394, 0.303756, 
-0.339355, 0.373274, 0.405593, 0.436387, 0.465727, 0.493684, 0.520321, 0.545702
-], dtype=np.float32)
+# Base Single Channel Table (Non-Linear DAC)
+# Simulates "wider gaps" at bit transitions (3->4, 7->8, 11->12)
+def generate_base_table():
+    # Bit weights (Empirical/Estimated for non-linear behavior)
+    weights = np.array([1.0, 2.1, 4.4, 9.2])
+    table = []
+    for i in range(16):
+        val = 0.0
+        for bit in range(4):
+            if (i >> bit) & 1:
+                val += weights[bit]
+        table.append(val)
+    
+    table = np.array(table, dtype=np.float32)
+    # Normalize to match original range max (approx 0.545702)
+    # Original max was ~0.545702. Let's force it to exactly that for compatibility or stability.
+    original_max = 0.545702
+    table = table * (original_max / table[-1])
+    return table
+
+POKEY_VOLTAGE_TABLE = generate_base_table()
 
 def mix_vol_saturated(val1, val2):
     """
@@ -88,11 +105,13 @@ def generate_tables():
     unique_vols_hifi, vol_to_byte_hifi, vals_str_hifi = _uniquify(pairs_hifi)
     
     # Generate Dual Balanced (Standard)
+    # Corrected to use Saturation Model just like the others
     balanced_levels = []
     for i in range(31):
         v1 = i // 2
         v2 = i - v1
-        vol = POKEY_VOLTAGE_TABLE[v1] + POKEY_VOLTAGE_TABLE[v2]
+        # Use saturated mixing instead of linear sum
+        vol = mix_vol_saturated(POKEY_VOLTAGE_TABLE[v1], POKEY_VOLTAGE_TABLE[v2])
         balanced_levels.append(vol)
 
     # --- Output Writer ---

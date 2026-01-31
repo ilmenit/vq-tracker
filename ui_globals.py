@@ -1,4 +1,4 @@
-"""Atari Sample Tracker - UI Global State and Formatting"""
+"""POKEY VQ Tracker - UI Global State and Formatting"""
 import dearpygui.dearpygui as dpg
 import json
 import time
@@ -13,12 +13,23 @@ logger = logging.getLogger("tracker.ui")
 # =============================================================================
 # PATHS AND CONSTANTS
 # =============================================================================
-CONFIG_DIR = Path.home() / ".atari_tracker"
-CONFIG_FILE = CONFIG_DIR / "config.json"
-AUTOSAVE_DIR = CONFIG_DIR / "autosave"
+# Config and autosave locations: relative to app directory (where tracker is)
+# These will be set by init_paths() called from main.py
+APP_DIR = Path(__file__).parent  # Default to script directory
+CONFIG_FILE = APP_DIR / "tracker_config.json"  # Config in app root
+AUTOSAVE_DIR = APP_DIR / ".tmp" / "autosave"  # Autosave in .tmp/autosave/
 MAX_AUTOSAVES = 20
 AUTOSAVE_INTERVAL = 30
 MAX_RECENT = 10
+
+def init_paths(app_dir: str):
+    """Initialize paths based on application directory."""
+    global APP_DIR, CONFIG_FILE, AUTOSAVE_DIR
+    APP_DIR = Path(app_dir)
+    CONFIG_FILE = APP_DIR / "tracker_config.json"
+    AUTOSAVE_DIR = APP_DIR / ".tmp" / "autosave"
+    # Create autosave directory
+    AUTOSAVE_DIR.mkdir(parents=True, exist_ok=True)
 
 # UI SIZING
 TOP_PANEL_HEIGHT = 230
@@ -90,8 +101,8 @@ def parse_int_value(text: str, default: int = 0) -> int:
 def load_config():
     """Load configuration from disk."""
     global autosave_enabled, recent_files, piano_keys_mode, highlight_interval
+    logger.debug(f"Loading config from: {CONFIG_FILE}")
     try:
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         AUTOSAVE_DIR.mkdir(parents=True, exist_ok=True)
         if CONFIG_FILE.exists():
             with open(CONFIG_FILE, 'r') as f:
@@ -109,7 +120,10 @@ def load_config():
                 # Validate highlight_interval
                 if highlight_interval not in [2, 4, 8, 16]:
                     highlight_interval = 4
-                logger.info("Config loaded")
+                logger.info(f"Config loaded, {len(recent_files)} recent files")
+                logger.debug(f"Recent files: {recent_files}")
+        else:
+            logger.info(f"Config file not found: {CONFIG_FILE}")
     except Exception as e:
         logger.error(f"Config load error: {e}")
 
@@ -117,7 +131,8 @@ def load_config():
 def save_config():
     """Save configuration to disk."""
     try:
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        # Ensure parent directory exists
+        CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
         cfg = {
             'autosave_enabled': autosave_enabled,
             'recent_files': recent_files[:MAX_RECENT],
@@ -133,6 +148,8 @@ def save_config():
         }
         with open(CONFIG_FILE, 'w') as f:
             json.dump(cfg, f, indent=2)
+        logger.debug(f"Config saved to {CONFIG_FILE}")
+        logger.debug(f"Recent files: {recent_files}")
     except Exception as e:
         logger.error(f"Config save error: {e}")
 
@@ -140,11 +157,13 @@ def save_config():
 def add_recent_file(path: str):
     """Add file to recent files list."""
     global recent_files
+    logger.debug(f"add_recent_file: {path}")
     if path in recent_files:
         recent_files.remove(path)
     recent_files.insert(0, path)
     recent_files = recent_files[:MAX_RECENT]
     save_config()
+    logger.debug(f"Recent files now: {recent_files}")
 
 
 def get_autosave_files() -> list:
@@ -163,21 +182,15 @@ def do_autosave():
         return
     
     try:
-        from file_io import save_project, EditorState, work_dir
+        import file_io
+        from file_io import save_project, EditorState
         
         # Save original file_path - autosave should not change it
         original_path = state.song.file_path
         original_modified = state.song.modified
         
-        # Determine autosave folder
-        # If project has been saved, use autosave folder next to project
-        # Otherwise use global config autosave folder
-        if original_path:
-            project_dir = Path(original_path).parent
-            autosave_dir = project_dir / "autosave"
-        else:
-            autosave_dir = AUTOSAVE_DIR
-        
+        # Always use .tmp/autosave folder (not project-specific autosave)
+        autosave_dir = AUTOSAVE_DIR
         autosave_dir.mkdir(parents=True, exist_ok=True)
         
         timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -207,7 +220,7 @@ def do_autosave():
             vq_smoothness=state.vq.smoothness
         )
         
-        save_project(state.song, editor_state, str(filename), work_dir)
+        save_project(state.song, editor_state, str(filename), file_io.work_dir)
         
         # Restore original path and modified flag - autosave is invisible to user
         state.song.file_path = original_path
