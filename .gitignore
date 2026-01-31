@@ -1,3 +1,3 @@
-tmp-convert
-__pycache__
+.tmp/
+__pycache__/
 

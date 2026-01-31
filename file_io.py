@@ -226,6 +226,9 @@ class WorkingDirectory:
     
     def init(self):
         """Initialize directory structure."""
+        # Ensure base .tmp directory exists first
+        os.makedirs(self.root, exist_ok=True)
+        # Then create subdirectories
         os.makedirs(self.samples, exist_ok=True)
         os.makedirs(self.vq_output, exist_ok=True)
         os.makedirs(self.build, exist_ok=True)
@@ -392,7 +395,8 @@ def save_project(song: Song, editor_state: EditorState,
                 "author": song.author,
                 "system": song.system,
                 "volume_control": song.volume_control,
-                "blank_screen": song.blank_screen,
+                "screen_control": song.screen_control,
+                "keyboard_control": song.keyboard_control,
                 "created": datetime.now().isoformat(),
             },
             "editor": editor_state.to_dict(),
@@ -410,7 +414,9 @@ def save_project(song: Song, editor_state: EditorState,
                 inst_data = {
                     "name": inst.name,
                     "base_note": inst.base_note,
-                    "original_path": inst.original_sample_path or inst.sample_path,
+                    # Store original path for reference (external file location)
+                    # Do NOT fall back to sample_path - that's the .tmp working copy
+                    "original_path": inst.original_sample_path if inst.original_sample_path else "",
                     "sample_file": None
                 }
                 
@@ -485,12 +491,25 @@ def load_project(path: str, work_dir: WorkingDirectory
         
         # Build Song object
         meta = data.get('meta', {})
+        
+        # Handle screen_control with backward compatibility for old 'blank_screen'
+        # Old: blank_screen=True meant blank the screen
+        # New: screen_control=True means show the screen (inverted)
+        if 'screen_control' in meta:
+            screen_ctrl = meta.get('screen_control', False)
+        elif 'blank_screen' in meta:
+            # Old format: invert the value
+            screen_ctrl = not meta.get('blank_screen', False)
+        else:
+            screen_ctrl = False
+        
         song = Song(
             title=meta.get('title', 'Untitled'),
             author=meta.get('author', ''),
             system=meta.get('system', PAL_HZ),
             volume_control=meta.get('volume_control', False),
-            blank_screen=meta.get('blank_screen', False)
+            screen_control=screen_ctrl,
+            keyboard_control=meta.get('keyboard_control', False)
         )
         song.file_path = path
         song.modified = False
@@ -523,7 +542,8 @@ def load_project(path: str, work_dir: WorkingDirectory
                 name=inst_data.get('name', 'New'),
                 base_note=inst_data.get('base_note', 1)
             )
-            inst.original_sample_path = inst_data.get('original_path', '')
+            # Store the original path from the archive data
+            stored_original_path = inst_data.get('original_path', '')
             
             # Load sample from archive
             sample_file = inst_data.get('sample_file')
@@ -534,7 +554,8 @@ def load_project(path: str, work_dir: WorkingDirectory
                     dest_path = os.path.join(work_dir.samples, os.path.basename(sample_file))
                     if sample_path != dest_path:
                         shutil.copy2(sample_path, dest_path)
-                    ok, msg = load_sample(inst, dest_path)
+                    # Use is_converted=True to prevent overwriting original_sample_path
+                    ok, msg = load_sample(inst, dest_path, is_converted=True)
                     if ok:
                         loaded_samples += 1
                     else:
@@ -543,6 +564,9 @@ def load_project(path: str, work_dir: WorkingDirectory
                 else:
                     missing_samples += 1
                     logger.warning(f"Sample not found in archive: {sample_file}")
+            
+            # Restore the original sample path from archive (external file path)
+            inst.original_sample_path = stored_original_path
             
             song.instruments.append(inst)
         
@@ -577,18 +601,20 @@ def load_project(path: str, work_dir: WorkingDirectory
 # =============================================================================
 
 def load_sample(inst: Instrument, path: str, 
-                is_converted: bool = False) -> Tuple[bool, str]:
+                is_converted: bool = False,
+                update_path: bool = True) -> Tuple[bool, str]:
     """Load WAV sample into instrument.
     
     Args:
         inst: Instrument to load into
         path: Path to WAV file
         is_converted: If True, don't update original_sample_path
+        update_path: If True, update inst.sample_path (set False when loading converted)
         
     Returns:
         (success, message)
     """
-    logger.debug(f"load_sample: path={path}, is_converted={is_converted}")
+    logger.debug(f"load_sample: path={path}, is_converted={is_converted}, update_path={update_path}")
     try:
         if not os.path.exists(path):
             return False, f"File not found: {path}"
@@ -620,9 +646,12 @@ def load_sample(inst: Instrument, path: str,
         
         inst.sample_data = data
         inst.sample_rate = rate
-        inst.sample_path = path
         
-        if not is_converted:
+        # Only update sample_path if requested (not when loading converted samples)
+        if update_path:
+            inst.sample_path = path
+        
+        if not is_converted and update_path:
             inst.original_sample_path = path
         
         # Auto-name from filename if empty

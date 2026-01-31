@@ -126,14 +126,20 @@ class Instrument:
         return len(self.sample_data) / self.sample_rate if self.is_loaded() else 0.0
     
     def get_original_path(self) -> str:
-        """Get original sample path (for conversion)."""
+        """Get original external sample path (for reference/info only).
+        
+        WARNING: Do NOT use this for conversion - use sample_path instead.
+        original_sample_path points to the user's original file which may not exist.
+        sample_path points to the working copy in .tmp/samples/ which always exists.
+        """
         return self.original_sample_path or self.sample_path
     
     def to_dict(self) -> dict:
         return {
             'name': self.name, 
             'path': self.sample_path, 
-            'original_path': self.original_sample_path or self.sample_path,
+            # Don't fall back to sample_path - keep original_path separate
+            'original_path': self.original_sample_path,
             'base': self.base_note
         }
     
@@ -142,7 +148,8 @@ class Instrument:
         inst = cls(name=d.get('name', 'New'),
                    sample_path=d.get('path', d.get('sample', '')),
                    base_note=d.get('base', d.get('base_note', 1)))
-        inst.original_sample_path = d.get('original_path', inst.sample_path)
+        # Don't fall back to sample_path - original_path may legitimately be empty
+        inst.original_sample_path = d.get('original_path', '')
         return inst
 
 @dataclass
@@ -167,7 +174,8 @@ class Song:
     speed: int = DEFAULT_SPEED
     system: int = PAL_HZ
     volume_control: bool = False  # Enable volume control in export (requires lower sample rate)
-    blank_screen: bool = False    # Disable display for maximum CPU cycles (gains ~30%)
+    screen_control: bool = False  # Enable display during playback (costs ~15% CPU cycles)
+    keyboard_control: bool = False  # Enable keyboard stop/restart during playback
     songlines: List[Songline] = field(default_factory=list)
     patterns: List[Pattern] = field(default_factory=list)
     instruments: List[Instrument] = field(default_factory=list)
@@ -186,7 +194,8 @@ class Song:
         self.speed = DEFAULT_SPEED
         self.system = PAL_HZ
         self.volume_control = False
-        self.blank_screen = False
+        self.screen_control = False
+        self.keyboard_control = False
         self.songlines = [Songline(patterns=[0, 1, 2])]
         self.patterns = [Pattern() for _ in range(3)]
         self.instruments = []
@@ -288,7 +297,8 @@ class Song:
                 'title': self.title, 'author': self.author,
                 'system': self.system,
                 'volume_control': self.volume_control,
-                'blank_screen': self.blank_screen
+                'screen_control': self.screen_control,
+                'keyboard_control': self.keyboard_control
             },
             'songlines': [{'patterns': sl.patterns, 'speed': sl.speed} for sl in self.songlines],
             'patterns': [p.to_dict() for p in self.patterns],
@@ -298,13 +308,27 @@ class Song:
     @classmethod
     def from_dict(cls, d: dict) -> 'Song':
         meta = d.get('meta', d.get('metadata', {}))
+        
+        # Handle screen_control with backward compatibility for old 'blank_screen'
+        # Old: blank_screen=True meant blank the screen
+        # New: screen_control=True means show the screen
+        # So: screen_control = not blank_screen (inverted)
+        if 'screen_control' in meta:
+            screen_ctrl = meta.get('screen_control', False)
+        elif 'blank_screen' in meta:
+            # Old format: invert the value
+            screen_ctrl = not meta.get('blank_screen', False)
+        else:
+            screen_ctrl = False
+        
         song = cls(
             title=meta.get('title', 'Untitled'),
             author=meta.get('author', ''),
             speed=meta.get('speed', DEFAULT_SPEED),  # Legacy global speed
             system=meta.get('system', PAL_HZ),
             volume_control=meta.get('volume_control', False),
-            blank_screen=meta.get('blank_screen', False)
+            screen_control=screen_ctrl,
+            keyboard_control=meta.get('keyboard_control', False)
         )
         
         # Handle songlines - both old format (list of pattern arrays) and new format (list of dicts with speed)

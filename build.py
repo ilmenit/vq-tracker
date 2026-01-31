@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 
 from data_model import Song, Pattern, Row
 from state import state
+from constants import MAX_INSTRUMENTS, MAX_VOLUME
 
 logger = logging.getLogger(__name__)
 
@@ -125,14 +126,14 @@ def validate_song(song: Song, check_samples: bool = True) -> ValidationResult:
             if row.note > 0 and row.note != 255:  # Has actual note
                 if row.instrument < 0:
                     result.add_error(loc_row, f"Instrument index {row.instrument} is negative")
-                elif row.instrument >= 128:
-                    result.add_error(loc_row, f"Instrument index {row.instrument} exceeds max (127)")
+                elif row.instrument >= MAX_INSTRUMENTS:
+                    result.add_error(loc_row, f"Instrument index {row.instrument} exceeds max ({MAX_INSTRUMENTS - 1})")
                 else:
                     used_instruments.add(row.instrument)
             
             # Check volume
-            if row.volume < 0 or row.volume > 15:
-                result.add_error(loc_row, f"Volume {row.volume} out of range (valid: 0-15)")
+            if row.volume < 0 or row.volume > MAX_VOLUME:
+                result.add_error(loc_row, f"Volume {row.volume} out of range (valid: 0-{MAX_VOLUME})")
     
     # Check songlines reference valid patterns
     num_patterns = len(song.patterns)
@@ -289,9 +290,14 @@ def export_song_data(song: Song, output_path: str, output_func=None) -> Tuple[bo
         opt_speed_val = 1 if state.vq.settings.optimize_speed else 0
         cfg_lines.append(f"OPTIMIZE_SPEED = {opt_speed_val}  ; 1=full bytes (fast), 0=nibble-packed (compact)")
         cfg_lines.append("")
-        # Blank screen mode: 1=disable display for max CPU cycles
-        blank_val = 1 if song.blank_screen else 0
-        cfg_lines.append(f"BLANK_SCREEN = {blank_val}  ; 1=no display (~30% more CPU), 0=normal display")
+        # Screen control: screen_control=True means show display, so BLANK_SCREEN=0
+        # screen_control=False (default) means blank display, so BLANK_SCREEN=1
+        blank_val = 0 if song.screen_control else 1
+        cfg_lines.append(f"BLANK_SCREEN = {blank_val}  ; 1=no display (~15% more CPU), 0=normal display")
+        cfg_lines.append("")
+        # Keyboard control: 1=enable stop/restart during playback, 0=play-once mode
+        key_ctrl_val = 1 if song.keyboard_control else 0
+        cfg_lines.append(f"KEY_CONTROL = {key_ctrl_val}  ; 1=enable stop/restart keys, 0=play-once (saves cycles)")
         cfg_lines.append("")
         
         with open(cfg_path, 'w') as f:

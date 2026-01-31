@@ -357,7 +357,7 @@ def build_top_row():
                     dpg.add_spacer(height=3)
                     dpg.add_text("Affects timing and playback speed.")
                 dpg.add_spacer(width=10)
-                dpg.add_checkbox(tag="volume_control_cb", label="Volume", 
+                dpg.add_checkbox(tag="volume_control_cb", label="Vol", 
                                 default_value=state.song.volume_control,
                                 callback=C.on_volume_control_toggle)
                 with dpg.tooltip(dpg.last_item()):
@@ -365,27 +365,45 @@ def build_top_row():
                     dpg.add_separator()
                     dpg.add_text("Enable per-note volume in export.")
                     dpg.add_spacer(height=3)
-                    dpg.add_text("Requirements:", color=(255, 200, 150))
-                    dpg.add_text("  Sample rate ≤5757 Hz")
-                    dpg.add_text("  (adds ~13 cycles/channel)")
+                    dpg.add_text("When DISABLED (default):", color=(100, 255, 100))
+                    dpg.add_text("  Saves ~13 cycles/channel")
+                    dpg.add_text("  Volume column hidden")
                     dpg.add_spacer(height=3)
-                    dpg.add_text("When disabled, volume column")
-                    dpg.add_text("is hidden but data preserved.")
+                    dpg.add_text("When ENABLED:", color=(255, 200, 150))
+                    dpg.add_text("  Requires sample rate ≤5757 Hz")
+                    dpg.add_text("  Volume data preserved & used")
                 dpg.add_spacer(width=10)
-                dpg.add_checkbox(tag="blank_screen_cb", label="Blank", 
-                                default_value=state.song.blank_screen,
-                                callback=C.on_blank_screen_toggle)
+                dpg.add_checkbox(tag="screen_control_cb", label="Screen", 
+                                default_value=state.song.screen_control,
+                                callback=C.on_screen_control_toggle)
                 with dpg.tooltip(dpg.last_item()):
-                    dpg.add_text("Blank Screen Mode", color=(255, 255, 150))
+                    dpg.add_text("Screen Control", color=(255, 255, 150))
                     dpg.add_separator()
-                    dpg.add_text("Disable display in exported player.")
+                    dpg.add_text("Enable display during playback.")
                     dpg.add_spacer(height=3)
-                    dpg.add_text("Benefits:", color=(100, 255, 100))
-                    dpg.add_text("  ~30% more CPU cycles for IRQ")
-                    dpg.add_text("  Enables higher sample rates")
+                    dpg.add_text("When DISABLED (default):", color=(100, 255, 100))
+                    dpg.add_text("  ~15% more CPU cycles for IRQ")
+                    dpg.add_text("  Screen blanked during playback")
                     dpg.add_spacer(height=3)
-                    dpg.add_text("Player shows controls briefly,")
-                    dpg.add_text("then screen goes black.")
+                    dpg.add_text("When ENABLED:", color=(255, 200, 150))
+                    dpg.add_text("  Shows SONG/ROW/SPD during play")
+                    dpg.add_text("  Costs ~15% CPU (ANTIC DMA)")
+                dpg.add_spacer(width=10)
+                dpg.add_checkbox(tag="keyboard_control_cb", label="Key", 
+                                default_value=state.song.keyboard_control,
+                                callback=C.on_keyboard_control_toggle)
+                with dpg.tooltip(dpg.last_item()):
+                    dpg.add_text("Keyboard Control", color=(255, 255, 150))
+                    dpg.add_separator()
+                    dpg.add_text("Enable stop/restart keys during play.")
+                    dpg.add_spacer(height=3)
+                    dpg.add_text("When DISABLED (default):", color=(100, 255, 100))
+                    dpg.add_text("  Saves CPU cycles (no key scan)")
+                    dpg.add_text("  Press SPACE to start, plays once")
+                    dpg.add_spacer(height=3)
+                    dpg.add_text("When ENABLED:", color=(255, 200, 150))
+                    dpg.add_text("  SPACE = play/stop toggle")
+                    dpg.add_text("  R = restart from beginning")
                 dpg.add_spacer(width=10)
                 dpg.add_button(label="RESET", width=60, callback=C.on_reset_song)
                 with dpg.tooltip(dpg.last_item()):
@@ -396,7 +414,7 @@ def build_top_row():
             
             # ANALYZE and BUILD buttons
             # ANALYZE: Check timing feasibility before export
-            # BUILD: Validates song, then creates executable
+            # BUILD & RUN: Validates song, creates executable, launches emulator
             dpg.add_spacer(height=5)
             with dpg.group(horizontal=True):
                 dpg.add_button(tag="analyze_btn", label="ANALYZE", width=80, callback=C.on_analyze_click)
@@ -411,13 +429,12 @@ def build_top_row():
                     dpg.add_text("  • Boundary crossing costs")
                     dpg.add_text("  • Volume control feasibility")
                 dpg.add_spacer(width=5)
-                dpg.add_button(tag="build_btn", label="BUILD", width=80, callback=C.on_build_click)
+                dpg.add_button(tag="build_btn", label="BUILD & RUN", width=100, callback=C.on_build_click)
                 with dpg.tooltip(dpg.last_item()):
-                    dpg.add_text("Build Atari Executable", color=(255, 255, 150))
+                    dpg.add_text("Build & Run in Emulator", color=(255, 255, 150))
                     dpg.add_separator()
-                    dpg.add_text("Validates song data, then creates")
-                    dpg.add_text("a standalone .XEX file that plays")
-                    dpg.add_text("on real Atari or in an emulator.")
+                    dpg.add_text("Validates song, creates .XEX file,")
+                    dpg.add_text("and launches it in the emulator.")
                     dpg.add_spacer(height=3)
                     dpg.add_text("Validation checks:", color=(200, 200, 255))
                     dpg.add_text("  • Pattern lengths (max 254)")
@@ -427,15 +444,6 @@ def build_top_row():
                     dpg.add_text("Requirements:", color=(255, 200, 150))
                     dpg.add_text("  1. Click CONVERT first")
                     dpg.add_text("  2. Song must have patterns/notes")
-                dpg.add_spacer(width=5)
-                dpg.add_button(tag="run_btn", label="RUN", width=60, callback=C.on_run_click, enabled=False)
-                with dpg.tooltip(dpg.last_item()):
-                    dpg.add_text("Run in Emulator", color=(255, 255, 150))
-                    dpg.add_separator()
-                    dpg.add_text("Launches the built .XEX file")
-                    dpg.add_text("in the default emulator.")
-                    dpg.add_spacer(height=3)
-                    dpg.add_text("Available after successful BUILD.", color=(255, 200, 150))
                 dpg.add_spacer(width=10)
                 dpg.add_text(tag="build_status_label", default_value="", color=COL_DIM)
 
@@ -685,7 +693,7 @@ def build_bottom_row():
                     dpg.add_text("  Speed mode: up to 7917 Hz (3 ch)")
                     dpg.add_text("  Size mode:  up to 5278 Hz (3 ch)")
                     dpg.add_spacer(height=3)
-                    dpg.add_text("Recommended: 5278-7917 Hz", color=(150, 200, 150))
+                    dpg.add_text("Default: 5278 Hz (safe for both modes)", color=(150, 200, 150))
                 
                 dpg.add_spacer(width=8)
                 dpg.add_text("Vec:")
@@ -698,14 +706,14 @@ def build_bottom_row():
                     dpg.add_text("Controls compression granularity.")
                     dpg.add_spacer(height=3)
                     dpg.add_text("Smaller (2-4):", color=(150, 255, 150))
-                    dpg.add_text("  + Better quality, sharper transients")
-                    dpg.add_text("  - Larger file size")
+                    dpg.add_text("  + Best quality, sharpest attack")
+                    dpg.add_text("  - More CPU (frequent boundary cross)")
                     dpg.add_spacer(height=3)
                     dpg.add_text("Larger (8-16):", color=(255, 200, 150))
-                    dpg.add_text("  + Smaller file size")
-                    dpg.add_text("  - May sound muddy/blurred")
+                    dpg.add_text("  + Less CPU, smaller file size")
+                    dpg.add_text("  - Slightly softer transients")
                     dpg.add_spacer(height=3)
-                    dpg.add_text("Recommended: 2-4 for instruments", color=(150, 200, 150))
+                    dpg.add_text("Default: 8 (good balance)", color=(150, 200, 150))
                 
                 dpg.add_spacer(width=8)
                 dpg.add_text("Smooth:")

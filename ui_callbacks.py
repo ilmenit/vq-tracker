@@ -567,14 +567,28 @@ def on_volume_control_toggle(sender, value):
         G.show_status(f"Volume control {mode}")
 
 
-def on_blank_screen_toggle(sender, value):
-    """Toggle blank screen mode in export."""
-    state.song.blank_screen = value
+def on_screen_control_toggle(sender, value):
+    """Toggle screen display during playback."""
+    state.song.screen_control = value
     state.song.modified = True
     G.update_title()
     
-    mode = "enabled" if value else "disabled"
-    G.show_status(f"Blank screen mode {mode}" + (" (~30% more CPU)" if value else ""))
+    if value:
+        G.show_status("Screen enabled during playback (shows SONG/ROW/SPD)")
+    else:
+        G.show_status("Screen disabled during playback (~15% more CPU)")
+
+
+def on_keyboard_control_toggle(sender, value):
+    """Toggle keyboard control during playback."""
+    state.song.keyboard_control = value
+    state.song.modified = True
+    G.update_title()
+    
+    if value:
+        G.show_status("Keyboard control enabled (SPACE=play/stop, R=restart)")
+    else:
+        G.show_status("Keyboard control disabled (saves cycles, play-once mode)")
 
 
 def on_analyze_click():
@@ -990,28 +1004,47 @@ def on_vq_use_converted_change(sender, app_data):
 
 
 def _reload_original_samples():
-    """Reload original samples from their source file paths."""
+    """Reload original samples from their working copy paths.
+    
+    Uses sample_path (the working copy in .tmp/samples/) rather than
+    original_sample_path (the external file which might not exist).
+    """
     import logging
     logger = logging.getLogger(__name__)
     from file_io import load_sample
     
     logger.debug(f"Reloading {len(state.song.instruments)} original samples")
     for inst in state.song.instruments:
-        # Use get_original_path() to always get the original WAV
-        original_path = inst.get_original_path()
-        if original_path and os.path.exists(original_path):
-            logger.debug(f"  Inst {inst.name}: {original_path}")
-            ok, msg = load_sample(inst, original_path, is_converted=False)
+        # Use sample_path (working copy) - this should always exist
+        # sample_path points to .tmp/samples/ where the original was extracted/imported
+        working_path = inst.sample_path
+        if working_path and os.path.exists(working_path):
+            logger.debug(f"  Inst {inst.name}: {working_path}")
+            # Load without updating paths (they're already correct)
+            ok, msg = load_sample(inst, working_path, is_converted=False, update_path=False)
             if not ok:
                 G.show_status(f"Error reloading {inst.name}: {msg}")
             else:
                 logger.debug(f"    Loaded OK, {len(inst.sample_data) if inst.sample_data is not None else 0} samples")
         else:
-            logger.warning(f"  Inst {inst.name}: No valid original path ({original_path})")
+            # Fallback to original_sample_path if working copy not available
+            original_path = inst.original_sample_path
+            if original_path and os.path.exists(original_path):
+                logger.debug(f"  Inst {inst.name}: fallback to {original_path}")
+                # Don't update paths - just load the sample data
+                ok, msg = load_sample(inst, original_path, is_converted=True, update_path=False)
+                if not ok:
+                    G.show_status(f"Error reloading {inst.name}: {msg}")
+            else:
+                logger.warning(f"  Inst {inst.name}: No valid sample path (working={working_path}, original={original_path})")
 
 
 def _load_converted_samples():
-    """Load converted WAV files into instruments."""
+    """Load converted WAV files into instruments.
+    
+    Note: Uses update_path=False to preserve sample_path pointing to original.
+    This allows toggling back to original samples later.
+    """
     import logging
     logger = logging.getLogger(__name__)
     
@@ -1027,8 +1060,9 @@ def _load_converted_samples():
             wav_path = state.vq.result.converted_wavs[i]
             logger.debug(f"  Inst {i} ({inst.name}): {wav_path}")
             if os.path.exists(wav_path):
-                # Load as converted sample (don't update original_sample_path)
-                ok, msg = load_sample(inst, wav_path, is_converted=True)
+                # Load converted sample data WITHOUT updating sample_path
+                # This preserves sample_path pointing to the original working sample
+                ok, msg = load_sample(inst, wav_path, is_converted=True, update_path=False)
                 if not ok:
                     G.show_status(f"Error loading {os.path.basename(wav_path)}: {msg}")
                 else:
@@ -1135,18 +1169,19 @@ def on_vq_convert_click(sender, app_data):
         show_error("No Instruments", "Add instruments before converting.")
         return
     
-    # Check all instruments have files - use original paths for conversion
+    # Check all instruments have files - use sample_path (working copy in .tmp)
+    # NOT original_sample_path which may point to external files that no longer exist
     input_files = []
     for i, inst in enumerate(state.song.instruments):
-        # Use get_original_path() to always get the original WAV, not converted
-        original_path = inst.get_original_path()
-        logger.debug(f"  Inst {i}: name='{inst.name}', original_path='{original_path}'")
-        if original_path and os.path.exists(original_path):
-            input_files.append(original_path)
+        # Use sample_path - the working copy extracted from project archive
+        working_path = inst.sample_path
+        logger.debug(f"  Inst {i}: name='{inst.name}', sample_path='{working_path}'")
+        if working_path and os.path.exists(working_path):
+            input_files.append(working_path)
         else:
             show_error("Missing File", 
-                       f"Instrument '{inst.name}' has no valid original file.\n\n"
-                       f"Path: {original_path or '(empty)'}\n\n"
+                       f"Instrument '{inst.name}' has no valid sample file.\n\n"
+                       f"Path: {working_path or '(empty)'}\n\n"
                        f"Please reload the instrument.")
             return
     
@@ -1456,12 +1491,11 @@ def poll_build_progress():
         if dpg.does_item_exist("build_close_btn"):
             dpg.configure_item("build_close_btn", enabled=True)
         
-        # Update status and RUN button
+        # Update status
         if result and result.success:
             G.show_status(f"Build complete: {os.path.basename(result.xex_path)}")
-            # Store XEX path and enable RUN button
+            # Store XEX path for run
             _last_built_xex = result.xex_path
-            update_run_button_state()
             
             # Auto-run the XEX after successful build
             # Close the progress window first
@@ -1476,19 +1510,6 @@ def poll_build_progress():
         
         # Reset completion flag so we don't keep triggering
         build.build_state.build_complete = False
-
-
-def update_run_button_state():
-    """Update RUN button enabled/disabled state."""
-    if not dpg.does_item_exist("run_btn"):
-        return
-    
-    if _last_built_xex and os.path.exists(_last_built_xex):
-        dpg.configure_item("run_btn", enabled=True)
-        dpg.bind_item_theme("run_btn", "theme_btn_green")
-    else:
-        dpg.configure_item("run_btn", enabled=False)
-        dpg.bind_item_theme("run_btn", "theme_btn_disabled")
 
 
 def on_run_click(sender, app_data):

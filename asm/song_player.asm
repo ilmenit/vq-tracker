@@ -64,6 +64,12 @@
     .ifndef BLANK_SCREEN
         BLANK_SCREEN = 0        ; Default: display enabled
     .endif
+    .ifndef KEY_CONTROL
+        KEY_CONTROL = 0         ; Default: minimal keyboard (play-once mode)
+    .endif
+    .ifndef VOLUME_CONTROL
+        VOLUME_CONTROL = 0      ; Default: no volume control
+    .endif
     
 ; ==========================================================================
 ; CONFIGURATION VALIDATION
@@ -106,8 +112,13 @@ seq_local_row = seq_local_row_zp
 ; ==========================================================================
 .if BLANK_SCREEN = 0
 ; --- Normal display: 2 text lines ---
+.if KEY_CONTROL = 1
 text_line1:
-    dta d" VQ TRACKER - [SPACE] play, [R] reset   "
+    dta d" VQ TRACKER - [SPACE] play/stop [R] reset"
+.else
+text_line1:
+    dta d"   VQ TRACKER - [SPACE] to play          "
+.endif
 text_line2:
     dta d"      SONG:"
 song_pos_display:
@@ -126,8 +137,13 @@ dlist:
     .byte $41,<dlist,>dlist     ; Jump and wait for VBL
 .else
 ; --- Blank screen: minimal display (shown only when stopped) ---
+.if KEY_CONTROL = 1
 text_line1:
-    dta d" VQ TRACKER - [SPACE] play, [R] reset   "
+    dta d" VQ TRACKER - [SPACE] play/stop [R] reset"
+.else
+text_line1:
+    dta d"   VQ TRACKER - [SPACE] to play          "
+.endif
 dlist:
     .byte $70,$70,$70
     .byte $42,<text_line1,>text_line1
@@ -166,8 +182,8 @@ start:
     sta DLISTL
     lda #>dlist
     sta DLISTH
-    lda #34                     ; Enable display DMA
-    sta DMACTL
+    lda #$02                    ; Always start with display enabled (normal playfield)
+    sta DMACTL                  ; User sees "press SPACE to play"
     lda #$C0                    ; Enable VBI + DLI
     sta NMIEN
     
@@ -187,6 +203,12 @@ start:
     
     ; --- Setup POKEY for audio ---
     jsr Pokey_Setup
+    
+    ; --- Initialize display colors ---
+    lda #COL_STOPPED
+    sta COLBK                   ; Set background color (stopped = black)
+    lda #$FF
+    sta last_playing            ; Force state change detection on first loop
     
     ; --- Enable timer IRQ ---
     lda #IRQ_MASK
@@ -265,7 +287,7 @@ ml_check_state_change:
     lda #COL_PLAYING
 .if BLANK_SCREEN = 1
     ldx #0
-    stx DMACTL                  ; Disable display for max CPU
+    stx DMACTL                  ; Disable display for max CPU (0 cycles stolen)
 .endif
     bne ml_set_color            ; Always branches
     
@@ -273,8 +295,8 @@ ml_now_stopped:
     ; --- Stopped playing ---
     lda #COL_STOPPED
 .if BLANK_SCREEN = 1
-    ldx #34
-    stx DMACTL                  ; Re-enable display
+    ldx #$02                    ; Normal playfield only (no player/missile DMA)
+    stx DMACTL                  ; Re-enable minimal display
 .endif
 
 ml_set_color:
@@ -290,8 +312,15 @@ ml_state_done:
 
 ml_no_vblank:
     ; =====================================================================
-    ; KEYBOARD HANDLING - Edge detection for play/stop/restart
+    ; KEYBOARD HANDLING
     ; =====================================================================
+    ; When KEY_CONTROL=1: Full keyboard control (play/stop/restart)
+    ; When KEY_CONTROL=0: Minimal - just SPACE to start, then no checking
+    ;                     Saves ~30-50 cycles per main loop iteration
+    ; =====================================================================
+
+.if KEY_CONTROL = 1
+    ; --- Full keyboard control mode ---
     lda last_key_code
     cmp #$FF
     bne ml_check_release        ; Key still held? Check for release
@@ -353,6 +382,28 @@ ml_check_release:
     lda #$FF
     sta last_key_code
     ; Fall through to ml_continue
+
+.else
+    ; --- Minimal keyboard mode (KEY_CONTROL=0) ---
+    ; Only check for SPACE when stopped, then no more keyboard checks
+    lda seq_playing
+    bne ml_continue             ; Already playing? Skip all keyboard (saves cycles!)
+    
+    ; Not playing - check for SPACE to start
+    lda SKSTAT
+    and #$04                    ; Bit 2 = key pressed
+    bne ml_continue             ; No key? Continue loop
+    
+    lda KBCODE
+    and #$3F
+    cmp #$21                    ; SPACE key?
+    bne ml_continue
+    
+    ; Start playing (one-shot - will play through song)
+    lda #$FF
+    sta seq_playing
+    ; Fall through to ml_continue
+.endif
 
 ml_continue:
     ; Trampoline to main_loop - consolidates backward branches

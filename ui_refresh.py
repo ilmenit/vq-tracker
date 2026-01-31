@@ -355,8 +355,10 @@ def update_controls():
         dpg.set_value("hex_mode_cb", state.hex_mode)
     if dpg.does_item_exist("volume_control_cb"):
         dpg.set_value("volume_control_cb", state.song.volume_control)
-    if dpg.does_item_exist("blank_screen_cb"):
-        dpg.set_value("blank_screen_cb", state.song.blank_screen)
+    if dpg.does_item_exist("screen_control_cb"):
+        dpg.set_value("screen_control_cb", state.song.screen_control)
+    if dpg.does_item_exist("keyboard_control_cb"):
+        dpg.set_value("keyboard_control_cb", state.song.keyboard_control)
     # Show/hide volume in CURRENT section based on volume_control setting
     if dpg.does_item_exist("current_vol_group"):
         dpg.configure_item("current_vol_group", show=state.song.volume_control)

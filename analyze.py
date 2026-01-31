@@ -41,6 +41,15 @@ from constants import NOTE_OFF, MAX_NOTES
 # CPU and timing constants
 PAL_CPU_CLOCK = 1773447
 
+# ANTIC cycle stealing when display is enabled
+# With a simple 2-line text display (DMACTL=$02 or $22):
+# - Memory refresh: 9 cycles per scanline
+# - Display list: ~3 cycles per line
+# - Character data: ~40 cycles per text line
+# For IRQ timing analysis, we use conservative 15% reduction
+# when display is enabled (BLANK_SCREEN=0)
+ANTIC_CYCLE_STEAL_PERCENT = 15  # % of cycles stolen by ANTIC when display enabled
+
 # =============================================================================
 # CYCLE COSTS - OPTIMIZED PLAYER (no boundary loop, O(1) crossing)
 # =============================================================================
@@ -158,6 +167,7 @@ class AnalysisResult:
     vector_size: int
     volume_control: bool
     optimize_speed: bool  # True=speed mode, False=size mode
+    blank_screen: bool    # True=no ANTIC DMA, False=display enabled
     cycles_per_irq: int
     available_cycles: int
     
@@ -215,7 +225,8 @@ def calculate_boundary_crosses(pitch_multiplier: float, vector_size: int) -> int
 
 def calculate_channel_cycles(pitch_multiplier: float, vector_size: int, 
                             volume_control: bool = False,
-                            optimize_speed: bool = True) -> Tuple[int, int]:
+                            optimize_speed: bool = True,
+                            worst_case: bool = False) -> Tuple[int, int]:
     """Calculate cycles for one active channel (OPTIMIZED PLAYER).
     
     With optimized player, boundary crossing is O(1) - fixed cost regardless
@@ -226,8 +237,13 @@ def calculate_channel_cycles(pitch_multiplier: float, vector_size: int,
         vector_size: VQ vector size (MIN_VECTOR)
         volume_control: Whether volume control is enabled
         optimize_speed: True=speed mode (~63 cyc), False=size mode (~83 cyc)
+        worst_case: If True, always assume boundary crossing happens
     
     Returns: (cycles, boundary_crosses)
+    
+    IMPORTANT: Even at pitch 1.0x, boundary crossing happens periodically
+    (every vector_size IRQs). When multiple channels start together, they
+    cross at the same time! worst_case=True captures this scenario.
     """
     if pitch_multiplier <= 0:
         return CHANNEL_INACTIVE, 0
@@ -243,9 +259,16 @@ def calculate_channel_cycles(pitch_multiplier: float, vector_size: int,
     # Calculate expected boundary crosses (for informational purposes)
     boundary_crosses = calculate_boundary_crosses(pitch_multiplier, vector_size)
     
-    # OPTIMIZED: Crossing boundaries is FIXED cost, not multiplicative
-    # If pitch_multiplier >= vector_size, we WILL cross at least one boundary
-    will_cross = pitch_multiplier >= vector_size
+    # Determine if this IRQ will have a boundary cross
+    # - At pitch >= vector_size: crosses EVERY IRQ
+    # - At pitch < vector_size: crosses every (vector_size/pitch) IRQs
+    # - For worst_case, always assume crossing (channels can sync up!)
+    if worst_case:
+        # Worst case: boundary crossing does happen (channels synchronized)
+        will_cross = True
+    else:
+        # Typical case: only cross if advancing more than vector_size per IRQ
+        will_cross = pitch_multiplier >= vector_size
     
     if will_cross:
         cycles = base_with_cross  # Fixed cost regardless of how many crossed
@@ -260,7 +283,8 @@ def calculate_channel_cycles(pitch_multiplier: float, vector_size: int,
 
 
 def analyze_row(notes: List[int], vector_size: int, available_cycles: int,
-                volume_control: bool = False, optimize_speed: bool = True) -> RowAnalysis:
+                volume_control: bool = False, optimize_speed: bool = True,
+                worst_case: bool = True) -> RowAnalysis:
     """Analyze a single row (3 channels).
     
     Args:
@@ -269,9 +293,15 @@ def analyze_row(notes: List[int], vector_size: int, available_cycles: int,
         available_cycles: Cycles available after overhead
         volume_control: Whether volume control is enabled
         optimize_speed: True=speed mode (~63 cyc), False=size mode (~83 cyc)
+        worst_case: If True, assume all channels cross boundary simultaneously
+                   (happens at song start and periodically when phases align)
     
     Returns:
         RowAnalysis with per-channel breakdown
+    
+    NOTE: Even at low pitches (1.0x), boundary crossing happens every
+    vector_size IRQs. When channels start together, they cross simultaneously!
+    Use worst_case=True for accurate timing validation.
     """
     channels = []
     total_cycles = 0
@@ -290,7 +320,9 @@ def analyze_row(notes: List[int], vector_size: int, available_cycles: int,
         else:
             # Active channel
             pitch = get_pitch_multiplier(note)
-            cycles, crosses = calculate_channel_cycles(pitch, vector_size, volume_control, optimize_speed)
+            cycles, crosses = calculate_channel_cycles(
+                pitch, vector_size, volume_control, optimize_speed, worst_case
+            )
             ch = ChannelAnalysis(
                 note=note,
                 pitch_multiplier=pitch,
@@ -327,16 +359,31 @@ def analyze_song(song, sample_rate: int, vector_size: int,
     
     Returns:
         AnalysisResult with all problem rows and statistics
+    
+    Note: Uses song.screen_control and song.volume_control for accurate analysis.
     """
     # Calculate timing budget
     cycles_per_irq = PAL_CPU_CLOCK // sample_rate
-    available = cycles_per_irq - IRQ_OVERHEAD
+    
+    # screen_control=False means screen is blanked (BLANK_SCREEN=1)
+    # screen_control=True means screen is shown (BLANK_SCREEN=0)
+    screen_blanked = not song.screen_control
+    
+    # Account for ANTIC cycle stealing when display is enabled
+    if screen_blanked:
+        # Screen blanked: DMACTL=0 during playback, no ANTIC stealing
+        available = cycles_per_irq - IRQ_OVERHEAD
+    else:
+        # Screen shown: ANTIC steals ~15% of cycles for display refresh
+        effective_cycles = cycles_per_irq * (100 - ANTIC_CYCLE_STEAL_PERCENT) // 100
+        available = effective_cycles - IRQ_OVERHEAD
     
     result = AnalysisResult(
         sample_rate=sample_rate,
         vector_size=vector_size,
         volume_control=song.volume_control,
         optimize_speed=optimize_speed,
+        blank_screen=screen_blanked,
         cycles_per_irq=cycles_per_irq,
         available_cycles=available
     )
@@ -404,20 +451,49 @@ def format_analysis_report(result: AnalysisResult) -> str:
     lines.append(f"Sample Rate: {result.sample_rate} Hz")
     lines.append(f"Vector Size: {result.vector_size}")
     lines.append(f"Optimize Mode: {mode_name}")
-    lines.append(f"Volume Control: {'ENABLED' if result.volume_control else 'DISABLED'}")
+    lines.append(f"Vol: {'ENABLED' if result.volume_control else 'DISABLED'}")
+    # blank_screen=True means screen is blanked, so Screen is DISABLED
+    lines.append(f"Screen: {'DISABLED' if result.blank_screen else 'ENABLED'}")
     lines.append("")
-    lines.append(f"Cycles per IRQ: {result.cycles_per_irq}")
-    lines.append(f"IRQ Overhead: {IRQ_OVERHEAD}")
+    lines.append("(Note: Key option not shown - affects main loop, not IRQ)")
+    lines.append("")
+    
+    # Show cycle calculation with ANTIC stealing
+    lines.append(f"Cycles per IRQ (raw): {result.cycles_per_irq}")
+    if not result.blank_screen:
+        stolen = result.cycles_per_irq * ANTIC_CYCLE_STEAL_PERCENT // 100
+        lines.append(f"ANTIC cycle stealing: -{stolen} ({ANTIC_CYCLE_STEAL_PERCENT}% for display)")
+    lines.append(f"IRQ Overhead: -{IRQ_OVERHEAD}")
     lines.append(f"Available for channels: {result.available_cycles}")
+    if not result.blank_screen:
+        # Show what would be available with Screen disabled
+        blank_available = result.cycles_per_irq - IRQ_OVERHEAD
+        lines.append(f"  (with Screen disabled: {blank_available} cycles)")
     lines.append("")
     
     # Channel cost breakdown
     lines.append(f"Channel cycle costs ({mode_name} mode):")
     lines.append(f"  Inactive channel: {CHANNEL_INACTIVE} cycles")
-    lines.append(f"  Active (no boundary cross): ~{ch_no_cross} cycles")
-    lines.append(f"  Active (with boundary cross): ~{ch_with_cross} cycles")
+    lines.append(f"  Active (typical): ~{ch_no_cross} cycles")
+    lines.append(f"  Active (boundary cross): ~{ch_with_cross} cycles")
     if result.volume_control:
         lines.append(f"  Volume control: +{VOLUME_CONTROL_COST} cycles/channel")
+    lines.append("")
+    
+    # Explain worst case
+    lines.append("WORST CASE: All channels crossing boundary simultaneously")
+    worst_3ch = 3 * ch_with_cross
+    if result.volume_control:
+        worst_3ch += 3 * VOLUME_CONTROL_COST
+    lines.append(f"  3 active channels with boundary: {worst_3ch} cycles")
+    if worst_3ch > result.available_cycles:
+        lines.append(f"  >>> EXCEEDS BUDGET by {worst_3ch - result.available_cycles} cycles! <<<")
+    else:
+        lines.append(f"  Headroom: {result.available_cycles - worst_3ch} cycles")
+    lines.append("")
+    
+    lines.append("NOTE: Boundary crossing happens every few IRQs even at")
+    lines.append("low pitch. Channels starting together cross simultaneously!")
     lines.append("")
     
     # Volume control warning
@@ -487,38 +563,94 @@ def format_analysis_report(result: AnalysisResult) -> str:
     lines.append("RECOMMENDATIONS")
     lines.append("-" * 60)
     
-    if result.is_safe:
+    # Calculate worst-case 3-channel crossing
+    worst_3ch = 3 * ch_with_cross
+    if result.volume_control:
+        worst_3ch += 3 * VOLUME_CONTROL_COST
+    worst_exceeds = worst_3ch > result.available_cycles
+    
+    if result.is_safe and not worst_exceeds:
         lines.append("[OK] Song should play correctly on Atari hardware.")
         if result.volume_control and result.volume_safe:
             lines.append("[OK] Volume control is enabled and sample rate is compatible.")
+    elif result.is_safe and worst_exceeds:
+        lines.append("[WARNING] Song MAY have occasional audio glitches!")
+        lines.append("")
+        lines.append("While most IRQs fit within budget, when all 3 channels")
+        lines.append("cross boundaries simultaneously (every few IRQs), the")
+        lines.append(f"cycle count ({worst_3ch}) exceeds budget ({result.available_cycles}).")
+        lines.append("")
+        lines.append("This causes periodic missed samples = audible distortion.")
+        lines.append("")
     else:
         lines.append("To fix timing issues, consider:")
         lines.append("")
-        
-        # Check if lower rate would help
-        if result.sample_rate > 5278:
-            lines.append(f"* Lower sample rate (current: {result.sample_rate} Hz)")
-            lines.append("  - 5278 Hz gives ~293 cycles available")
-            lines.append("  - 3958 Hz gives ~405 cycles available")
-            lines.append("")
-        
-        # Note about vector size with optimized player
-        lines.append(f"* Vector size {result.vector_size} - with optimized player,")
-        lines.append("  high-pitch notes have FIXED cost (no loop penalty)")
+    
+    # If worst case exceeds, give specific advice
+    if worst_exceeds:
+        deficit = worst_3ch - result.available_cycles
+        lines.append(f"You need {deficit} more cycles for 3-channel worst case.")
         lines.append("")
         
-        lines.append("* Reduce number of simultaneous active channels")
-        if result.optimize_speed:
-            lines.append("  - SPEED mode: ~63-125 cycles per active channel")
-        else:
-            lines.append("  - SIZE mode: ~83-145 cycles per active channel")
-        lines.append(f"  - Inactive channels cost only {CHANNEL_INACTIVE} cycles")
+        # Recommend disabling Screen if not already disabled
+        if not result.blank_screen:
+            blank_available = result.cycles_per_irq - IRQ_OVERHEAD
+            if worst_3ch <= blank_available:
+                lines.append("* Disable Screen (uncheck Screen checkbox)")
+                lines.append(f"  (gains {blank_available - result.available_cycles} cycles - WOULD FIT!)")
+                lines.append("")
+            else:
+                lines.append(f"* Disable Screen (gains {blank_available - result.available_cycles} cycles)")
+                lines.append("")
+        
+        # Calculate what sample rate would work
+        needed_cycles = worst_3ch + IRQ_OVERHEAD
+        if not result.blank_screen:
+            # Account for ANTIC stealing in rate calculation
+            needed_cycles = int(needed_cycles * 100 / (100 - ANTIC_CYCLE_STEAL_PERCENT))
+        safe_rate = int(PAL_CPU_CLOCK / needed_cycles)
+        lines.append(f"* Lower sample rate to ~{safe_rate} Hz or less")
+        lines.append(f"  (current: {result.sample_rate} Hz)")
         lines.append("")
         
         if result.volume_control:
-            total_vol = VOLUME_CONTROL_COST * 3
-            lines.append(f"* Disable volume control to save ~{total_vol} cycles total")
-            lines.append(f"  ({VOLUME_CONTROL_COST} cycles per active channel)")
+            saved = 3 * VOLUME_CONTROL_COST
+            lines.append(f"* OR disable Vol to save {saved} cycles")
+            new_worst = worst_3ch - saved
+            if new_worst <= result.available_cycles:
+                lines.append(f"  (new worst case: {new_worst} cycles - WOULD FIT!)")
+            lines.append("")
+        
+        lines.append("* OR use SIZE optimization mode (larger vector size)")
+        lines.append("  to reduce boundary crossing frequency")
+        lines.append("")
+        
+        lines.append("* OR limit to 2 simultaneous channels")
+        two_ch_worst = 2 * ch_with_cross + CHANNEL_INACTIVE
+        if result.volume_control:
+            two_ch_worst += 2 * VOLUME_CONTROL_COST
+        lines.append(f"  (2 active + 1 inactive = {two_ch_worst} cycles)")
+    else:
+        if not result.is_safe:
+            # Original recommendations for non-worst-case failures
+            if result.sample_rate > 5278:
+                lines.append(f"* Lower sample rate (current: {result.sample_rate} Hz)")
+                lines.append("  - 5278 Hz gives ~293 cycles available")
+                lines.append("  - 3958 Hz gives ~405 cycles available")
+                lines.append("")
+            
+            lines.append("* Reduce number of simultaneous active channels")
+            if result.optimize_speed:
+                lines.append("  - SPEED mode: ~63-125 cycles per active channel")
+            else:
+                lines.append("  - SIZE mode: ~83-145 cycles per active channel")
+            lines.append(f"  - Inactive channels cost only {CHANNEL_INACTIVE} cycles")
+            lines.append("")
+            
+            if result.volume_control:
+                total_vol = VOLUME_CONTROL_COST * 3
+                lines.append(f"* Disable volume control to save ~{total_vol} cycles total")
+                lines.append(f"  ({VOLUME_CONTROL_COST} cycles per active channel)")
     
     lines.append("")
     lines.append("=" * 60)
