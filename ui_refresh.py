@@ -27,6 +27,7 @@ def refresh_all():
     refresh_instruments()
     refresh_editor()
     update_controls()
+    update_validation_indicator()
     
     # Update BUILD button state (depends on VQ conversion and instruments)
     # Import here to avoid circular import
@@ -315,7 +316,15 @@ def refresh_editor():
                 if r and row_idx < max_len:
                     inst_str = G.fmt_inst(r.instrument) if r.note > 0 else ("--" if state.hex_mode else "---")
                     dpg.configure_item(inst_tag, label=inst_str)
-                    dpg.bind_item_theme(inst_tag, cell_theme(is_cursor and state.column == COL_INST))
+                    
+                    # Check for invalid instrument reference (has note but inst doesn't exist)
+                    has_invalid_inst = (r.note > 0 and r.note != 255 and 
+                                       r.instrument >= len(state.song.instruments))
+                    
+                    if has_invalid_inst and not is_cursor:
+                        dpg.bind_item_theme(inst_tag, "theme_cell_warning")
+                    else:
+                        dpg.bind_item_theme(inst_tag, cell_theme(is_cursor and state.column == COL_INST))
                 else:
                     dpg.configure_item(inst_tag, label="")
             
@@ -371,3 +380,104 @@ def update_controls():
         dpg.set_value("vq_optimize_combo", "Speed" if state.vq.settings.optimize_speed else "Size")
     
     G.update_title()
+
+
+def quick_validate_song():
+    """Run quick validation and update the validation indicator.
+    
+    Returns (error_count, warning_count, first_issue_msg)
+    """
+    from constants import MAX_ROWS, MAX_NOTES, MAX_VOLUME, NOTE_OFF
+    
+    errors = 0
+    warnings = 0
+    first_issue = None
+    
+    song = state.song
+    
+    # Check if song has content
+    if not song.songlines or not song.patterns:
+        return (1, 0, "Empty song")
+    
+    # Check pattern lengths and note values
+    for ptn_idx, pattern in enumerate(song.patterns):
+        # Check length (max 254 for export)
+        if pattern.length > MAX_ROWS:
+            errors += 1
+            if not first_issue:
+                first_issue = f"Pattern {ptn_idx}: length {pattern.length} > {MAX_ROWS}"
+        
+        # Check rows
+        for row_idx, row in enumerate(pattern.rows):
+            if row_idx >= pattern.length:
+                break
+            
+            # Check note
+            if row.note != 0 and row.note != NOTE_OFF:
+                if row.note < 1 or row.note > MAX_NOTES:
+                    errors += 1
+                    if not first_issue:
+                        first_issue = f"Ptn {ptn_idx} Row {row_idx}: invalid note {row.note}"
+                        
+            # Check volume
+            if row.volume < 0 or row.volume > MAX_VOLUME:
+                errors += 1
+                if not first_issue:
+                    first_issue = f"Ptn {ptn_idx} Row {row_idx}: invalid volume"
+    
+    # Track used instruments
+    used_instruments = set()
+    for pattern in song.patterns:
+        for row in pattern.rows[:pattern.length]:
+            if row.note > 0 and row.note != NOTE_OFF:
+                used_instruments.add(row.instrument)
+    
+    # Check instrument references
+    num_instruments = len(song.instruments)
+    for inst_idx in used_instruments:
+        if inst_idx >= num_instruments:
+            errors += 1
+            if not first_issue:
+                first_issue = f"Instrument {inst_idx} referenced but not defined"
+        elif inst_idx < num_instruments and not song.instruments[inst_idx].is_loaded():
+            warnings += 1
+            if not first_issue:
+                first_issue = f"Instrument {inst_idx} has no sample"
+    
+    # Check songline pattern references
+    num_patterns = len(song.patterns)
+    for sl_idx, sl in enumerate(song.songlines):
+        for ch, ptn_idx in enumerate(sl.patterns):
+            if ptn_idx >= num_patterns:
+                errors += 1
+                if not first_issue:
+                    first_issue = f"Songline {sl_idx}: invalid pattern {ptn_idx}"
+    
+    return (errors, warnings, first_issue)
+
+
+def update_validation_indicator():
+    """Update the validation indicator in status bar."""
+    if not dpg.does_item_exist("validation_indicator"):
+        return
+    
+    errors, warnings, first_issue = quick_validate_song()
+    
+    if errors > 0:
+        # Red - errors found
+        dpg.configure_item("validation_indicator", color=(255, 100, 100))
+        dpg.set_value("validation_indicator", f"⚠ {errors} error(s)")
+        if dpg.does_item_exist("validation_tooltip_text"):
+            dpg.set_value("validation_tooltip_text", first_issue or "Click VALIDATE for details")
+    elif warnings > 0:
+        # Yellow - warnings only
+        dpg.configure_item("validation_indicator", color=(255, 200, 100))
+        dpg.set_value("validation_indicator", f"⚠ {warnings} warning(s)")
+        if dpg.does_item_exist("validation_tooltip_text"):
+            dpg.set_value("validation_tooltip_text", first_issue or "Click VALIDATE for details")
+    else:
+        # Green - all good
+        dpg.configure_item("validation_indicator", color=(100, 200, 100))
+        dpg.set_value("validation_indicator", "✓ Valid")
+        if dpg.does_item_exist("validation_tooltip_text"):
+            dpg.set_value("validation_tooltip_text", "Song is ready for export")

@@ -422,8 +422,16 @@ def on_ptn_len_change(sender, value):
         else:
             parsed = int(value)
         
+        # Warn if exceeding max (254 for export compatibility)
+        if parsed > MAX_ROWS:
+            G.show_status(f"⚠ Max pattern length is {MAX_ROWS} (row 255 reserved for export)")
+            parsed = MAX_ROWS
+        
         parsed = max(1, min(MAX_ROWS, parsed))
         ops.set_pattern_length(parsed, state.selected_pattern)
+        
+        # Update validation indicator
+        R.update_validation_indicator()
     except (ValueError, TypeError):
         # Invalid input - restore original value
         R.refresh_pattern_info()
@@ -1276,11 +1284,28 @@ def update_vq_convert_button():
 # =============================================================================
 
 def on_build_click(sender, app_data):
-    """Build Atari executable (.xex)."""
+    """Build Atari executable (.xex) - validates first."""
     from ui_dialogs import show_error, show_info
     import build
     
-    # Validation checks
+    # Run comprehensive validation as first step
+    validation = build.validate_for_build(state.song)
+    
+    if not validation.valid:
+        # Show detailed validation dialog with all issues
+        show_build_validation_dialog(validation)
+        return
+    
+    # Show warnings but continue
+    if validation.warning_count > 0:
+        warning_lines = []
+        for issue in validation.issues:
+            if issue.severity == "warning":
+                warning_lines.append(f"• {issue.location}: {issue.message}")
+        # Log warnings but don't block
+        logger.warning(f"Build warnings: {warning_lines}")
+    
+    # Legacy checks (now handled by validation, but keep as backup)
     if not state.song.instruments:
         show_error("Cannot Build", "No instruments loaded.\n\nLoad samples first using [Add] or [Folder].")
         return
@@ -1291,20 +1316,6 @@ def on_build_click(sender, app_data):
     
     if not state.vq.result or not state.vq.result.output_dir:
         show_error("Cannot Build", "Conversion data not found.\n\nPlease run [CONVERT] again.")
-        return
-    
-    # Check if song has any notes
-    has_notes = False
-    for ptn in state.song.patterns:
-        for row in ptn.rows:
-            if row.note > 0:
-                has_notes = True
-                break
-        if has_notes:
-            break
-    
-    if not has_notes:
-        show_error("Cannot Build", "Song has no notes.\n\nAdd some notes to patterns before building.")
         return
     
     # Build directly to app directory with sanitized song name
@@ -1319,6 +1330,53 @@ def on_build_click(sender, app_data):
     
     # Show build progress window directly
     show_build_progress_window(xex_path)
+
+
+def show_build_validation_dialog(validation):
+    """Show validation results dialog when BUILD fails validation."""
+    if dpg.does_item_exist("build_validation_dlg"):
+        dpg.delete_item("build_validation_dlg")
+    
+    vp_w = dpg.get_viewport_width()
+    vp_h = dpg.get_viewport_height()
+    dlg_w, dlg_h = 500, 400
+    
+    with dpg.window(tag="build_validation_dlg", label="Build Failed - Validation Errors", modal=True, 
+                    no_resize=False, no_collapse=True, width=dlg_w, height=dlg_h,
+                    pos=[(vp_w - dlg_w) // 2, (vp_h - dlg_h) // 2]):
+        
+        # Summary line
+        dpg.add_text(f"✗ Cannot build: {validation.error_count} error(s) found", color=(255, 100, 100))
+        
+        if validation.warning_count > 0:
+            dpg.add_text(f"⚠ {validation.warning_count} warning(s)", color=(255, 200, 100))
+        
+        dpg.add_separator()
+        dpg.add_spacer(height=5)
+        
+        dpg.add_text("Please fix the following issues:", color=(200, 200, 200))
+        dpg.add_spacer(height=5)
+        
+        # Issues list
+        with dpg.child_window(height=-50, border=True):
+            for issue in validation.issues:
+                if issue.severity == "error":
+                    color = (255, 100, 100)
+                    icon = "❌"
+                else:
+                    color = (255, 200, 100)
+                    icon = "⚠️"
+                
+                with dpg.group(horizontal=True):
+                    dpg.add_text(icon, color=color)
+                    dpg.add_text(f"{issue.location}:", color=(200, 200, 255))
+                    dpg.add_text(issue.message)
+        
+        dpg.add_spacer(height=10)
+        with dpg.group(horizontal=True):
+            dpg.add_spacer(width=(dlg_w - 100) // 2)
+            dpg.add_button(label="Close", width=80, 
+                          callback=lambda: dpg.delete_item("build_validation_dlg"))
 
 
 def show_build_progress_window(xex_path: str):

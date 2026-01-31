@@ -19,6 +19,178 @@ from state import state
 logger = logging.getLogger(__name__)
 
 
+# =============================================================================
+# VALIDATION - Check song data before export
+# =============================================================================
+
+@dataclass
+class ValidationIssue:
+    """Single validation issue."""
+    severity: str  # "error", "warning"
+    location: str  # e.g., "Pattern 3, Row 12" or "Songline 5"
+    message: str
+    
+    def __str__(self):
+        icon = "❌" if self.severity == "error" else "⚠️"
+        return f"{icon} {self.location}: {self.message}"
+
+
+@dataclass 
+class ValidationResult:
+    """Result of song validation."""
+    valid: bool = True
+    issues: List[ValidationIssue] = field(default_factory=list)
+    
+    def add_error(self, location: str, message: str):
+        self.issues.append(ValidationIssue("error", location, message))
+        self.valid = False
+    
+    def add_warning(self, location: str, message: str):
+        self.issues.append(ValidationIssue("warning", location, message))
+    
+    @property
+    def error_count(self) -> int:
+        return sum(1 for i in self.issues if i.severity == "error")
+    
+    @property
+    def warning_count(self) -> int:
+        return sum(1 for i in self.issues if i.severity == "warning")
+    
+    def format_summary(self) -> str:
+        if not self.issues:
+            return "✓ Song validation passed"
+        parts = []
+        if self.error_count:
+            parts.append(f"{self.error_count} error(s)")
+        if self.warning_count:
+            parts.append(f"{self.warning_count} warning(s)")
+        return "Validation: " + ", ".join(parts)
+
+
+def validate_song(song: Song, check_samples: bool = True) -> ValidationResult:
+    """Validate song data for Atari export.
+    
+    Checks:
+    - Pattern lengths are valid (1-254)
+    - All notes are in valid range (0, 1-48, or 255)
+    - All instrument references exist
+    - All instruments have samples loaded (if check_samples=True)
+    - All songline pattern references are valid
+    - No empty song
+    
+    Args:
+        song: Song to validate
+        check_samples: Whether to check for loaded samples
+        
+    Returns:
+        ValidationResult with issues found
+    """
+    result = ValidationResult()
+    
+    # Check song has content
+    if not song.songlines:
+        result.add_error("Song", "No songlines defined")
+        return result
+    
+    if not song.patterns:
+        result.add_error("Song", "No patterns defined")
+        return result
+    
+    # Track which instruments are actually used
+    used_instruments = set()
+    
+    # Check patterns
+    for ptn_idx, pattern in enumerate(song.patterns):
+        loc_ptn = f"Pattern {ptn_idx:02d}"
+        
+        # Check pattern length
+        if pattern.length < 1:
+            result.add_error(loc_ptn, f"Length is {pattern.length}, must be at least 1")
+        elif pattern.length > 254:
+            result.add_error(loc_ptn, f"Length is {pattern.length}, max is 254 (row 255 is reserved)")
+        
+        # Check rows
+        for row_idx, row in enumerate(pattern.rows):
+            if row_idx >= pattern.length:
+                break
+                
+            loc_row = f"Pattern {ptn_idx:02d}, Row {row_idx:02d}"
+            
+            # Check note value
+            if row.note != 0 and row.note != 255:  # 0=empty, 255=OFF
+                if row.note < 1 or row.note > 48:
+                    result.add_error(loc_row, f"Note value {row.note} out of range (valid: 1-48)")
+            
+            # Check instrument
+            if row.note > 0 and row.note != 255:  # Has actual note
+                if row.instrument < 0:
+                    result.add_error(loc_row, f"Instrument index {row.instrument} is negative")
+                elif row.instrument >= 128:
+                    result.add_error(loc_row, f"Instrument index {row.instrument} exceeds max (127)")
+                else:
+                    used_instruments.add(row.instrument)
+            
+            # Check volume
+            if row.volume < 0 or row.volume > 15:
+                result.add_error(loc_row, f"Volume {row.volume} out of range (valid: 0-15)")
+    
+    # Check songlines reference valid patterns
+    num_patterns = len(song.patterns)
+    for sl_idx, songline in enumerate(song.songlines):
+        loc_sl = f"Songline {sl_idx:02d}"
+        
+        for ch, ptn_idx in enumerate(songline.patterns):
+            if ptn_idx < 0 or ptn_idx >= num_patterns:
+                result.add_error(loc_sl, f"Channel {ch+1} references pattern {ptn_idx} but only {num_patterns} patterns exist")
+        
+        # Check speed
+        if songline.speed < 1 or songline.speed > 255:
+            result.add_error(loc_sl, f"Speed {songline.speed} out of range (valid: 1-255)")
+    
+    # Check instrument references
+    num_instruments = len(song.instruments)
+    for inst_idx in sorted(used_instruments):
+        if inst_idx >= num_instruments:
+            result.add_error(f"Instrument {inst_idx:02d}", 
+                           f"Referenced in patterns but only {num_instruments} instruments defined")
+    
+    # Check samples are loaded (if requested)
+    if check_samples:
+        for inst_idx in sorted(used_instruments):
+            if inst_idx < num_instruments:
+                inst = song.instruments[inst_idx]
+                if not inst.is_loaded():
+                    result.add_warning(f"Instrument {inst_idx:02d} ({inst.name})",
+                                      "No sample loaded - will be silent")
+    
+    # Check for empty patterns in use
+    patterns_in_use = set()
+    for sl in song.songlines:
+        patterns_in_use.update(sl.patterns)
+    
+    for ptn_idx in patterns_in_use:
+        if 0 <= ptn_idx < len(song.patterns):
+            pattern = song.patterns[ptn_idx]
+            has_notes = any(row.note != 0 for row in pattern.rows[:pattern.length])
+            if not has_notes:
+                result.add_warning(f"Pattern {ptn_idx:02d}", "Empty pattern (no notes)")
+    
+    return result
+
+
+def validate_for_build(song: Song) -> ValidationResult:
+    """Full validation required before build (includes VQ check)."""
+    result = validate_song(song, check_samples=True)
+    
+    # Additional checks for build
+    if not state.vq.result:
+        result.add_error("VQ Conversion", "No VQ conversion done - run CONVERT first")
+    elif not state.vq.result.success:
+        result.add_error("VQ Conversion", "VQ conversion failed - fix errors and re-convert")
+    
+    return result
+
+
 @dataclass
 class BuildResult:
     """Result of build operation."""
@@ -78,6 +250,23 @@ def export_song_data(song: Song, output_path: str, output_func=None) -> Tuple[bo
     Returns:
         (success, error_message)
     """
+    # Validate song data before export
+    validation = validate_song(song, check_samples=False)
+    if not validation.valid:
+        error_lines = [str(i) for i in validation.issues if i.severity == "error"]
+        error_msg = "Song validation failed:\n" + "\n".join(error_lines[:5])
+        if len(error_lines) > 5:
+            error_msg += f"\n...and {len(error_lines) - 5} more errors"
+        if output_func:
+            output_func(f"\n{error_msg}\n")
+        return False, error_msg
+    
+    # Show warnings but continue
+    if validation.warning_count > 0 and output_func:
+        output_func(f"\nValidation warnings ({validation.warning_count}):\n")
+        for issue in validation.issues:
+            if issue.severity == "warning":
+                output_func(f"  {issue}\n")
     try:
         # Generate SONG_CFG.asm - equates needed BEFORE the ORG directive
         # These must be separate because SONG_DATA.asm contains .byte directives
@@ -201,7 +390,6 @@ def export_song_data(song: Song, output_path: str, output_func=None) -> Tuple[bo
         
     except Exception as e:
         logger.error(f"Failed to export song data: {e}")
-        return False, str(e)
         return False, str(e)
 
 

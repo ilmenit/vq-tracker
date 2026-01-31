@@ -73,24 +73,35 @@ Tracker_IRQ:
     ; Compare to size mode: 32-35 cycles!
     
     ; --- Pitch accumulator (8.8 fixed-point) ---
+    ; pitch_step is a 16-bit value: high byte = integer part, low byte = fraction
+    ; Each IRQ, we add pitch_step to the accumulator (pitch_frac:pitch_int)
+    ; The integer part (pitch_int) tells us how many samples to advance
+    ;
+    ; Example for C-1 (1.0x): pitch_step = $0100
+    ;   Each IRQ: pitch_int += $01 -> advance 1 sample
+    ; Example for C-4 (8.0x): pitch_step = $0800
+    ;   Each IRQ: pitch_int += $08 -> advance 8 samples
+    ;
+    ; Register state: Y = vector_offset (from output above), A/X = garbage
     clc
     lda trk0_pitch_frac
-    adc trk0_pitch_step
+    adc trk0_pitch_step         ; Add fractional part
     sta trk0_pitch_frac
-    lda trk0_pitch_int
-    adc trk0_pitch_step+1
-    sta trk0_pitch_int
+    lda trk0_pitch_int          ; A = current integer accumulator (should be 0)
+    adc trk0_pitch_step+1       ; Add integer part + carry from frac
+    sta trk0_pitch_int          ; Store result (flags set from ADC, not STA)
     
-    beq @skip_ch0                   ; No advancement if pitch_int = 0
+    beq @skip_ch0               ; If A=0, no samples to advance (shouldn't happen)
     
     ; --- Advance vector_offset by pitch_int samples ---
+    ; After this, vector_offset may exceed MIN_VECTOR (boundary cross)
     clc
-    lda trk0_vector_offset
-    adc trk0_pitch_int
-    sta trk0_vector_offset
+    lda trk0_vector_offset      ; A = current position in vector
+    adc trk0_pitch_int          ; Add samples to advance
+    sta trk0_vector_offset      ; May now be >= MIN_VECTOR
     
     lda #0
-    sta trk0_pitch_int              ; Reset integer accumulator
+    sta trk0_pitch_int          ; Reset integer accumulator for next IRQ
     
     ; --- OPTIMIZED BOUNDARY CHECK (O(1), no loop!) ---
     lda trk0_vector_offset

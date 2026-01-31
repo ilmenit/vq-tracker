@@ -343,12 +343,12 @@ def show_shortcuts():
         
         dpg.add_spacer(height=8)
         dpg.add_text("OCTAVE & PLAYBACK", color=COL_ACCENT)
-        dpg.add_text("  F1 / F2 / F3     Select Octave 1/2/3")
-        dpg.add_text("  F4               Show this help")
+        dpg.add_text("  F1-F4            Select Octave 1/2/3/4")
         dpg.add_text("  F5               Play pattern from start")
         dpg.add_text("  F6               Play song from start")
         dpg.add_text("  F7               Play from cursor position")
         dpg.add_text("  F8               Stop")
+        dpg.add_text("  F12              Show this help")
         dpg.add_text("  Space            Play/stop toggle")
         dpg.add_text("  Enter            Preview current row")
         

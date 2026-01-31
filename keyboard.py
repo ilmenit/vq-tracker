@@ -144,8 +144,8 @@ def handle_key(sender, key):
             ops.jump_rows(state.step)
         return
     
-    # === OCTAVE SELECTION (F1-F3) - Always available ===
-    # F1=Octave 1, F2=Octave 2, F3=Octave 3
+    # === OCTAVE SELECTION (F1-F4) - Always available ===
+    # F1=Octave 1, F2=Octave 2, F3=Octave 3, F4=Octave 4
     if key == dpg.mvKey_F1:
         ops.set_octave(1)
         G.show_status("Octave: 1")
@@ -159,9 +159,8 @@ def handle_key(sender, key):
         G.show_status("Octave: 3")
         return
     elif key == dpg.mvKey_F4:
-        # F4 shows help (was F1)
-        from ui_dialogs import show_shortcuts
-        show_shortcuts()
+        ops.set_octave(4)
+        G.show_status("Octave: 4")
         return
     elif key == dpg.mvKey_F5:
         ops.play_pattern()
@@ -174,6 +173,11 @@ def handle_key(sender, key):
         return
     elif key == dpg.mvKey_F8:
         ops.stop_playback()
+        return
+    elif key == dpg.mvKey_F12:
+        # F12 shows help/keyboard shortcuts
+        from ui_dialogs import show_shortcuts
+        show_shortcuts()
         return
     
     # === INSTRUMENTS SHORTCUTS ===
@@ -397,8 +401,8 @@ def handle_char(char: str):
             ops.enter_note_off()
             return
         
-        # Tracker mode: '2' and '3' select octave (but only if not in NOTE_KEYS)
-        if not G.piano_keys_mode and char_lower in '23':
+        # Tracker mode: '2', '3', '4' select octave (but only if not in NOTE_KEYS)
+        if not G.piano_keys_mode and char_lower in '234':
             octave = int(char_lower)
             ops.set_octave(octave)
             G.show_status(f"Octave: {octave}")

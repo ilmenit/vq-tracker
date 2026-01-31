@@ -2,14 +2,14 @@
 
 # === LIMITS ===
 MAX_CHANNELS = 3
-MAX_OCTAVES = 3  # 3 octaves (C-1 to B-3, indices 0-35)
-MAX_NOTES = MAX_OCTAVES * 12  # 36 notes
+MAX_OCTAVES = 4  # 4 octaves (C-1 to B-4, indices 0-47)
+MAX_NOTES = MAX_OCTAVES * 12  # 48 notes
 NOTE_OFF = 255  # Special value for note-off (silence/stop)
 MAX_VOLUME = 15
 MAX_INSTRUMENTS = 128
 MAX_PATTERNS = 256
-MAX_ROWS = 255  # Limited to 255 because $FF is used as end marker in export format
-MAX_SONGLINES = 256
+MAX_ROWS = 254  # Limited to 254 because row $FF (255) is used as end marker in export format
+MAX_SONGLINES = 255  # Limited to 255 (8-bit counter, and to allow safe comparison)
 
 # === DEFAULTS ===
 DEFAULT_SPEED = 6
@@ -54,7 +54,7 @@ def note_to_str(note: int) -> str:
     
     Special values:
     - 0 = empty/continue (---)
-    - 1-36 = actual notes (C-1 to B-3)
+    - 1-48 = actual notes (C-1 to B-4)
     - 255 = note off (OFF)
     """
     if note == 0:

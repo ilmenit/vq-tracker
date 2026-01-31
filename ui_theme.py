@@ -181,6 +181,20 @@ def create_themes():
             dpg.add_theme_color(dpg.mvThemeCol_Button, (35, 40, 55))
             dpg.add_theme_color(dpg.mvThemeCol_Text, COL_TEXT)
     
+    # === WARNING/ERROR CELL THEMES ===
+    
+    # Cell with invalid instrument reference (yellow warning)
+    with dpg.theme(tag="theme_cell_warning"):
+        with dpg.theme_component(dpg.mvButton):
+            dpg.add_theme_color(dpg.mvThemeCol_Button, (60, 50, 25))
+            dpg.add_theme_color(dpg.mvThemeCol_Text, COL_YELLOW)
+    
+    # Cell with error (red)
+    with dpg.theme(tag="theme_cell_error"):
+        with dpg.theme_component(dpg.mvButton):
+            dpg.add_theme_color(dpg.mvThemeCol_Button, (60, 25, 25))
+            dpg.add_theme_color(dpg.mvThemeCol_Text, COL_RED)
+    
     # === INSTRUMENT THEMES (VQ conversion state) ===
     
     # Instrument not converted (normal/gray)

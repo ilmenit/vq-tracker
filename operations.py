@@ -432,6 +432,11 @@ def select_instrument(idx: int):
 
 def add_pattern(*args):
     """Add new pattern."""
+    from constants import MAX_PATTERNS
+    if len(state.song.patterns) >= MAX_PATTERNS:
+        if show_status:
+            show_status(f"⚠ Maximum {MAX_PATTERNS} patterns reached!")
+        return
     idx = state.song.add_pattern()
     if idx >= 0:
         state.selected_pattern = idx
@@ -489,6 +494,11 @@ def transpose(semitones: int):
 
 def add_songline(*args):
     """Add new songline."""
+    from constants import MAX_SONGLINES
+    if len(state.song.songlines) >= MAX_SONGLINES:
+        if show_status:
+            show_status(f"⚠ Maximum {MAX_SONGLINES} songlines reached!")
+        return
     idx = state.song.add_songline(state.songline)
     if idx >= 0:
         state.songline = idx
@@ -583,6 +593,12 @@ def enter_note(semitone: int):
     if not (1 <= note <= MAX_NOTES):
         return
     
+    # Check if selected instrument exists
+    if state.instrument >= len(state.song.instruments):
+        if show_status:
+            show_status(f"⚠ Instrument {state.instrument} doesn't exist - add samples first!")
+        # Still allow entry (for flexibility) but warn
+    
     save_undo("Enter note")
     state.clear_pending()
     state.selection.clear()
@@ -599,7 +615,7 @@ def enter_note(semitone: int):
         row.volume = state.volume
     # If cell had note, keep existing instrument and volume
     
-    # Preview note
+    # Preview note (only if instrument exists and is loaded)
     if state.instrument < len(state.song.instruments):
         inst = state.song.instruments[state.instrument]
         if inst.is_loaded():
@@ -682,6 +698,9 @@ def enter_digit(d: int):
             val = (state.pending_digit << 4) | (d & 0xF)
             save_undo("Enter instrument")
             row.instrument = min(val, MAX_INSTRUMENTS - 1)
+            # Warn if instrument doesn't exist
+            if row.instrument >= len(state.song.instruments):
+                show_status(f"⚠ Instrument {row.instrument:02X} not defined")
             state.clear_pending()
             move_cursor(state.step, 0)  # Handles refresh and cross-songline
             return
@@ -713,6 +732,9 @@ def enter_digit_decimal(d: int):
                 val = state.pending_digit * 10 + d
                 save_undo("Enter instrument")
                 row.instrument = min(val, MAX_INSTRUMENTS - 1)
+                # Warn if instrument doesn't exist
+                if row.instrument >= len(state.song.instruments):
+                    show_status(f"⚠ Instrument {row.instrument} not defined")
                 state.clear_pending()
                 move_cursor(state.step, 0)  # Handles refresh and cross-songline
                 return
@@ -1008,7 +1030,7 @@ def jump_last_songline():
 # =============================================================================
 
 def set_octave(val: int):
-    """Set octave (1-3)."""
+    """Set octave (1-4)."""
     state.octave = max(1, min(MAX_OCTAVES, val))
     if update_controls:
         update_controls()

@@ -396,7 +396,7 @@ def build_top_row():
             
             # ANALYZE and BUILD buttons
             # ANALYZE: Check timing feasibility before export
-            # BUILD: Create executable (requires valid CONVERT)
+            # BUILD: Validates song, then creates executable
             dpg.add_spacer(height=5)
             with dpg.group(horizontal=True):
                 dpg.add_button(tag="analyze_btn", label="ANALYZE", width=80, callback=C.on_analyze_click)
@@ -415,9 +415,14 @@ def build_top_row():
                 with dpg.tooltip(dpg.last_item()):
                     dpg.add_text("Build Atari Executable", color=(255, 255, 150))
                     dpg.add_separator()
-                    dpg.add_text("Creates a standalone .XEX file")
-                    dpg.add_text("that plays your song on real Atari")
-                    dpg.add_text("or in an emulator.")
+                    dpg.add_text("Validates song data, then creates")
+                    dpg.add_text("a standalone .XEX file that plays")
+                    dpg.add_text("on real Atari or in an emulator.")
+                    dpg.add_spacer(height=3)
+                    dpg.add_text("Validation checks:", color=(200, 200, 255))
+                    dpg.add_text("  • Pattern lengths (max 254)")
+                    dpg.add_text("  • Notes, instruments, volume")
+                    dpg.add_text("  • Samples loaded & converted")
                     dpg.add_spacer(height=3)
                     dpg.add_text("Requirements:", color=(255, 200, 150))
                     dpg.add_text("  1. Click CONVERT first")
@@ -800,7 +805,13 @@ def build_status_bar():
     """Build the status bar."""
     with dpg.group(horizontal=True):
         dpg.add_text(tag="status_text", default_value="Ready", color=(150, 200, 150))
-        dpg.add_spacer(width=30)
+        dpg.add_spacer(width=20)
+        dpg.add_text(tag="validation_indicator", default_value="", color=(100, 200, 100))
+        with dpg.tooltip("validation_indicator"):
+            dpg.add_text("Song Validation Status", color=(255, 255, 150))
+            dpg.add_separator()
+            dpg.add_text(tag="validation_tooltip_text", default_value="Validated automatically when BUILD is clicked")
+        dpg.add_spacer(width=20)
         dpg.add_text(tag="focus_indicator", default_value="Focus: EDITOR", color=(100, 150, 200))
 
 
