@@ -93,12 +93,8 @@ hiddenimports = [
     'pydub',
     'dearpygui',
     'dearpygui.dearpygui',
-    # pokey_vq modules (if installed as package)
-    'pokey_vq',
-    'pokey_vq.cli',
-    'pokey_vq.encoder',
-    'pokey_vq.decoder',
-    'pokey_vq.codebook',
+    # Note: pokey_vq is NOT included here because we use the local vq_converter
+    # folder which runs as a subprocess, not as an imported Python module
     # Standard library modules that might be lazy-loaded
     'queue',
     'threading',
