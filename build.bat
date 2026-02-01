@@ -131,7 +131,7 @@ echo.
 echo Building standalone executable...
 echo.
 
-pyinstaller tracker.spec --noconfirm
+pyinstaller tracker.spec --noconfirm --clean
 if errorlevel 1 (
     echo.
     echo [ERROR] Build failed!

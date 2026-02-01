@@ -23,6 +23,7 @@ Instance locking:
 
 import json
 import os
+import sys
 import shutil
 import struct
 import wave
@@ -32,6 +33,7 @@ import time
 import atexit
 import hashlib
 import subprocess
+import platform
 from datetime import datetime
 from dataclasses import dataclass, asdict, field
 from typing import Optional, Tuple, List, Dict, Any
@@ -39,13 +41,99 @@ import numpy as np
 
 logger = logging.getLogger("tracker.file_io")
 
+# =============================================================================
+# FFMPEG AUTO-DETECTION
+# =============================================================================
+# Look for bundled ffmpeg before importing pydub so it can find it.
+# On Windows, ffmpeg.exe and ffprobe.exe should be placed in:
+#   - bin/ffmpeg/ (preferred)
+#   - bin/windows_x86_64/ (alongside mads.exe)
+#   - ffmpeg/ (app root)
+# =============================================================================
+
+def _find_bundled_ffmpeg() -> Optional[str]:
+    """Find bundled ffmpeg directory."""
+    if platform.system() != "Windows":
+        return None  # Linux/macOS typically have ffmpeg in PATH
+    
+    # Determine app directory
+    if getattr(sys, 'frozen', False):
+        # Running as PyInstaller bundle
+        app_dir = os.path.dirname(sys.executable)
+    else:
+        # Running as script
+        app_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # Search locations for ffmpeg.exe
+    candidates = [
+        os.path.join(app_dir, "bin", "ffmpeg"),
+        os.path.join(app_dir, "bin", "windows_x86_64"),
+        os.path.join(app_dir, "ffmpeg"),
+        app_dir,  # App root itself
+    ]
+    
+    for candidate in candidates:
+        ffmpeg_exe = os.path.join(candidate, "ffmpeg.exe")
+        if os.path.isfile(ffmpeg_exe):
+            logger.info(f"Found bundled ffmpeg: {candidate}")
+            return candidate
+    
+    return None
+
+def _setup_ffmpeg_path():
+    """Set up ffmpeg path for pydub before importing it."""
+    ffmpeg_dir = _find_bundled_ffmpeg()
+    if ffmpeg_dir:
+        # Add to PATH so pydub (and subprocess calls) can find it
+        os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ.get("PATH", "")
+        logger.info(f"Added ffmpeg to PATH: {ffmpeg_dir}")
+        return ffmpeg_dir
+    return None
+
+# Try to set up bundled ffmpeg before importing pydub
+_FFMPEG_DIR = _setup_ffmpeg_path()
+
 # Optional audio library for format conversion
 try:
+    # Permanently suppress pydub's ffmpeg/ffprobe warnings
+    # These are harmless if ffmpeg is found, just noisy
+    import warnings
+    warnings.filterwarnings("ignore", category=RuntimeWarning, module="pydub.*")
+    
     from pydub import AudioSegment
     PYDUB_OK = True
-    logger.info("pydub available - multi-format audio import enabled")
+    
+    # Set pydub's converter paths directly (more reliable than PATH)
+    if _FFMPEG_DIR:
+        from pydub import AudioSegment as _AS
+        ffmpeg_exe = os.path.join(_FFMPEG_DIR, "ffmpeg.exe")
+        ffprobe_exe = os.path.join(_FFMPEG_DIR, "ffprobe.exe")
+        
+        if os.path.isfile(ffmpeg_exe):
+            _AS.converter = ffmpeg_exe
+            logger.info(f"Set pydub converter: {ffmpeg_exe}")
+        else:
+            logger.warning(f"ffmpeg.exe not found in {_FFMPEG_DIR}")
+            
+        if os.path.isfile(ffprobe_exe):
+            _AS.ffprobe = ffprobe_exe
+            logger.info(f"Set pydub ffprobe: {ffprobe_exe}")
+        else:
+            # ffprobe is required for format detection (MP3, etc.)
+            logger.warning(f"ffprobe.exe not found - MP3/OGG import may fail!")
+            logger.warning(f"Please download ffprobe.exe from https://www.gyan.dev/ffmpeg/builds/")
+    
+    # Check if ffmpeg is actually available
+    from pydub.utils import which
+    if which("ffmpeg") or (_FFMPEG_DIR and os.path.isfile(os.path.join(_FFMPEG_DIR, "ffmpeg.exe"))):
+        logger.info("pydub available with ffmpeg - full audio format support")
+        FFMPEG_OK = True
+    else:
+        logger.info("pydub available - WAV only (ffmpeg not found)")
+        FFMPEG_OK = False
 except ImportError:
     PYDUB_OK = False
+    FFMPEG_OK = False
     logger.warning("pydub not available - only WAV import supported")
 
 try:
@@ -294,6 +382,7 @@ def convert_to_wav(source_path: str, dest_path: str) -> Tuple[bool, str]:
     
     try:
         # Load audio (pydub auto-detects format)
+        logger.debug(f"Converting: {source_path}")
         audio = AudioSegment.from_file(source_path)
         
         # Convert to mono, 16-bit for compatibility
@@ -305,7 +394,12 @@ def convert_to_wav(source_path: str, dest_path: str) -> Tuple[bool, str]:
         
         duration = len(audio) / 1000.0
         return True, f"Converted: {duration:.2f}s, {audio.frame_rate}Hz"
+    except FileNotFoundError as e:
+        # This usually means ffmpeg/ffprobe wasn't found
+        logger.error(f"FFmpeg not found when converting {source_path}: {e}")
+        return False, f"Conversion failed: ffmpeg not found. Please install ffmpeg."
     except Exception as e:
+        logger.error(f"Conversion error for {source_path}: {type(e).__name__}: {e}")
         return False, f"Conversion failed: {e}"
 
 
@@ -357,10 +451,17 @@ def import_audio_file(source_path: str, dest_dir: str,
 
 
 def get_supported_extensions() -> List[str]:
-    """Get list of supported audio file extensions."""
-    if PYDUB_OK:
-        return sorted(SUPPORTED_AUDIO)
+    """Get list of supported audio file extensions.
+    
+    WAV is always supported.
+    Other formats (MP3, OGG, FLAC, etc.) require pydub + ffmpeg.
+    """
+    if PYDUB_OK and FFMPEG_OK:
+        result = sorted(SUPPORTED_AUDIO)
+        logger.debug(f"get_supported_extensions: full format support: {result}")
+        return result
     else:
+        logger.debug(f"get_supported_extensions: WAV only (PYDUB_OK={PYDUB_OK}, FFMPEG_OK={FFMPEG_OK})")
         return ['.wav']
 
 
@@ -716,6 +817,8 @@ def import_samples_multi(paths: List[str], dest_dir: str,
     
     for i, path in enumerate(paths):
         inst = Instrument()
+        # Always set original path for error reporting
+        inst.original_sample_path = path
         
         # Import and convert to WAV if needed
         dest_path, import_msg = import_audio_file(path, dest_dir, start_index + i)
@@ -723,8 +826,6 @@ def import_samples_multi(paths: List[str], dest_dir: str,
         if dest_path:
             # Load the WAV file
             ok, load_msg = load_sample(inst, dest_path)
-            # Store original path
-            inst.original_sample_path = path
             results.append((inst, ok, f"{import_msg}; {load_msg}" if ok else import_msg))
         else:
             results.append((inst, False, import_msg))
@@ -753,18 +854,23 @@ def import_samples_folder(folder: str, dest_dir: str,
     # Find all supported audio files
     audio_files = []
     extensions = get_supported_extensions()
+    logger.debug(f"import_folder_samples: scanning {folder}, extensions={extensions}")
     
     if recursive:
         for root, dirs, files in os.walk(folder):
             for f in files:
-                if os.path.splitext(f)[1].lower() in extensions:
+                ext = os.path.splitext(f)[1].lower()
+                if ext in extensions:
                     audio_files.append(os.path.join(root, f))
+                    logger.debug(f"  Found: {f} (ext={ext})")
     else:
-        audio_files = [
-            os.path.join(folder, f) for f in os.listdir(folder)
-            if os.path.splitext(f)[1].lower() in extensions
-        ]
+        for f in os.listdir(folder):
+            ext = os.path.splitext(f)[1].lower()
+            if ext in extensions:
+                audio_files.append(os.path.join(folder, f))
+                logger.debug(f"  Found: {f} (ext={ext})")
     
+    logger.info(f"import_folder_samples: found {len(audio_files)} files")
     audio_files.sort()
     return import_samples_multi(audio_files, dest_dir, start_index)
 

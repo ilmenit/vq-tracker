@@ -88,13 +88,24 @@ function Check-Dependencies {
     $packages = @("dearpygui", "numpy", "scipy", "sounddevice", "pydub", "PyInstaller")
     
     foreach ($pkg in $packages) {
-        $result = python -c "import $pkg" 2>&1
-        if ($LASTEXITCODE -eq 0) {
-            Write-OK $pkg
+        # Suppress stderr warnings (e.g., pydub's ffmpeg warning)
+        $env:PYTHONWARNINGS = "ignore"
+        try {
+            $null = python -c "import $pkg" 2>$null
+            if ($LASTEXITCODE -eq 0) {
+                Write-OK $pkg
+            }
+            else {
+                Write-Fail "$pkg - MISSING"
+                $missing += $pkg
+            }
         }
-        else {
+        catch {
             Write-Fail "$pkg - MISSING"
             $missing += $pkg
+        }
+        finally {
+            $env:PYTHONWARNINGS = ""
         }
     }
     
@@ -120,6 +131,17 @@ function Check-Dependencies {
         Write-Host "  Download MADS from: http://mads.atari8.info/"
         Write-Host "  Place mads.exe in: bin\windows_x86_64\"
         $missing += "MADS"
+    }
+    
+    Write-Header "Checking FFmpeg (optional)..."
+    $ffmpegPath = "bin\windows_x86_64\ffmpeg.exe"
+    if (Test-Path $ffmpegPath) {
+        Write-OK "ffmpeg.exe found - MP3/OGG/FLAC import enabled"
+    }
+    else {
+        Write-Warn "ffmpeg.exe not found - only WAV import available"
+        Write-Host "      Download from: https://www.gyan.dev/ffmpeg/builds/"
+        Write-Host "      Extract ffmpeg.exe to: bin\windows_x86_64\"
     }
     
     Write-Header "Checking ASM templates..."
@@ -166,7 +188,7 @@ function Build-App {
     Write-Header "Building standalone executable..."
     Write-Host ""
     
-    python -m PyInstaller tracker.spec --noconfirm
+    python -m PyInstaller tracker.spec --noconfirm --clean
     
     if ($LASTEXITCODE -ne 0) {
         throw "Build failed!"

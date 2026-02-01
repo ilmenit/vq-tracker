@@ -171,7 +171,7 @@ build() {
     echo "Building standalone executable..."
     echo ""
     
-    $PYTHON -m PyInstaller tracker.spec --noconfirm
+    $PYTHON -m PyInstaller tracker.spec --noconfirm --clean
     
     echo ""
     echo "============================================================"

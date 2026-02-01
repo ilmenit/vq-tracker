@@ -89,6 +89,7 @@ def build_menu():
             dpg.add_menu_item(label="Open...", callback=ops.open_song, shortcut="Ctrl+O")
             with dpg.menu(label="Open Recent", tag="recent_menu"):
                 pass
+            dpg.add_menu_item(label="Recover Autosave...", callback=C.show_autosave_recovery)
             dpg.add_separator()
             dpg.add_menu_item(label="Save", callback=ops.save_song, shortcut="Ctrl+S")
             dpg.add_menu_item(label="Save As...", callback=ops.save_song_as)

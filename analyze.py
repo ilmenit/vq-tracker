@@ -480,8 +480,8 @@ def format_analysis_report(result: AnalysisResult) -> str:
     # Show cycle calculation with ANTIC stealing
     lines.append(f"Cycles per IRQ (raw): {result.cycles_per_irq}")
     if not result.blank_screen:
-        stolen = result.cycles_per_irq * ANTIC_CYCLE_STEAL_PERCENT // 100
-        lines.append(f"ANTIC cycle stealing: -{stolen} ({ANTIC_CYCLE_STEAL_PERCENT}% for display)")
+        stolen = result.cycles_per_irq * ANTIC_DISPLAY_PERCENT // 100
+        lines.append(f"ANTIC cycle stealing: -{stolen} ({ANTIC_DISPLAY_PERCENT}% for display)")
     lines.append(f"IRQ Overhead: -{IRQ_OVERHEAD}")
     lines.append(f"Available for channels: {result.available_cycles}")
     if not result.blank_screen:
@@ -626,7 +626,7 @@ def format_analysis_report(result: AnalysisResult) -> str:
         needed_cycles = worst_3ch + IRQ_OVERHEAD
         if not result.blank_screen:
             # Account for ANTIC stealing in rate calculation
-            needed_cycles = int(needed_cycles * 100 / (100 - ANTIC_CYCLE_STEAL_PERCENT))
+            needed_cycles = int(needed_cycles * 100 / (100 - ANTIC_DISPLAY_PERCENT))
         safe_rate = int(PAL_CPU_CLOCK / needed_cycles)
         lines.append(f"* Lower sample rate to ~{safe_rate} Hz or less")
         lines.append(f"  (current: {result.sample_rate} Hz)")

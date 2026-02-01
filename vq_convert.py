@@ -220,6 +220,10 @@ class VQConverter:
             self._vq_converter_path = None
         
         # Add arguments
+        # NOTE: We do NOT use --no-player because:
+        # 1. VQ converter writes ASM to temp directory
+        # 2. Assembly step copies ASM files to output_subdir
+        # 3. With --no-player, ASM files are lost when temp is cleaned up
         cmd.extend([
             *input_files,
             "-p", "vq_multi_channel",
@@ -231,6 +235,7 @@ class VQConverter:
             "-s", str(settings.smoothness),
             "-e", "on" if settings.enhance else "off",
             "--optimize", optimize_mode,
+            # Let VQ converter run full assembly - it copies ASM files to output
             "-o", output_name  # Output name
         ])
         return cmd
@@ -409,11 +414,11 @@ class VQConverter:
                 output_lines.append(line)
                 self._queue_output(line)
             
-            # Wait for completion
+            # Wait for process
             process.wait()
             
             if process.returncode == 0:
-                # ASM files are in asm_output_dir (not a subdirectory)
+                # VQ converter runs full assembly which copies ASM files to output_subdir
                 # Check for required ASM files
                 required_files = ["VQ_BLOB.asm", "VQ_INDICES.asm", "SAMPLE_DIR.asm"]
                 found_files = [f for f in required_files 
@@ -433,7 +438,20 @@ class VQConverter:
                     result.success = False
                     result.error_message = f"Missing ASM files in {asm_output_dir}"
                     self._queue_output(f"\nWARNING: {result.error_message}\n")
+                    self._queue_output(f"Required: {required_files}\n")
                     self._queue_output(f"Found: {found_files}\n")
+                    
+                    # List what's in the output dir for debugging
+                    self._queue_output(f"\nContents of {asm_output_dir}:\n")
+                    try:
+                        for item in os.listdir(asm_output_dir):
+                            item_path = os.path.join(asm_output_dir, item)
+                            if os.path.isdir(item_path):
+                                self._queue_output(f"  [DIR] {item}/\n")
+                            else:
+                                self._queue_output(f"  {item}\n")
+                    except:
+                        pass
             else:
                 result.success = False
                 result.error_message = f"Process exited with code {process.returncode}"

@@ -151,7 +151,7 @@ def build():
     
     # Run PyInstaller
     print("\nRunning PyInstaller...")
-    cmd = [sys.executable, "-m", "PyInstaller", "tracker.spec", "--noconfirm"]
+    cmd = [sys.executable, "-m", "PyInstaller", "tracker.spec", "--noconfirm", "--clean"]
     
     result = subprocess.run(cmd)
     

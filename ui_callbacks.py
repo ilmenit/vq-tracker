@@ -598,91 +598,123 @@ def on_analyze_click():
 
 def show_analyze_dialog():
     """Display the timing analysis window."""
-    from analyze import analyze_song, format_analysis_report
-    
-    # Check if we have VQ settings
-    if not state.vq.converted:
-        G.show_status("Run CONVERT first to set sample rate and vector size")
-        return
-    
-    # Get VQ settings
-    rate = state.vq.settings.rate
-    vector_size = state.vq.settings.vector_size
-    optimize_speed = state.vq.settings.optimize_speed
-    
-    # Run analysis
-    result = analyze_song(state.song, rate, vector_size, optimize_speed)
-    report = format_analysis_report(result)
-    
-    # Close existing dialog if any
-    if dpg.does_item_exist("analyze_dialog"):
-        dpg.delete_item("analyze_dialog")
-    
-    # Create dialog window
-    vp_w = dpg.get_viewport_width()
-    vp_h = dpg.get_viewport_height()
-    w, h = 600, 500
-    
-    with dpg.window(
-        tag="analyze_dialog",
-        label="Timing Analysis",
-        modal=True,
-        width=w,
-        height=h,
-        pos=[(vp_w - w) // 2, (vp_h - h) // 2],
-        no_resize=False,
-        no_collapse=True,
-        on_close=lambda: dpg.delete_item("analyze_dialog")
-    ):
-        # Status header
-        if result.is_safe:
-            dpg.add_text("✓ PASS - No timing issues detected", color=(100, 255, 100))
-        else:
-            pct = (result.over_budget_count / result.total_rows * 100) if result.total_rows > 0 else 0
-            dpg.add_text(f"✗ FAIL - {result.over_budget_count} rows overflow ({pct:.1f}%)", 
-                        color=(255, 100, 100))
+    try:
+        from analyze import analyze_song, format_analysis_report
         
-        # Volume control warning
-        if state.song.volume_control and not result.volume_safe:
-            dpg.add_text(f"⚠ Volume control requires rate ≤5757 Hz (current: {rate})", 
-                        color=(255, 200, 100))
+        # Check if we have VQ settings
+        if not state.vq.converted:
+            # Show a popup instead of just status bar message
+            if dpg.does_item_exist("analyze_error_popup"):
+                dpg.delete_item("analyze_error_popup")
+            
+            vp_w = dpg.get_viewport_width()
+            vp_h = dpg.get_viewport_height()
+            w, h = 350, 120
+            
+            with dpg.window(
+                tag="analyze_error_popup",
+                label="Cannot Analyze",
+                modal=True,
+                width=w, height=h,
+                pos=[(vp_w - w) // 2, (vp_h - h) // 2],
+                no_resize=True, no_collapse=True,
+                on_close=lambda: dpg.delete_item("analyze_error_popup")
+            ):
+                dpg.add_text("Run CONVERT first!", color=(255, 200, 100))
+                dpg.add_spacer(height=5)
+                dpg.add_text("ANALYZE requires VQ settings from conversion.")
+                dpg.add_text("Click CONVERT to generate VQ data.")
+                dpg.add_spacer(height=10)
+                with dpg.group(horizontal=True):
+                    dpg.add_spacer(width=(w - 80) // 2)
+                    dpg.add_button(label="OK", width=80,
+                                  callback=lambda: dpg.delete_item("analyze_error_popup"))
+            return
         
-        dpg.add_separator()
+        # Get VQ settings
+        rate = state.vq.settings.rate
+        vector_size = state.vq.settings.vector_size
+        optimize_speed = state.vq.settings.optimize_speed
         
-        # Summary info
-        with dpg.group(horizontal=True):
-            dpg.add_text(f"Rate: {rate} Hz")
-            dpg.add_spacer(width=20)
-            dpg.add_text(f"Vector: {vector_size}")
-            dpg.add_spacer(width=20)
-            dpg.add_text(f"Budget: {result.available_cycles} cycles")
+        # Run analysis
+        result = analyze_song(state.song, rate, vector_size, optimize_speed)
+        report = format_analysis_report(result)
         
-        dpg.add_spacer(height=5)
+        # Close existing dialog if any
+        if dpg.does_item_exist("analyze_dialog"):
+            dpg.delete_item("analyze_dialog")
         
-        # Log area with scrolling
-        with dpg.child_window(tag="analyze_log_scroll", height=-40, border=True):
-            dpg.add_input_text(
-                tag="analyze_log",
-                default_value=report,
-                multiline=True,
-                readonly=True,
-                width=-1,
-                height=-1,
-                tab_input=False
-            )
+        # Create dialog window
+        vp_w = dpg.get_viewport_width()
+        vp_h = dpg.get_viewport_height()
+        w, h = 600, 500
         
-        # Close button
-        dpg.add_spacer(height=5)
-        with dpg.group(horizontal=True):
-            dpg.add_spacer(width=(w - 100) // 2)
-            dpg.add_button(label="Close", width=100, 
-                          callback=lambda: dpg.delete_item("analyze_dialog"))
+        with dpg.window(
+            tag="analyze_dialog",
+            label="Timing Analysis",
+            modal=True,
+            width=w,
+            height=h,
+            pos=[(vp_w - w) // 2, (vp_h - h) // 2],
+            no_resize=False,
+            no_collapse=True,
+            on_close=lambda: dpg.delete_item("analyze_dialog")
+        ):
+            # Status header
+            if result.is_safe:
+                dpg.add_text("✓ PASS - No timing issues detected", color=(100, 255, 100))
+            else:
+                pct = (result.over_budget_count / result.total_rows * 100) if result.total_rows > 0 else 0
+                dpg.add_text(f"✗ FAIL - {result.over_budget_count} rows overflow ({pct:.1f}%)", 
+                            color=(255, 100, 100))
+            
+            # Volume control warning
+            if state.song.volume_control and not result.volume_safe:
+                dpg.add_text(f"⚠ Volume control requires rate ≤5757 Hz (current: {rate})", 
+                            color=(255, 200, 100))
+            
+            dpg.add_separator()
+            
+            # Summary info
+            with dpg.group(horizontal=True):
+                dpg.add_text(f"Rate: {rate} Hz")
+                dpg.add_spacer(width=20)
+                dpg.add_text(f"Vector: {vector_size}")
+                dpg.add_spacer(width=20)
+                dpg.add_text(f"Budget: {result.available_cycles} cycles")
+            
+            dpg.add_spacer(height=5)
+            
+            # Log area with scrolling
+            with dpg.child_window(tag="analyze_log_scroll", height=-40, border=True):
+                dpg.add_input_text(
+                    tag="analyze_log",
+                    default_value=report,
+                    multiline=True,
+                    readonly=True,
+                    width=-1,
+                    height=-1,
+                    tab_input=False
+                )
+            
+            # Close button
+            dpg.add_spacer(height=5)
+            with dpg.group(horizontal=True):
+                dpg.add_spacer(width=(w - 100) // 2)
+                dpg.add_button(label="Close", width=100, 
+                              callback=lambda: dpg.delete_item("analyze_dialog"))
+        
+        # Auto-scroll to bottom after dialog is created
+        # Use split_frame to ensure layout is computed before scrolling
+        dpg.split_frame()
+        if dpg.does_item_exist("analyze_log_scroll"):
+            dpg.set_y_scroll("analyze_log_scroll", dpg.get_y_scroll_max("analyze_log_scroll"))
     
-    # Auto-scroll to bottom after dialog is created
-    # Use split_frame to ensure layout is computed before scrolling
-    dpg.split_frame()
-    if dpg.does_item_exist("analyze_log_scroll"):
-        dpg.set_y_scroll("analyze_log_scroll", dpg.get_y_scroll_max("analyze_log_scroll"))
+    except Exception as e:
+        import traceback
+        error_msg = f"ANALYZE error: {e}\n{traceback.format_exc()}"
+        print(error_msg)
+        G.show_status(f"ANALYZE error: {e}")
 
 
 def on_input_inst_change(sender, value):
@@ -889,6 +921,128 @@ def on_global_mouse_click(sender, app_data):
                     return
         except:
             pass
+
+
+# =============================================================================
+# AUTOSAVE RECOVERY
+# =============================================================================
+
+def show_autosave_recovery():
+    """Show dialog to recover from autosaved files."""
+    from ui_dialogs import show_error
+    
+    # Get autosave files
+    autosaves = G.get_autosave_files()
+    
+    if not autosaves:
+        if dpg.does_item_exist("autosave_empty_popup"):
+            dpg.delete_item("autosave_empty_popup")
+        
+        vp_w = dpg.get_viewport_width()
+        vp_h = dpg.get_viewport_height()
+        w, h = 300, 100
+        
+        with dpg.window(
+            tag="autosave_empty_popup",
+            label="No Autosaves",
+            modal=True,
+            width=w, height=h,
+            pos=[(vp_w - w) // 2, (vp_h - h) // 2],
+            no_resize=True, no_collapse=True,
+            on_close=lambda: dpg.delete_item("autosave_empty_popup")
+        ):
+            dpg.add_text("No autosave files found.")
+            dpg.add_spacer(height=10)
+            with dpg.group(horizontal=True):
+                dpg.add_spacer(width=(w - 80) // 2)
+                dpg.add_button(label="OK", width=80,
+                              callback=lambda: dpg.delete_item("autosave_empty_popup"))
+        return
+    
+    # Close existing dialog
+    if dpg.does_item_exist("autosave_dialog"):
+        dpg.delete_item("autosave_dialog")
+    
+    vp_w = dpg.get_viewport_width()
+    vp_h = dpg.get_viewport_height()
+    w, h = 500, 350
+    
+    with dpg.window(
+        tag="autosave_dialog",
+        label="Recover Autosave",
+        modal=True,
+        width=w, height=h,
+        pos=[(vp_w - w) // 2, (vp_h - h) // 2],
+        no_resize=False, no_collapse=True,
+        on_close=lambda: dpg.delete_item("autosave_dialog")
+    ):
+        dpg.add_text("Select an autosave to recover:", color=(255, 255, 150))
+        dpg.add_text(f"Location: {G.AUTOSAVE_DIR}", color=(150, 150, 150))
+        dpg.add_spacer(height=5)
+        
+        # List autosaves in scrollable area
+        with dpg.child_window(height=-50, border=True):
+            import datetime
+            for i, path in enumerate(autosaves[:20]):  # Show up to 20
+                mtime = os.path.getmtime(path)
+                dt = datetime.datetime.fromtimestamp(mtime)
+                size_kb = os.path.getsize(path) / 1024
+                label = f"{path.name}  ({dt:%Y-%m-%d %H:%M}, {size_kb:.1f} KB)"
+                
+                dpg.add_button(
+                    label=label, 
+                    width=-1,
+                    callback=lambda s, a, u: _load_autosave(u),
+                    user_data=str(path)
+                )
+        
+        # Close button
+        dpg.add_spacer(height=5)
+        with dpg.group(horizontal=True):
+            dpg.add_spacer(width=(w - 100) // 2)
+            dpg.add_button(label="Cancel", width=100,
+                          callback=lambda: dpg.delete_item("autosave_dialog"))
+
+
+def _load_autosave(path: str):
+    """Load an autosave file."""
+    from ui_dialogs import show_error
+    from file_io import load_project, load_instrument_samples
+    
+    # Close the recovery dialog
+    if dpg.does_item_exist("autosave_dialog"):
+        dpg.delete_item("autosave_dialog")
+    
+    if not os.path.exists(path):
+        show_error("File Not Found", f"Autosave no longer exists:\n{path}")
+        return
+    
+    # Autosave current work first
+    if state.song.modified and G.autosave_enabled:
+        G.do_autosave()
+    
+    # Load the autosave
+    song, err = load_project(path)
+    if err:
+        show_error("Load Error", err)
+        return
+    
+    state.song = song
+    load_instrument_samples(state.song)
+    state.audio.set_song(state.song)
+    
+    # Reset state
+    state.songline = state.row = state.channel = state.selected_pattern = 0
+    state.song_cursor_row = state.song_cursor_col = 0
+    state.vq.invalidate()
+    
+    # Mark as modified since it's recovered (needs saving to a real location)
+    state.song.modified = True
+    state.song.file_path = None  # Clear path so Save As is required
+    
+    R.refresh_all()
+    G.update_title()
+    G.show_status(f"Recovered: {os.path.basename(path)} - Save to keep changes!")
 
 
 # =============================================================================

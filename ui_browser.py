@@ -20,7 +20,17 @@ except ImportError as e:
 class FileBrowser:
     """Custom file browser with multi-select and audio preview."""
     
-    VALID_AUDIO_EXTS = {'.wav', '.mp3', '.ogg', '.flac', '.aiff', '.aif', '.m4a'}
+    # Fallback extensions - will be dynamically updated from file_io
+    _VALID_AUDIO_EXTS = {'.wav'}
+    
+    @classmethod
+    def get_valid_extensions(cls):
+        """Get valid audio extensions (dynamically from file_io if available)."""
+        try:
+            from file_io import get_supported_extensions
+            return set(get_supported_extensions())
+        except ImportError:
+            return cls._VALID_AUDIO_EXTS
     
     def __init__(self, tag_prefix: str = "browser"):
         self.callback = None
@@ -269,7 +279,7 @@ class FileBrowser:
                     dirs.append(item)
                 elif item.is_file():
                     ext = os.path.splitext(item.name)[1].lower()
-                    if ext in self.VALID_AUDIO_EXTS:
+                    if ext in self.get_valid_extensions():
                         files.append(item)
             except (PermissionError, OSError):
                 continue

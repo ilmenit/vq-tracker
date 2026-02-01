@@ -1,5 +1,6 @@
 """POKEY VQ Tracker - Operations"""
 import os
+import logging
 import file_io
 from constants import (MAX_OCTAVES, MAX_NOTES, MAX_VOLUME, MAX_ROWS,
                        MAX_INSTRUMENTS, NOTE_KEYS, PAL_HZ, NTSC_HZ, FOCUS_EDITOR,
@@ -11,6 +12,8 @@ from file_io import (save_project, load_project, load_sample, export_asm,
                      import_pokeyvq)
 
 # Legacy compatibility aliases - access file_io.work_dir at runtime (not import time)
+logger = logging.getLogger("tracker.ops")
+
 def _get_samples_dir():
     """Get samples directory, falling back to .tmp/samples if work_dir not initialized."""
     if file_io.work_dir:
@@ -382,6 +385,7 @@ def _load_folder_internal(path: str) -> int:
     
     results = import_samples_folder(path, dest_dir, recursive=True, start_index=start_index)
     count = 0
+    failed = 0
     for inst, ok, msg in results:
         if ok:
             idx = state.song.add_instrument()
@@ -390,6 +394,12 @@ def _load_folder_internal(path: str) -> int:
             state.song.instruments[idx] = inst
             count += 1
             state.instrument = idx
+        else:
+            failed += 1
+            logger.warning(f"Failed to import: {inst.original_sample_path or inst.name}: {msg}")
+    
+    if failed > 0:
+        logger.warning(f"Failed to import {failed} file(s) from {path}")
     
     if count > 0:
         save_undo("Add folder")

@@ -38,16 +38,30 @@ Additionally, when the display is enabled, ANTIC steals approximately 9-15% of C
   - DearPyGui (GUI framework)
   - NumPy (audio processing)
   - SciPy (WAV file handling)
+  - pydub (audio format conversion)
 - **MADS assembler** — for compiling 6502 assembly
 - **Altirra emulator** — for testing the output
 - **pokey_vq** — the VQ compression tool (included or separate)
+- **FFmpeg** (optional) — for importing MP3, OGG, FLAC, M4A files
+
+### Audio Format Support
+
+| Format | Requirement |
+|--------|-------------|
+| WAV | Always supported (built-in) |
+| MP3, OGG, FLAC, M4A | Requires FFmpeg |
+
+**Windows users:** Place `ffmpeg.exe` in the `bin\windows_x86_64\` folder alongside `mads.exe`. Download from: https://www.gyan.dev/ffmpeg/builds/
+
+**Linux/macOS users:** Install ffmpeg via your package manager (`apt install ffmpeg`, `brew install ffmpeg`).
 
 ### Setup
 
 1. Extract the tracker to a folder
 2. Ensure MADS is in your system PATH or place `mads.exe` in the tracker folder
-3. Configure the Altirra path if not auto-detected
-4. Run: `python main.py`
+3. (Optional) Add FFmpeg for MP3/OGG/FLAC import
+4. Configure the Altirra path if not auto-detected
+5. Run: `python main.py`
 
 ---
 

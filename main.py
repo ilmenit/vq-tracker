@@ -25,6 +25,31 @@ logger = logging.getLogger("tracker.main")
 # =============================================================================
 # STARTUP DIAGNOSTICS
 # =============================================================================
+def _setup_ffmpeg_for_pydub():
+    """Set up ffmpeg path before importing pydub to avoid warning."""
+    if platform.system() != "Windows":
+        return  # Linux/macOS typically have ffmpeg in PATH
+    
+    # Determine app directory
+    if getattr(sys, 'frozen', False):
+        app_dir = os.path.dirname(sys.executable)
+    else:
+        app_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # Search locations for ffmpeg.exe
+    candidates = [
+        os.path.join(app_dir, "bin", "ffmpeg"),
+        os.path.join(app_dir, "bin", "windows_x86_64"),
+        os.path.join(app_dir, "ffmpeg"),
+        app_dir,
+    ]
+    
+    for candidate in candidates:
+        ffmpeg_exe = os.path.join(candidate, "ffmpeg.exe")
+        if os.path.isfile(ffmpeg_exe):
+            os.environ["PATH"] = candidate + os.pathsep + os.environ.get("PATH", "")
+            return
+
 def log_startup_info():
     """Log system and environment information for debugging."""
     logger.info("=" * 60)
@@ -39,6 +64,13 @@ def check_dependencies():
     """Check and log status of all dependencies."""
     logger.info("-" * 40)
     logger.info("Checking dependencies...")
+    
+    # Set up ffmpeg path BEFORE checking pydub to avoid warning
+    _setup_ffmpeg_for_pydub()
+    
+    # Permanently suppress pydub's ffmpeg warnings (they're noisy but harmless)
+    import warnings
+    warnings.filterwarnings("ignore", category=RuntimeWarning, module="pydub.*")
     
     dependencies = {
         'dearpygui': 'DearPyGui (GUI framework)',
@@ -91,6 +123,34 @@ def check_dependencies():
         else:
             logger.info(f"  [--] vq_converter: not found (CONVERT will not work)")
         
+        # Check for FFmpeg (needed for MP3/OGG/FLAC import)
+        if platform.system() == "Windows":
+            app_dir = runtime.get_app_dir()
+            ffmpeg_paths = [
+                os.path.join(bin_dir, "ffmpeg.exe"),
+                os.path.join(app_dir, "bin", "windows_x86_64", "ffmpeg.exe"),
+                os.path.join(app_dir, "bin", "ffmpeg", "ffmpeg.exe"),
+                os.path.join(app_dir, "ffmpeg", "ffmpeg.exe"),
+            ]
+            ffprobe_paths = [
+                os.path.join(bin_dir, "ffprobe.exe"),
+                os.path.join(app_dir, "bin", "windows_x86_64", "ffprobe.exe"),
+                os.path.join(app_dir, "bin", "ffmpeg", "ffprobe.exe"),
+                os.path.join(app_dir, "ffmpeg", "ffprobe.exe"),
+            ]
+            ffmpeg_found = any(os.path.isfile(p) for p in ffmpeg_paths)
+            ffprobe_found = any(os.path.isfile(p) for p in ffprobe_paths)
+            
+            if ffmpeg_found and ffprobe_found:
+                logger.info(f"  [OK] FFmpeg: found (MP3/OGG/FLAC import enabled)")
+            elif ffmpeg_found and not ffprobe_found:
+                logger.info(f"  [!!] FFmpeg: ffmpeg.exe found but ffprobe.exe missing!")
+                logger.info(f"       MP3/OGG import requires both files")
+                logger.info(f"       Download from: https://www.gyan.dev/ffmpeg/builds/")
+            else:
+                logger.info(f"  [--] FFmpeg: not found (only WAV import available)")
+                logger.info(f"       Place ffmpeg.exe and ffprobe.exe in: {os.path.join(app_dir, 'bin', 'windows_x86_64')}")
+        
     except Exception as e:
         logger.error(f"  [!!] Runtime module error: {e}")
     
@@ -104,7 +164,15 @@ def check_dependencies():
         logger.warning("Audio playback will not be available")
     
     if 'pydub' in missing:
-        logger.warning("Only WAV import supported (no MP3/OGG conversion)")
+        logger.warning("Only WAV import supported (pydub not installed)")
+    else:
+        # pydub is installed - check if ffmpeg is actually available
+        try:
+            from file_io import FFMPEG_OK
+            if not FFMPEG_OK:
+                logger.warning("Only WAV import supported (FFmpeg not found)")
+        except ImportError:
+            pass
     
     return True
 
