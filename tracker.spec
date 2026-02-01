@@ -32,8 +32,16 @@ import os
 import sys
 import platform
 
+# SPECPATH is provided by PyInstaller - it's the directory containing the spec file
+# Note: __file__ is NOT defined in spec files, use SPECPATH instead
+try:
+    spec_dir = SPECPATH
+except NameError:
+    # Fallback for running outside PyInstaller (shouldn't happen normally)
+    spec_dir = os.getcwd()
+
 # Import version info
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, spec_dir)
 from version import VERSION, VERSION_DISPLAY, APP_NAME
 
 # Determine platform-specific settings
@@ -55,16 +63,24 @@ else:
 datas = []
 
 # Include ASM templates
-if os.path.isdir('asm'):
-    datas.append(('asm', 'asm'))
+asm_path = os.path.join(spec_dir, 'asm')
+if os.path.isdir(asm_path):
+    datas.append((asm_path, 'asm'))
 
 # Include bin directory with MADS executables
-if os.path.isdir('bin'):
-    datas.append(('bin', 'bin'))
+bin_path = os.path.join(spec_dir, 'bin')
+if os.path.isdir(bin_path):
+    datas.append((bin_path, 'bin'))
 
 # Include local vq_converter if present (for portable builds)
-if os.path.isdir('vq_converter'):
-    datas.append(('vq_converter', 'vq_converter'))
+vq_path = os.path.join(spec_dir, 'vq_converter')
+if os.path.isdir(vq_path):
+    datas.append((vq_path, 'vq_converter'))
+
+# Include default config file if present
+config_path = os.path.join(spec_dir, 'tracker_config.json')
+if os.path.isfile(config_path):
+    datas.append((config_path, '.'))
 
 # Hidden imports for modules that PyInstaller might miss
 hiddenimports = [
