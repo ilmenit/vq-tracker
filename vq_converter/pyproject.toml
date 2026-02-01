@@ -22,7 +22,7 @@ dependencies = [
     "librosa",
     "tqdm",
     "sounddevice",
-    "customtkinter",
+    "dearpygui",
     "pyinstaller", # For development/build
     "packaging"
 ]

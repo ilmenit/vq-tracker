@@ -62,25 +62,28 @@ else:
 # Collect data files
 datas = []
 
-# Include ASM templates
-asm_path = os.path.join(spec_dir, 'asm')
-if os.path.isdir(asm_path):
-    datas.append((asm_path, 'asm'))
+# NOTE: asm/ is NOT bundled - it should be distributed alongside the executable
+# This allows users to modify the player ASM files easily.
+# asm_path = os.path.join(spec_dir, 'asm')
+# if os.path.isdir(asm_path):
+#     datas.append((asm_path, 'asm'))
 
-# Include bin directory with MADS executables
-bin_path = os.path.join(spec_dir, 'bin')
-if os.path.isdir(bin_path):
-    datas.append((bin_path, 'bin'))
+# NOTE: bin/ is NOT bundled - it should be distributed alongside the executable
+# This allows users to provide their own MADS binary and keeps the bundle smaller.
+# bin_path = os.path.join(spec_dir, 'bin')
+# if os.path.isdir(bin_path):
+#     datas.append((bin_path, 'bin'))
 
-# Include local vq_converter if present (for portable builds)
-vq_path = os.path.join(spec_dir, 'vq_converter')
-if os.path.isdir(vq_path):
-    datas.append((vq_path, 'vq_converter'))
+# NOTE: vq_converter is NOT bundled - it should be distributed alongside the executable
+# The converter uses system Python to run, so bundling it doesn't help.
+# vq_path = os.path.join(spec_dir, 'vq_converter')
+# if os.path.isdir(vq_path):
+#     datas.append((vq_path, 'vq_converter'))
 
-# Include default config file if present
-config_path = os.path.join(spec_dir, 'tracker_config.json')
-if os.path.isfile(config_path):
-    datas.append((config_path, '.'))
+# NOTE: tracker_config.json is NOT bundled - user creates their own config
+# config_path = os.path.join(spec_dir, 'tracker_config.json')
+# if os.path.isfile(config_path):
+#     datas.append((config_path, '.'))
 
 # Hidden imports for modules that PyInstaller might miss
 hiddenimports = [

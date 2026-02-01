@@ -98,16 +98,15 @@ function Check-Dependencies {
         }
     }
     
-    # Check optional pokey_vq
-    $result = python -c "import pokey_vq" 2>&1
-    if ($LASTEXITCODE -eq 0) {
-        Write-OK "pokey_vq"
+    # Check for vq_converter folder (required for VQ conversion)
+    Write-Header "Checking VQ converter..."
+    if (Test-Path "vq_converter\pokey_vq") {
+        Write-OK "vq_converter folder found"
     }
     else {
-        Write-Warn "pokey_vq - optional, not found"
-        if (Test-Path "vq_converter\pokey_vq") {
-            Write-Host "      (will use local vq_converter folder)"
-        }
+        Write-Warn "vq_converter folder not found"
+        Write-Host "      (VQ conversion will not work without it)"
+        Write-Host "      Place the vq_converter folder alongside the tracker"
     }
     
     Write-Header "Checking MADS binary..."

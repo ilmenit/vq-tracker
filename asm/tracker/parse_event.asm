@@ -7,7 +7,7 @@
 ; Event Format:
 ; =============
 ; BYTE 0: row      - Row number (0-254), or $FF = end of pattern
-; BYTE 1: note     - Bit 7: inst follows, Bits 0-5: note (0=off, 1-48=note)
+; BYTE 1: note     - Bit 7: inst follows, Bits 0-5: note (0=off, 1-36=note)
 ; BYTE 2: [inst]   - Optional. Bit 7: vol follows, Bits 0-6: instrument
 ; BYTE 3: [vol]    - Optional. Bits 0-3: volume (0-15)
 ;
@@ -30,7 +30,7 @@
 ; ==================
 ; Input:  X = Channel index (0-2), must be valid
 ;         seq_evt_ptr[X] = pointer to current event (row byte)
-; Output: evt_note[X] = note value (0=off, 1-48=note)
+; Output: evt_note[X] = note value (0=off, 1-36=note)
 ;         evt_inst[X] = instrument index (0-127)
 ;         evt_vol[X]  = volume (0-15)
 ;         seq_evt_ptr[X] = advanced to next event
@@ -60,7 +60,7 @@ parse_event:
     ldy #1
     lda (trk_ptr),y             ; A = note byte (bit 7=inst flag, bits 0-5=note)
     sta parse_temp              ; Save full byte for flag check
-    and #$3F                    ; Extract note (bits 0-5), A = 0-48
+    and #$3F                    ; Extract note (bits 0-5), A = 0-36
     ldx parse_channel           ; Restore channel index
     sta evt_note,x
     iny                         ; Y = 2 (position after row+note)

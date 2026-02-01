@@ -43,7 +43,7 @@ def check_dependencies():
     ]
     
     optional = [
-        ('pokey_vq', 'pokey_vq'),  # May be in vq_converter/ instead
+        # Note: pokey_vq is NOT needed for building - it's distributed as vq_converter/ folder
     ]
     
     missing = []
@@ -55,12 +55,11 @@ def check_dependencies():
             print(f"  ✗ {name} - MISSING")
             missing.append(name)
     
-    for name, package in optional:
-        try:
-            __import__(package.split('.')[0])
-            print(f"  ✓ {name} (optional)")
-        except ImportError:
-            print(f"  ○ {name} (optional, not found - will use vq_converter/ if available)")
+    # Check for vq_converter folder
+    if os.path.isdir("vq_converter/pokey_vq"):
+        print(f"  ✓ vq_converter folder found")
+    else:
+        print(f"  ○ vq_converter folder not found (needed for CONVERT functionality)")
     
     if missing:
         print(f"\nMissing required packages: {', '.join(missing)}")

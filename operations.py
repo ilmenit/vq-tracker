@@ -409,6 +409,28 @@ def remove_instrument(*args):
         state.vq.invalidate()  # Invalidate VQ conversion
         refresh_instruments()
 
+def reset_all_instruments(*args):
+    """Remove all instruments after confirmation."""
+    if not state.song.instruments:
+        return
+    
+    count = len(state.song.instruments)
+    msg = f"Remove all {count} instrument{'s' if count != 1 else ''}?\nThis cannot be undone."
+    
+    def do_reset():
+        state.song.instruments.clear()
+        state.instrument = 0
+        # Clear all instrument references in patterns
+        for pattern in state.song.patterns:
+            for row in pattern.rows:
+                if row.note > 0 and row.note != 255:
+                    row.instrument = 0
+        save_undo("Reset all instruments")
+        state.vq.invalidate()
+        refresh_instruments()
+    
+    show_confirm("Reset Instruments", msg, do_reset)
+
 def rename_instrument(*args):
     """Rename current instrument."""
     if state.instrument < len(state.song.instruments):

@@ -98,14 +98,15 @@ check_deps() {
         fi
     done
     
-    # Check optional pokey_vq
-    if $PYTHON -c "import pokey_vq" 2>/dev/null; then
-        echo -e "  ${GREEN}[OK]${NC} pokey_vq"
+    # Check for vq_converter folder (required for VQ conversion)
+    echo ""
+    echo "Checking VQ converter..."
+    if [ -d "vq_converter/pokey_vq" ]; then
+        echo -e "  ${GREEN}[OK]${NC} vq_converter folder found"
     else
-        echo -e "  ${YELLOW}[?]${NC} pokey_vq - optional, not found"
-        if [ -d "vq_converter/pokey_vq" ]; then
-            echo "      (will use local vq_converter folder)"
-        fi
+        echo -e "  ${YELLOW}[?]${NC} vq_converter folder not found"
+        echo "      (VQ conversion will not work without it)"
+        echo "      Place the vq_converter folder alongside the tracker"
     fi
     
     echo ""

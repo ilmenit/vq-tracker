@@ -5,7 +5,7 @@ import time
 import logging
 from pathlib import Path
 from constants import (APP_NAME, FOCUS_SONG, FOCUS_PATTERN, FOCUS_INSTRUMENTS, 
-                       FOCUS_INFO, FOCUS_EDITOR, MAX_VOLUME)
+                       FOCUS_INFO, FOCUS_EDITOR, MAX_VOLUME, DEFAULT_OCTAVE)
 from state import state
 
 logger = logging.getLogger("tracker.ui")
@@ -111,7 +111,7 @@ def load_config():
                 recent_files = cfg.get('recent_files', [])[:MAX_RECENT]
                 ed = cfg.get('editor_settings', {})
                 state.hex_mode = ed.get('hex_mode', True)
-                state.octave = ed.get('octave', 2)
+                state.octave = ed.get('octave', DEFAULT_OCTAVE)
                 state.step = ed.get('step', 1)
                 state.follow = ed.get('follow', True)
                 # New settings

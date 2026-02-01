@@ -49,7 +49,13 @@
     .if (MIN_VECTOR & 1) != 0
         .error "tracker_player.asm requires even vector size (2, 4, ... 16)"
     .endif
+    .if (MIN_VECTOR & 1) != 0
+        .error "tracker_player.asm requires even vector size (2, 4, ... 16)"
+    .endif
 
+    .ifndef VOLUME_CONTROL
+        VOLUME_CONTROL = 0      ; Default: no volume control for interactive tracker
+    .endif
     ORG $2000
 
 ; ==========================================================================
@@ -316,7 +322,11 @@ Clear_All_Channels:
 ; MODULES
 ; ==========================================================================
     icl "tracker/tracker_api.asm"
-    icl "tracker/tracker_irq.asm"
+    .ifdef USE_FAST_CPU
+        icl "tracker/tracker_irq_speed.asm"
+    .else
+        icl "tracker/tracker_irq_size.asm"
+    .endif
 
 ; ==========================================================================
 ; LOOKUP TABLES

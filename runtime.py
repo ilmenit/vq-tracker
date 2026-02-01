@@ -60,13 +60,23 @@ def get_resource_path(relative_path: str) -> str:
 
 
 def get_asm_dir() -> str:
-    """Get path to assembly templates directory."""
-    return get_resource_path("asm")
+    """Get path to assembly templates directory.
+    
+    ASM templates are NOT bundled - they should be distributed alongside 
+    the executable. This allows users to modify the player ASM files.
+    """
+    # Always look next to the executable, not in the bundle
+    return os.path.join(get_app_dir(), "asm")
 
 
 def get_bin_dir() -> str:
-    """Get path to bin directory containing MADS and other tools."""
-    return get_resource_path("bin")
+    """Get path to bin directory containing MADS and other tools.
+    
+    bin/ is NOT bundled - it should be distributed alongside the executable.
+    This allows users to provide their own MADS binary.
+    """
+    # Always look next to the executable, not in the bundle
+    return os.path.join(get_app_dir(), "bin")
 
 
 def get_platform_bin_dir() -> str:
@@ -127,52 +137,6 @@ def get_python_executable() -> str:
         sys.executable (which is the bundled exe when frozen)
     """
     return sys.executable
-
-
-def get_vq_converter_command(input_files: list, **kwargs) -> list:
-    """Build command for VQ converter.
-    
-    Args:
-        input_files: List of input WAV file paths
-        **kwargs: Conversion settings (rate, vector_size, etc.)
-        
-    Returns:
-        Command list suitable for subprocess
-    """
-    if is_bundled():
-        # When bundled, pokey_vq is included in the bundle
-        # We use the bundled executable with special flag
-        cmd = [sys.executable, "--vq-convert"]
-    else:
-        # Development mode - use Python module
-        cmd = [sys.executable, "-m", "pokey_vq.cli"]
-    
-    # Add input files
-    cmd.extend(input_files)
-    
-    # Add options from kwargs
-    if 'player' in kwargs:
-        cmd.extend(["-p", kwargs['player']])
-    if 'rate' in kwargs:
-        cmd.extend(["-r", str(kwargs['rate'])])
-    if 'channels' in kwargs:
-        cmd.extend(["--channels", str(kwargs['channels'])])
-    if 'min_vector' in kwargs:
-        cmd.extend(["-miv", str(kwargs['min_vector'])])
-    if 'max_vector' in kwargs:
-        cmd.extend(["-mav", str(kwargs['max_vector'])])
-    if 'quality' in kwargs:
-        cmd.extend(["-q", str(kwargs['quality'])])
-    if 'smoothness' in kwargs:
-        cmd.extend(["-s", str(kwargs['smoothness'])])
-    if 'enhance' in kwargs:
-        cmd.extend(["-e", "on" if kwargs['enhance'] else "off"])
-    if 'optimize' in kwargs:
-        cmd.extend(["--optimize", kwargs['optimize']])
-    if 'output' in kwargs:
-        cmd.extend(["-o", kwargs['output']])
-    
-    return cmd
 
 
 # Debug info

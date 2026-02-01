@@ -59,28 +59,38 @@ def check_dependencies():
             missing.append(module)
     
     # Check optional components
-    logger.info("Checking optional components...")
-    
-    # Check pokey_vq
-    try:
-        import pokey_vq
-        logger.info(f"  [OK] pokey_vq: available")
-    except ImportError:
-        logger.info(f"  [--] pokey_vq: not installed (will look for vq_converter folder)")
+    logger.info("Checking external folders...")
     
     # Check runtime paths
     try:
         import runtime
         logger.info(f"  [OK] Runtime mode: {'bundled' if runtime.is_bundled() else 'development'}")
         logger.info(f"       App dir: {runtime.get_app_dir()}")
-        logger.info(f"       ASM dir: {runtime.get_asm_dir()}")
-        logger.info(f"       Bin dir: {runtime.get_bin_dir()}")
         
+        # Check for ASM folder
+        asm_dir = runtime.get_asm_dir()
+        if os.path.isdir(asm_dir) and os.path.isfile(os.path.join(asm_dir, "song_player.asm")):
+            logger.info(f"  [OK] ASM templates: {asm_dir}")
+        else:
+            logger.warning(f"  [--] ASM templates: not found at {asm_dir}")
+            logger.warning(f"       (BUILD will not work without asm/ folder)")
+        
+        # Check for bin folder and MADS
+        bin_dir = runtime.get_bin_dir()
         mads = runtime.get_mads_path()
-        if mads:
+        if mads and os.path.isfile(mads):
             logger.info(f"  [OK] MADS assembler: {mads}")
         else:
-            logger.info(f"  [--] MADS assembler: not found in bin/")
+            logger.info(f"  [--] MADS assembler: not found in {bin_dir}")
+            logger.info(f"       (BUILD will not work without MADS)")
+        
+        # Check for vq_converter folder
+        vq_path = os.path.join(runtime.get_app_dir(), "vq_converter", "pokey_vq")
+        if os.path.isdir(vq_path):
+            logger.info(f"  [OK] vq_converter: found")
+        else:
+            logger.info(f"  [--] vq_converter: not found (CONVERT will not work)")
+        
     except Exception as e:
         logger.error(f"  [!!] Runtime module error: {e}")
     

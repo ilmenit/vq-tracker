@@ -71,23 +71,21 @@ Note: When only volume changes, we must still include the instrument byte
 **Special Values:**
 - `row = $FF` - End of pattern marker
 - `note & $3F = 0` - Note off (silence channel)
-- `note & $3F = 1-48` - Actual notes (C-1=1 through B-4=48)
+- `note & $3F = 1-36` - Actual notes (C-1=1 through B-3=36)
 
 **Pitch Table Mapping:**
-When playing, the ASM code converts notes 1-48 to pitch table indices 0-47:
+When playing, the ASM code converts notes 1-36 to pitch table indices 0-35:
 
 | GUI Note | Export Value | ASM Index | Pitch Multiplier |
 |----------|--------------|-----------|------------------|
 | C-1      | 1            | 0         | 1.0x (original)  |
 | C-2      | 13           | 12        | 2.0x (1 octave up) |
 | C-3      | 25           | 24        | 4.0x (2 octaves up) |
-| C-4      | 37           | 36        | 8.0x (3 octaves up) |
 
 The pitch table uses 8.8 fixed-point values:
 - Index 0: $0100 = 256 = 1.0x
 - Index 12: $0200 = 512 = 2.0x
 - Index 24: $0400 = 1024 = 4.0x
-- Index 36: $0800 = 2048 = 8.0x
 
 **Limitations:**
 - Maximum pattern length is 255 rows (0-254), because $FF is reserved as end marker

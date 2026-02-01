@@ -11,7 +11,7 @@ This is the first public beta release of POKEY VQ Tracker — an experimental sa
 ### Core Features
 
 - **3-Channel Polyphonic Playback**: Play three independent sample-based voices simultaneously on stock 64K Atari
-- **Variable Pitch Control**: 4 octaves (48 semitones) with real-time 8.8 fixed-point pitch calculation
+- **Variable Pitch Control**: 3 octaves (36 semitones) with real-time 8.8 fixed-point pitch calculation
 - **VQ Compression**: Vector Quantization compression for efficient sample storage
 - **Pattern-Based Sequencing**: Classic tracker-style composition with patterns and songlines
 - **Real-Time Preview**: Hear your music in the tracker before exporting

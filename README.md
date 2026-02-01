@@ -92,6 +92,31 @@ The built executable will be in `dist/`:
 - Linux: `dist/POKEY_VQ_Tracker`
 - macOS: `dist/POKEY VQ Tracker.app`
 
+### Distribution Structure
+
+To distribute the standalone executable, create a folder with:
+
+```
+my_tracker/
+├── POKEY_VQ_Tracker       # The executable (or .exe on Windows)
+├── asm/                   # ASM player templates (required for BUILD)
+│   ├── song_player.asm
+│   ├── common/
+│   ├── tracker/
+│   └── pitch/
+├── bin/                   # MADS assembler (required for BUILD)
+│   ├── linux_x86_64/mads
+│   ├── macos_aarch64/mads
+│   ├── macos_x86_64/mads
+│   └── windows_x86_64/mads.exe
+├── vq_converter/          # VQ converter (required for CONVERT)
+│   └── pokey_vq/
+├── README.md              # Optional documentation
+└── UserGuide.md           # Optional documentation
+```
+
+The executable looks for `asm/`, `bin/`, and `vq_converter/` in the same directory.
+
 ## File Browser
 
 The custom file browser supports:

@@ -95,14 +95,14 @@
     ; --- Prepare Channel 0 ---
     lda evt_trigger             ; Check if CH0 has pending event
     beq @prep_done_0            ; No event = skip preparation
-    lda evt_note                ; A = note value (0=off, 1-48=note)
+    lda evt_note                ; A = note value (0=off, 1-36=note)
     beq @prep_done_0            ; Note-off (0) needs no preparation
     
-    ; --- Pitch lookup (note 1-48 -> index 0-47) ---
-    ; Note values are 1-based (C-1=1, C#1=2, ..., B-4=48)
+    ; --- Pitch lookup (note 1-36 -> index 0-35) ---
+    ; Note values are 1-based (C-1=1, C#1=2, ..., B-3=36)
     ; Table indices are 0-based, so subtract 1
     sec
-    sbc #1                      ; A = note - 1 (0-47)
+    sbc #1                      ; A = note - 1 (0-35)
     tax                         ; X = table index
     lda NOTE_PITCH_LO,x         ; A = pitch step low byte
     sta prep0_pitch_lo

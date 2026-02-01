@@ -1,23 +1,20 @@
 ; ==========================================================================
-; UPDATE_DISPLAY.ASM - Display Update (SUBROUTINE, CONDITIONAL)
+; UPDATE_DISPLAY.ASM - Display Update (SUBROUTINE)
 ; ==========================================================================
 ; Updates the on-screen display with current playback position.
-; Only included when BLANK_SCREEN = 0 (display enabled).
 ;
 ; Called once per frame (during VBLANK) to show real-time position.
-; When BLANK_SCREEN = 1, this routine is not included and display is
-; disabled for maximum CPU availability.
+; When BLANK_SCREEN = 1, display is blanked during playback (DMACTL=0)
+; but this routine still updates the text so it's current when stopped.
 ;
 ; Display Format:
-;   " VQ TRACKER - [SPACE] play, [R] reset   "
+;   "VQ TRACKER - [SPACE] play/stop [R] reset"
 ;   "      SONG:XX   ROW:XX   SPD:XX         "
 ;
 ; Input:  seq_songline, seq_row, seq_speed
 ; Output: Display text updated
 ; Uses:   A, X, byte_to_dec subroutine
 ; ==========================================================================
-
-.if BLANK_SCREEN = 0
 
 update_display:
     ; --- Update songline number ---
@@ -70,5 +67,3 @@ byte_to_dec:
     tax                         ; X = tens digit (ATASCII)
     pla                         ; A = ones digit (ATASCII)
     rts
-
-.endif

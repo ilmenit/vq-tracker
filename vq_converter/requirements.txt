@@ -3,7 +3,7 @@ scipy>=1.7.0
 librosa>=0.8.1
 sounddevice
 tqdm
-customtkinter
+dearpygui
 packaging
 pyinstaller
 

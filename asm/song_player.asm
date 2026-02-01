@@ -111,13 +111,13 @@ seq_local_row = seq_local_row_zp
 ; DISPLAY LIST
 ; ==========================================================================
 .if BLANK_SCREEN = 0
-; --- Normal display: 2 text lines ---
+; --- Normal display: 2 text lines (always visible) ---
 .if KEY_CONTROL = 1
 text_line1:
-    dta d" VQ TRACKER - [SPACE] play/stop [R] reset"
+    dta d"VQ TRACKER - [SPACE] play/stop [R] reset"  ; 40 chars
 .else
 text_line1:
-    dta d"   VQ TRACKER - [SPACE] to play          "
+    dta d"   VQ TRACKER - [SPACE] to play         "  ; 40 chars
 .endif
 text_line2:
     dta d"      SONG:"
@@ -132,22 +132,34 @@ speed_display:
     dta d"         "
 dlist:
     .byte $70,$70,$70           ; 24 blank lines
-    .byte $42,<text_line1,>text_line1  ; Mode 2 text
-    .byte $02                   ; Mode 2 text (uses same address calc)
+    .byte $42,<text_line1,>text_line1  ; Mode 2 text line 1
+    .byte $02                   ; Mode 2 text line 2 (continues from prev)
     .byte $41,<dlist,>dlist     ; Jump and wait for VBL
 .else
-; --- Blank screen: minimal display (shown only when stopped) ---
+; --- Blank screen mode: display visible when stopped, blank when playing ---
 .if KEY_CONTROL = 1
 text_line1:
-    dta d" VQ TRACKER - [SPACE] play/stop [R] reset"
+    dta d"VQ TRACKER - [SPACE] play/stop [R] reset"  ; 40 chars
 .else
 text_line1:
-    dta d"   VQ TRACKER - [SPACE] to play          "
+    dta d"   VQ TRACKER - [SPACE] to play         "  ; 40 chars
 .endif
+text_line2:
+    dta d"      SONG:"
+song_pos_display:
+    dta d"00"
+    dta d"   ROW:"
+row_display:
+    dta d"00"
+    dta d"   SPD:"
+speed_display:
+    dta d"06"
+    dta d"         "
 dlist:
-    .byte $70,$70,$70
-    .byte $42,<text_line1,>text_line1
-    .byte $41,<dlist,>dlist
+    .byte $70,$70,$70           ; 24 blank lines
+    .byte $42,<text_line1,>text_line1  ; Mode 2 text line 1
+    .byte $02                   ; Mode 2 text line 2
+    .byte $41,<dlist,>dlist     ; Jump and wait for VBL
 .endif
 
 ; ==========================================================================
@@ -182,7 +194,7 @@ start:
     sta DLISTL
     lda #>dlist
     sta DLISTH
-    lda #$02                    ; Always start with display enabled (normal playfield)
+    lda #$22                    ; Enable DL DMA ($20) + normal playfield ($02)
     sta DMACTL                  ; User sees "press SPACE to play"
     lda #$C0                    ; Enable VBI + DLI
     sta NMIEN
@@ -205,8 +217,13 @@ start:
     jsr Pokey_Setup
     
     ; --- Initialize display colors ---
-    lda #COL_STOPPED
-    sta COLBK                   ; Set background color (stopped = black)
+    ; ANTIC mode 2 uses COLPF1 (luminance) + COLPF2 (hue) for text
+    lda #$0E                    ; White/bright luminance
+    sta COLPF1
+    lda #$94                    ; Blue hue (for inverse/background of chars)
+    sta COLPF2
+    lda #COL_STOPPED            ; Black background when stopped
+    sta COLBK
     lda #$FF
     sta last_playing            ; Force state change detection on first loop
     
@@ -295,20 +312,19 @@ ml_now_stopped:
     ; --- Stopped playing ---
     lda #COL_STOPPED
 .if BLANK_SCREEN = 1
-    ldx #$02                    ; Normal playfield only (no player/missile DMA)
-    stx DMACTL                  ; Re-enable minimal display
+    ldx #$22                    ; Enable DL DMA ($20) + normal playfield ($02)
+    stx DMACTL                  ; Re-enable display when stopped
 .endif
 
 ml_set_color:
     sta COLBK
 
 ml_state_done:
-    ; --- Update display every frame (if enabled) ---
-    ; When BLANK_SCREEN=0, update display regardless of playing state
-    ; This shows real-time SONG/ROW/SPD values during playback
-.if BLANK_SCREEN = 0
+    ; --- Update display every frame ---
+    ; Always update display variables so they're current when playback stops.
+    ; When BLANK_SCREEN=1, the display is blanked during playback (DMACTL=0)
+    ; but values are still updated so they're visible when stopped.
     jsr update_display
-.endif
 
 ml_no_vblank:
     ; =====================================================================

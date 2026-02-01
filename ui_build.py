@@ -670,6 +670,12 @@ def build_bottom_row():
                     dpg.add_separator()
                     dpg.add_text("Move selected instrument down in list.")
                     dpg.add_text("Changes instrument numbers in patterns.")
+                dpg.add_button(label="RESET", width=55, callback=ops.reset_all_instruments)
+                with dpg.tooltip(dpg.last_item()):
+                    dpg.add_text("Reset Instruments", color=(255, 255, 150))
+                    dpg.add_separator()
+                    dpg.add_text("Remove ALL instruments from list.")
+                    dpg.add_text("Useful if wrong folder was imported.")
             
             # VQ Conversion Controls
             dpg.add_separator()

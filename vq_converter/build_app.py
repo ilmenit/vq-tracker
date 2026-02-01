@@ -100,13 +100,14 @@ def build(target, clean=True):
     add_data.append(f"players{sep}players")
     add_data.append(f"bin{sep}bin")
     
-    try:
-        import customtkinter
-        ctk_path = os.path.dirname(customtkinter.__file__)
-        add_data.append(f"{ctk_path}{sep}customtkinter")
-    except ImportError:
-        print("  Error: customtkinter not installed.")
-        return False
+    # CustomTkinter logic removed (using DearPyGui now)
+    # try:
+    #     import customtkinter
+    #     ctk_path = os.path.dirname(customtkinter.__file__)
+    #     add_data.append(f"{ctk_path}{sep}customtkinter")
+    # except ImportError:
+    #     print("  Error: customtkinter not installed.")
+    #     return False
 
     # 4. Build Arguments
     args = [

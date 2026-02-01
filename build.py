@@ -15,7 +15,8 @@ from dataclasses import dataclass, field
 
 from data_model import Song, Pattern, Row
 from state import state
-from constants import MAX_INSTRUMENTS, MAX_VOLUME
+from constants import MAX_INSTRUMENTS, MAX_VOLUME, MAX_NOTES
+import runtime  # For path detection in bundled mode
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,7 @@ def validate_song(song: Song, check_samples: bool = True) -> ValidationResult:
     
     Checks:
     - Pattern lengths are valid (1-254)
-    - All notes are in valid range (0, 1-48, or 255)
+    - All notes are in valid range (0, 1-MAX_NOTES, or 255)
     - All instrument references exist
     - All instruments have samples loaded (if check_samples=True)
     - All songline pattern references are valid
@@ -119,8 +120,8 @@ def validate_song(song: Song, check_samples: bool = True) -> ValidationResult:
             
             # Check note value
             if row.note != 0 and row.note != 255:  # 0=empty, 255=OFF
-                if row.note < 1 or row.note > 48:
-                    result.add_error(loc_row, f"Note value {row.note} out of range (valid: 1-48)")
+                if row.note < 1 or row.note > MAX_NOTES:
+                    result.add_error(loc_row, f"Note value {row.note} out of range (valid: 1-{MAX_NOTES})")
             
             # Check instrument
             if row.note > 0 and row.note != 255:  # Has actual note
@@ -434,8 +435,8 @@ def _encode_pattern_events(pattern: Pattern, pattern_idx: int, output_func=None)
         if row.note == 255:  # NOTE_OFF
             note = 0  # ASM player treats note 0 as note-off
         else:
-            # Export GUI note as-is (1-48 for C-1 through B-4)
-            # The ASM player subtracts 1 to get pitch table index (0-47)
+            # Export GUI note as-is (1-36 for C-1 through B-3)
+            # The ASM player subtracts 1 to get pitch table index (0-35)
             note = row.note
         
         inst = row.instrument
@@ -506,8 +507,6 @@ def _encode_pattern_events(pattern: Pattern, pattern_idx: int, output_func=None)
 
 def find_mads() -> Optional[str]:
     """Find MADS assembler executable."""
-    import runtime
-    
     system = platform.system()
     machine = platform.machine().lower()
     
@@ -570,7 +569,7 @@ def find_mads() -> Optional[str]:
 def _output(text: str):
     """Output text to both queue and console."""
     build_state.queue_output(text)
-    print(text, end='')
+    print(text, end='', flush=True)  # flush=True ensures immediate output
 
 
 def build_xex_sync(song: Song, output_xex_path: str) -> BuildResult:
@@ -632,7 +631,6 @@ def build_xex_sync(song: Song, output_xex_path: str) -> BuildResult:
     
     result.build_dir = build_dir
     _output(f"  Build directory: {build_dir}\n")
-    _output(f"  (Files kept for debugging)\n")
     logger.info(f"Build directory: {build_dir}")
     
     try:
@@ -830,6 +828,22 @@ def build_xex_sync(song: Song, output_xex_path: str) -> BuildResult:
         # Copy to final destination
         os.makedirs(os.path.dirname(os.path.abspath(output_xex_path)), exist_ok=True)
         shutil.copy2(output_xex, output_xex_path)
+        
+        # CRITICAL: Sync file to disk before emulator launch
+        # Prevents race condition where emulator reads incomplete/stale file
+        try:
+            with open(output_xex_path, 'rb') as f:
+                os.fsync(f.fileno())
+            # Also sync parent directory to ensure directory entry is updated (Linux/macOS)
+            if hasattr(os, 'O_DIRECTORY'):
+                parent_dir = os.path.dirname(os.path.abspath(output_xex_path))
+                dir_fd = os.open(parent_dir, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+        except Exception as sync_err:
+            logger.warning(f"File sync warning: {sync_err}")
         
         result.success = True
         result.xex_path = output_xex_path

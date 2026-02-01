@@ -4,6 +4,20 @@
 ; Memory layout for VQ sample playback and tracker sequencer.
 ;
 ; =========================================================================
+; ZERO PAGE MEMORY MAP (Atari 8-bit)
+; =========================================================================
+; $00-$0F: OS critical (do not touch)
+; $10-$1F: OS/DOS vectors (avoid)
+; $20-$2F: ZIOCB - safe if not using CIO during playback
+; $30-$3F: SIO variables - safe if not using SIO during playback
+; $40-$7F: OS/DOS work area (avoid)
+; $80-$D3: APPLICATION RESERVED - free to use!
+; $D4-$FF: FP area - safe if not using floating point
+;
+; Our player uses: $20-$3F (during playback only) + $80-$FF
+; =========================================================================
+;
+; =========================================================================
 ; CRITICAL: IRQ/NMI RACE CONDITION PREVENTION
 ; =========================================================================
 ; NMI (Non-Maskable Interrupt) can fire at ANY time - even during IRQ!
@@ -21,7 +35,7 @@
 ; If these were shared, NMI could corrupt IRQ's pointer mid-operation,
 ; causing garbage audio output, crashes, or register corruption.
 ;
-; TRACKER mode uses $80-$C2 for 3-channel polyphonic playback.
+; TRACKER mode uses $20-$3F + $80-$FF for 3-channel polyphonic playback.
 ; Non-TRACKER mode uses simpler layout for single-channel players.
 ; =========================================================================
 
@@ -30,6 +44,30 @@
 ; ==========================================================================
 ; TRACKER MODE - 3-Channel Polyphonic Player
 ; ==========================================================================
+
+    ; =========================================================================
+    ; ZIOCB/SIO AREA ($20-$3F) - Safe during playback (no CIO/SIO calls)
+    ; =========================================================================
+    ; These 32 bytes are free because we don't do file I/O during playback.
+    ; WARNING: Contents will be lost if CIO/SIO is called!
+    
+    ; --- Volume Staging (when VOLUME_CONTROL=1) ---
+    prep0_vol         = $20     ; 1 byte  - Channel 0 volume staging
+    prep1_vol         = $21     ; 1 byte  - Channel 1 volume staging
+    prep2_vol         = $22     ; 1 byte  - Channel 2 volume staging
+    
+    ; --- Channel 2 Staging (overflow from $FF) ---
+    prep2_end_lo      = $23     ; 1 byte  - Channel 2 end pointer low
+    prep2_end_hi      = $24     ; 1 byte  - Channel 2 end pointer high
+    prep2_vq_lo       = $25     ; 1 byte  - Channel 2 VQ cache low
+    prep2_vq_hi       = $26     ; 1 byte  - Channel 2 VQ cache high
+    
+    ; --- Reserved for future use ($27-$3F) ---
+    ; 25 bytes available for expansion
+    
+    ; =========================================================================
+    ; APPLICATION AREA ($80-$FF) - Always safe
+    ; =========================================================================
 
     ; --- Channel 0 State ($80-$8C) ---
     trk0_stream_ptr   = $80     ; 2 bytes - Position in VQ index stream
@@ -121,8 +159,65 @@
     nmi_save_x        = $C1     ; 1 byte
     nmi_save_y        = $C2     ; 1 byte
 
-; NOTE: Channel 2 volume stored in regular memory (out of ZP space)
-; See song_player.asm for trk2_vol_shift location
+    ; =========================================================================
+    ; SONG PLAYER VARIABLES ($C3-$FF) - Moved from regular memory for speed
+    ; =========================================================================
+    ; These are initialized by seq_init, not with .byte directives.
+    ; Zero-page access saves 1 cycle per LDA/STA (3 vs 4 cycles).
+    
+    ; --- Hot Path Variables (checked every row) ---
+    seq_evt_row       = $C3     ; 3 bytes - Next event row per channel
+    seq_local_row_zp  = $C6     ; 3 bytes - Local row counter per channel
+    evt_trigger       = $C9     ; 3 bytes - Trigger flags per channel
+    
+    ; --- Main Loop Variables (checked every frame) ---
+    vcount_phase      = $CC     ; 1 byte  - VCOUNT phase for frame detection
+    last_playing      = $CD     ; 1 byte  - Previous playing state
+    
+    ; --- Event Data (when events fire) ---
+    evt_note          = $CE     ; 3 bytes - Note per channel
+    evt_inst          = $D1     ; 3 bytes - Instrument per channel
+    evt_vol           = $D4     ; 3 bytes - Volume per channel
+    
+    ; --- Event Parsing ---
+    seq_evt_ptr_lo    = $D7     ; 3 bytes - Event pointer low byte
+    seq_evt_ptr_hi    = $DA     ; 3 bytes - Event pointer high byte
+    seq_last_inst     = $DD     ; 3 bytes - Last instrument per channel
+    seq_last_vol      = $E0     ; 3 bytes - Last volume per channel
+    
+    ; --- Pattern Wrap ---
+    seq_ptn_len       = $E3     ; 3 bytes - Pattern length per channel
+    seq_ptn_start_lo  = $E6     ; 3 bytes - Pattern start low byte
+    seq_ptn_start_hi  = $E9     ; 3 bytes - Pattern start high byte
+    
+    ; --- Staging Area (COMMIT phase is inside SEI - speed critical!) ---
+    ; Channel 0 staging
+    prep0_pitch_lo    = $EC     ; 1 byte
+    prep0_pitch_hi    = $ED     ; 1 byte
+    prep0_stream_lo   = $EE     ; 1 byte
+    prep0_stream_hi   = $EF     ; 1 byte
+    prep0_end_lo      = $F0     ; 1 byte
+    prep0_end_hi      = $F1     ; 1 byte
+    prep0_vq_lo       = $F2     ; 1 byte
+    prep0_vq_hi       = $F3     ; 1 byte
+    ; Channel 1 staging
+    prep1_pitch_lo    = $F4     ; 1 byte
+    prep1_pitch_hi    = $F5     ; 1 byte
+    prep1_stream_lo   = $F6     ; 1 byte
+    prep1_stream_hi   = $F7     ; 1 byte
+    prep1_end_lo      = $F8     ; 1 byte
+    prep1_end_hi      = $F9     ; 1 byte
+    prep1_vq_lo       = $FA     ; 1 byte
+    prep1_vq_hi       = $FB     ; 1 byte
+    ; Channel 2 staging (complete - using $20-$26 for overflow)
+    prep2_pitch_lo    = $FC     ; 1 byte
+    prep2_pitch_hi    = $FD     ; 1 byte
+    prep2_stream_lo   = $FE     ; 1 byte
+    prep2_stream_hi   = $FF     ; 1 byte
+    ; NOTE: prep2_end_*, prep2_vq_*, prep*_vol are at $20-$26 (ZIOCB area)
+
+; NOTE: trk2_vol_shift is in regular memory (song_player.asm) because
+; we ran out of contiguous zero-page space for 3 volume variables.
 
 .else
 

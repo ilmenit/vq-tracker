@@ -411,10 +411,10 @@ PitchVQ_IRQ:
     
     ; Advance stream_ptr (move to next codebook index)
     inc stream_ptr
-    bne @check_end
+    bne @check_stream_end
     inc stream_ptr+1
     
-@check_end:
+@check_stream_end:
     ; 16-bit comparison: stream_ptr >= stream_end?
     lda stream_ptr+1
     cmp stream_end+1

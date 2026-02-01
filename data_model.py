@@ -176,8 +176,8 @@ class Song:
     speed: int = DEFAULT_SPEED
     system: int = PAL_HZ
     volume_control: bool = False  # Enable volume control in export (requires lower sample rate)
-    screen_control: bool = False  # Enable display during playback (costs ~15% CPU cycles)
-    keyboard_control: bool = False  # Enable keyboard stop/restart during playback
+    screen_control: bool = True   # Enable display during playback (costs ~15% CPU cycles)
+    keyboard_control: bool = True # Enable keyboard stop/restart during playback
     songlines: List[Songline] = field(default_factory=list)
     patterns: List[Pattern] = field(default_factory=list)
     instruments: List[Instrument] = field(default_factory=list)
@@ -196,8 +196,8 @@ class Song:
         self.speed = DEFAULT_SPEED
         self.system = PAL_HZ
         self.volume_control = False
-        self.screen_control = False
-        self.keyboard_control = False
+        self.screen_control = True
+        self.keyboard_control = True
         self.songlines = [Songline(patterns=[0, 1, 2])]
         self.patterns = [Pattern() for _ in range(3)]
         self.instruments = []

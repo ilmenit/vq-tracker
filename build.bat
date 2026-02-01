@@ -69,15 +69,15 @@ for %%p in (dearpygui numpy scipy sounddevice pydub PyInstaller) do (
     )
 )
 
-REM Check optional pokey_vq
-python -c "import pokey_vq" >nul 2>&1
-if errorlevel 1 (
-    echo   [?] pokey_vq - optional, not found
-    if exist "vq_converter\pokey_vq" (
-        echo       ^(will use local vq_converter folder^)
-    )
+REM Check for vq_converter folder (required for VQ conversion)
+echo.
+echo Checking VQ converter...
+if exist "vq_converter\pokey_vq" (
+    echo   [OK] vq_converter folder found
 ) else (
-    echo   [OK] pokey_vq
+    echo   [?] vq_converter folder not found
+    echo       ^(VQ conversion will not work without it^)
+    echo       Place the vq_converter folder alongside the tracker
 )
 
 echo.

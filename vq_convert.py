@@ -144,6 +144,7 @@ class VQConverter:
     
     def __init__(self, vq_state: VQState):
         self.vq_state = vq_state
+        self._vq_converter_path = None  # Set by build_command in bundled mode
         import logging
         self.logger = logging.getLogger(__name__)
     
@@ -195,12 +196,28 @@ class VQConverter:
         
         # Build command based on runtime mode
         if runtime.is_bundled():
-            # When bundled, pokey_vq should be importable directly
-            # Use python -m syntax with bundled Python
-            cmd = [sys.executable, "-m", "pokey_vq.cli"]
+            # When bundled, sys.executable is the tracker itself, NOT Python!
+            # We need to find system Python and run the vq_converter folder
+            vq_converter_path = self.find_vq_converter()
+            if not vq_converter_path:
+                self.logger.error("Cannot find vq_converter folder")
+                return []
+            
+            # Find system Python
+            python_cmd = self._find_system_python()
+            if not python_cmd:
+                self.logger.error("Cannot find system Python")
+                return []
+            
+            # Run the cli module from within vq_converter folder
+            # The vq_converter folder structure is: vq_converter/pokey_vq/cli/
+            cmd = [python_cmd, "-m", "pokey_vq.cli"]
+            # Set PYTHONPATH to include vq_converter folder (done in convert method via env)
+            self._vq_converter_path = vq_converter_path
         else:
-            # Development mode - use Python module
+            # Development mode - use Python module directly
             cmd = [sys.executable, "-m", "pokey_vq.cli"]
+            self._vq_converter_path = None
         
         # Add arguments
         cmd.extend([
@@ -217,6 +234,19 @@ class VQConverter:
             "-o", output_name  # Output name
         ])
         return cmd
+    
+    def _find_system_python(self) -> Optional[str]:
+        """Find system Python executable (python3 or python)."""
+        import shutil
+        
+        # Try python3 first, then python
+        for name in ["python3", "python"]:
+            path = shutil.which(name)
+            if path:
+                self.logger.debug(f"Found system Python: {path}")
+                return path
+        
+        return None
     
     def _generate_output_dirname(self, num_files: int) -> str:
         """Generate output directory name based on settings."""
@@ -307,6 +337,17 @@ class VQConverter:
         
         # Build command with output name (ASM files go to asm_output_dir)
         cmd = self.build_command(input_files, output_name)
+        
+        # Check if command build failed
+        if not cmd:
+            result = VQResult(
+                success=False,
+                error_message="Cannot build conversion command. System Python not found."
+            )
+            self.vq_state.completion_result = result
+            self.vq_state.conversion_complete = True
+            return
+        
         self.logger.debug(f"Command: {' '.join(cmd[:10])}...")
         self.logger.debug(f"Output name: {output_name}")
         self.logger.debug(f"ASM output dir: {asm_output_dir}")
@@ -340,6 +381,7 @@ class VQConverter:
             
             self._queue_output(f"Starting conversion of {num_files} file(s)...\n")
             self._queue_output(f"VQ Converter: {vq_converter_path}\n")
+            self._queue_output(f"Python: {cmd[0] if cmd else 'N/A'}\n")
             self._queue_output(f"Output: {asm_output_dir}\n")
             self._queue_output(f"Settings: rate={self.vq_state.settings.rate}, "
                                f"vec={self.vq_state.settings.vector_size}, "
