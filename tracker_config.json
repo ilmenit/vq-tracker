@@ -3,8 +3,8 @@
   "recent_files": [],
   "editor_settings": {
     "hex_mode": true,
-    "octave": 2,
-    "step": 1,
+    "octave": 1,
+    "step": 2,
     "follow": true,
     "piano_keys_mode": true,
     "highlight_interval": 4
