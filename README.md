@@ -1,6 +1,6 @@
-# POKEY VQ Tracker v3.0
+# POKEY VQ Tracker - Beta 1
 
-A cross-platform music tracker for composing sample-based music targeting Atari XL/XE 8-bit computers.
+An experimental cross-platform music tracker for composing sample-based music targeting Atari XL/XE 8-bit computers.
 
 ## Features
 
@@ -43,6 +43,54 @@ Press **F4** in the tracker to see keyboard shortcuts including this workflow.
 3. Compose music using piano keyboard (Z-M, Q-P keys)
 4. Convert samples: Song → VQ Convert
 5. Build executable: Song → Build XEX
+
+## Building Standalone Executable
+
+To create a single executable file (no Python installation required):
+
+### Windows
+```batch
+# Using Command Prompt
+build.bat
+
+# Using PowerShell
+.\build.ps1
+
+# Check dependencies only
+build.bat check
+.\build.ps1 -Check
+```
+
+### Linux / macOS
+```bash
+# Make script executable (first time only)
+chmod +x build.sh
+
+# Build
+./build.sh
+
+# Check dependencies only
+./build.sh check
+```
+
+### Requirements for Building
+
+1. **Python 3.8+** with pip
+2. **PyInstaller** (installed automatically by build script)
+3. **MADS assembler** in the appropriate `bin/` subdirectory:
+   - Windows: `bin/windows_x86_64/mads.exe`
+   - Linux: `bin/linux_x86_64/mads`
+   - macOS Intel: `bin/macos_x86_64/mads`
+   - macOS Apple Silicon: `bin/macos_aarch64/mads`
+
+Download MADS from: http://mads.atari8.info/
+
+### Output
+
+The built executable will be in `dist/`:
+- Windows: `dist/POKEY_VQ_Tracker.exe`
+- Linux: `dist/POKEY_VQ_Tracker`
+- macOS: `dist/POKEY VQ Tracker.app`
 
 ## File Browser
 

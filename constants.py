@@ -110,7 +110,8 @@ WIN_HEIGHT = 900
 ROW_HEIGHT = 28
 
 # === APP INFO ===
-APP_NAME = "POKEY VQ Tracker"
-APP_VERSION = "3.0"
+# Import from centralized version file
+from version import APP_NAME, VERSION_DISPLAY as APP_VERSION, FORMAT_VERSION
+
 PROJECT_EXT = ".pvq"
 BINARY_EXT = ".pvg"

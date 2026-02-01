@@ -13,6 +13,7 @@ import queue
 from typing import Optional, List, Dict, Callable
 from dataclasses import dataclass, field
 
+import runtime  # Bundle/dev mode detection
 from constants import (VQ_RATE_DEFAULT, VQ_VECTOR_DEFAULT, VQ_SMOOTHNESS_DEFAULT,
                        VQ_VECTOR_SIZES)
 
@@ -148,16 +149,21 @@ class VQConverter:
     
     def find_vq_converter(self) -> Optional[str]:
         """Find vq_converter folder path."""
-        tracker_dir = os.path.dirname(os.path.abspath(__file__))
-        self.logger.debug(f"find_vq_converter: tracker_dir={tracker_dir}")
+        # In bundled mode, check both bundle dir and app dir
+        bundle_dir = runtime.get_bundle_dir()
+        app_dir = runtime.get_app_dir()
+        
+        self.logger.debug(f"find_vq_converter: bundle_dir={bundle_dir}, app_dir={app_dir}")
         
         candidates = [
-            # Same directory as tracker
-            os.path.join(tracker_dir, "vq_converter"),
+            # Bundled inside the app
+            os.path.join(bundle_dir, "vq_converter"),
+            # Same directory as executable/script
+            os.path.join(app_dir, "vq_converter"),
             # Parent directory  
-            os.path.join(os.path.dirname(tracker_dir), "vq_converter"),
+            os.path.join(os.path.dirname(app_dir), "vq_converter"),
             # Sibling directory
-            os.path.normpath(os.path.join(tracker_dir, "..", "vq_converter")),
+            os.path.normpath(os.path.join(app_dir, "..", "vq_converter")),
         ]
         
         for path in candidates:
@@ -187,11 +193,17 @@ class VQConverter:
         # size = nibble-packed (slower playback, compact codebook)
         optimize_mode = "speed" if settings.optimize_speed else "size"
         
-        # vq_multi_channel requires mono (--channels 1)
-        # NOTE: We let it generate the player XEX even though we don't use it,
-        # because ASM files are generated as part of that process.
-        cmd = [
-            sys.executable, "-m", "pokey_vq.cli",
+        # Build command based on runtime mode
+        if runtime.is_bundled():
+            # When bundled, pokey_vq should be importable directly
+            # Use python -m syntax with bundled Python
+            cmd = [sys.executable, "-m", "pokey_vq.cli"]
+        else:
+            # Development mode - use Python module
+            cmd = [sys.executable, "-m", "pokey_vq.cli"]
+        
+        # Add arguments
+        cmd.extend([
             *input_files,
             "-p", "vq_multi_channel",
             "-r", str(settings.rate),
@@ -203,7 +215,7 @@ class VQConverter:
             "-e", "on" if settings.enhance else "off",
             "--optimize", optimize_mode,
             "-o", output_name  # Output name
-        ]
+        ])
         return cmd
     
     def _generate_output_dirname(self, num_files: int) -> str:
@@ -283,10 +295,11 @@ class VQConverter:
             self.vq_state.conversion_complete = True
             return
         
-        # Create output directory in .tmp folder (same dir as tracker)
-        tracker_dir = os.path.dirname(os.path.abspath(__file__))
+        # Create output directory in .tmp folder
+        # Use runtime.get_app_dir() so .tmp is alongside the executable, not in bundle
+        app_dir = runtime.get_app_dir()
         output_dirname = self._generate_output_dirname(len(input_files))
-        asm_output_dir = os.path.join(tracker_dir, ".tmp", "vq_output")
+        asm_output_dir = os.path.join(app_dir, ".tmp", "vq_output")
         output_name = os.path.join(asm_output_dir, output_dirname)  # XEX path
         
         # Ensure output directory exists

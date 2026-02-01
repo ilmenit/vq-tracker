@@ -55,7 +55,8 @@ except ImportError:
     SCIPY_OK = False
 
 from constants import (PROJECT_EXT, BINARY_EXT, DEFAULT_SPEED, DEFAULT_OCTAVE,
-                       DEFAULT_STEP, MAX_VOLUME, PAL_HZ, FOCUS_EDITOR, NOTE_OFF)
+                       DEFAULT_STEP, MAX_VOLUME, PAL_HZ, FOCUS_EDITOR, NOTE_OFF,
+                       APP_VERSION, FORMAT_VERSION)
 from data_model import Song, Instrument, Pattern, Row
 
 # =============================================================================
@@ -64,9 +65,6 @@ from data_model import Song, Instrument, Pattern, Row
 
 # Supported audio formats for import
 SUPPORTED_AUDIO = {'.wav', '.mp3', '.ogg', '.flac', '.aiff', '.aif', '.m4a', '.wma'}
-
-# Project format version
-FORMAT_VERSION = 1
 
 # Working directory structure
 WORK_DIR = ".tmp"
@@ -440,7 +438,7 @@ def save_project(song: Song, editor_state: EditorState,
             metadata = {
                 "format": "POKEY VQ Tracker Project",
                 "format_version": FORMAT_VERSION,
-                "app_version": "3.1",
+                "app_version": APP_VERSION,
                 "created": datetime.now().isoformat()
                 # NOTE: vq_converted not saved - VQ is auto-regenerated on load
             }

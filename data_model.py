@@ -4,7 +4,7 @@ from typing import List, Optional
 import numpy as np
 from constants import (MAX_CHANNELS, MAX_PATTERNS, MAX_ROWS, MAX_INSTRUMENTS,
                        MAX_SONGLINES, MAX_VOLUME, DEFAULT_SPEED, DEFAULT_LENGTH,
-                       PAL_HZ, MAX_NOTES)
+                       PAL_HZ, MAX_NOTES, NOTE_OFF)
 
 @dataclass
 class Row:
@@ -29,7 +29,9 @@ class Row:
         inst = d.get('i', d.get('instrument', 0))
         vol = d.get('v', d.get('volume', MAX_VOLUME))
         # Clamp to valid ranges
-        note = max(0, min(MAX_NOTES, note))
+        # Note: NOTE_OFF (255) must be allowed through
+        if note != NOTE_OFF:
+            note = max(0, min(MAX_NOTES, note))
         inst = max(0, min(MAX_INSTRUMENTS - 1, inst))  # 0-127
         vol = max(0, min(MAX_VOLUME, vol))
         return cls(note, inst, vol)

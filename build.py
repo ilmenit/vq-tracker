@@ -506,6 +506,8 @@ def _encode_pattern_events(pattern: Pattern, pattern_idx: int, output_func=None)
 
 def find_mads() -> Optional[str]:
     """Find MADS assembler executable."""
+    import runtime
+    
     system = platform.system()
     machine = platform.machine().lower()
     
@@ -515,7 +517,19 @@ def find_mads() -> Optional[str]:
     else:
         binary = "mads"
     
-    # Check in VQ converter's bin directory
+    # Try bundled/local bin directory first (works for both bundled and dev)
+    mads_path = runtime.get_mads_path()
+    if mads_path and os.path.isfile(mads_path):
+        # Ensure executable on Unix
+        if system != "Windows" and not os.access(mads_path, os.X_OK):
+            try:
+                os.chmod(mads_path, 0o755)
+            except:
+                pass
+        if os.access(mads_path, os.X_OK) or system == "Windows":
+            return mads_path
+    
+    # Check in VQ converter's bin directory (legacy/fallback)
     if state.vq.result and state.vq.result.output_dir:
         vq_base = os.path.dirname(os.path.dirname(state.vq.result.output_dir))
         
@@ -523,7 +537,7 @@ def find_mads() -> Optional[str]:
         if system == "Linux":
             plat_dir = "linux_x86_64"
         elif system == "Darwin":
-            plat_dir = "macos_aarch64" if "arm" in machine else "macos_x86_64"
+            plat_dir = "macos_aarch64" if "arm" in machine or "aarch" in machine else "macos_x86_64"
         elif system == "Windows":
             plat_dir = "windows_x86_64"
         else:
@@ -538,6 +552,12 @@ def find_mads() -> Optional[str]:
         mads_path = os.path.join(vq_base, "bin", binary)
         if os.path.isfile(mads_path) and os.access(mads_path, os.X_OK):
             return mads_path
+    
+    # Check in app directory (for portable installs)
+    app_dir = runtime.get_app_dir()
+    local_mads = os.path.join(app_dir, binary)
+    if os.path.isfile(local_mads) and os.access(local_mads, os.X_OK):
+        return local_mads
     
     # Check PATH
     mads_path = shutil.which(binary)
@@ -598,7 +618,8 @@ def build_xex_sync(song: Song, output_xex_path: str) -> BuildResult:
     logger.info(f"Using MADS: {mads_path}")
     
     # Create build directory in .tmp (persistent for debugging)
-    tracker_dir = os.path.dirname(os.path.abspath(__file__))
+    # Use runtime.get_app_dir() to work correctly in both dev and bundled modes
+    tracker_dir = runtime.get_app_dir()
     build_dir = os.path.join(tracker_dir, ".tmp", "build")
     
     # Clean and create build directory
@@ -660,8 +681,8 @@ def build_xex_sync(song: Song, output_xex_path: str) -> BuildResult:
         # CRITICAL: Copy our UPDATED support files to overwrite VQ converter versions
         # Our asm/ directory has fixes for sequencer variables, IRQ optimization, etc.
         _output("\n  Copying tracker-specific support files...\n")
-        tracker_dir = os.path.dirname(os.path.abspath(__file__))
-        our_asm_dir = os.path.join(tracker_dir, "asm")
+        # Use runtime.get_asm_dir() which handles both dev and bundled modes
+        our_asm_dir = runtime.get_asm_dir()
         _output(f"    Looking for ASM files in: {our_asm_dir}\n")
         logger.debug(f"Tracker ASM directory: {our_asm_dir}")
         
@@ -691,14 +712,22 @@ def build_xex_sync(song: Song, output_xex_path: str) -> BuildResult:
             "common/macros.inc",
             "common/pokey_setup.asm",
             "tracker/tracker_api.asm",
-            "tracker/tracker_irq.asm",
+            # IRQ handlers: song_player.asm includes one based on OPTIMIZE_SPEED
+            # We need at least one of these
             "pitch/pitch_tables.asm",
             "pitch/LUT_NIBBLES.asm"
         ]
         
+        # Check for IRQ handler - need at least one
+        irq_speed = os.path.exists(os.path.join(build_dir, "tracker/tracker_irq_speed.asm"))
+        irq_size = os.path.exists(os.path.join(build_dir, "tracker/tracker_irq_size.asm"))
+        if not irq_speed and not irq_size:
+            critical_files.append("tracker/tracker_irq_speed.asm (or tracker_irq_size.asm)")
+        
         missing_critical = []
         for cf in critical_files:
             if not os.path.exists(os.path.join(build_dir, cf)):
+                missing_critical.append(cf)
                 missing_critical.append(cf)
         
         if missing_critical:
@@ -736,8 +765,8 @@ def build_xex_sync(song: Song, output_xex_path: str) -> BuildResult:
         _output("  --- end SONG_DATA.asm ---\n")
         
         # Copy song_player.asm from our asm/ directory
-        tracker_dir = os.path.dirname(os.path.abspath(__file__))
-        player_src = os.path.join(tracker_dir, "asm", "song_player.asm")
+        # Use runtime.get_asm_dir() which handles both dev and bundled modes
+        player_src = os.path.join(runtime.get_asm_dir(), "song_player.asm")
         if os.path.exists(player_src):
             shutil.copy2(player_src, build_dir)
             _output(f"    + song_player.asm\n")

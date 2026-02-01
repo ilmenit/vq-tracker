@@ -1,4 +1,4 @@
-"""POKEY VQ Tracker - Main Entry Point (v3.17 - ZIP Project Format)
+"""POKEY VQ Tracker - Main Entry Point
 
 This is the main entry point that ties together all UI modules:
 - ui_globals.py  - Global state, config, formatting functions
@@ -6,15 +6,116 @@ This is the main entry point that ties together all UI modules:
 - ui_callbacks.py - Event handlers and callbacks
 - ui_build.py    - UI construction functions
 """
-import dearpygui.dearpygui as dpg
-import logging
 import sys
 import os
+import logging
+import platform
+
+# =============================================================================
+# EARLY LOGGING SETUP (before any imports that might fail)
+# =============================================================================
+logging.basicConfig(
+    level=logging.DEBUG,  # DEBUG level for full diagnostic output
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    datefmt='%H:%M:%S',
+    handlers=[logging.StreamHandler(sys.stdout)]  # Explicitly use stdout
+)
+logger = logging.getLogger("tracker.main")
+
+# =============================================================================
+# STARTUP DIAGNOSTICS
+# =============================================================================
+def log_startup_info():
+    """Log system and environment information for debugging."""
+    logger.info("=" * 60)
+    logger.info("POKEY VQ Tracker - Starting")
+    logger.info("=" * 60)
+    logger.info(f"Python: {sys.version}")
+    logger.info(f"Platform: {platform.system()} {platform.release()} ({platform.machine()})")
+    logger.info(f"Working directory: {os.getcwd()}")
+    logger.info(f"Script location: {os.path.dirname(os.path.abspath(__file__))}")
+
+def check_dependencies():
+    """Check and log status of all dependencies."""
+    logger.info("-" * 40)
+    logger.info("Checking dependencies...")
+    
+    dependencies = {
+        'dearpygui': 'DearPyGui (GUI framework)',
+        'numpy': 'NumPy (numerical operations)',
+        'scipy': 'SciPy (signal processing)',
+        'sounddevice': 'SoundDevice (audio playback)',
+        'pydub': 'PyDub (audio format conversion)',
+    }
+    
+    missing = []
+    for module, description in dependencies.items():
+        try:
+            mod = __import__(module)
+            version = getattr(mod, '__version__', 'unknown')
+            logger.info(f"  [OK] {description}: {version}")
+        except ImportError as e:
+            logger.warning(f"  [--] {description}: NOT AVAILABLE ({e})")
+            missing.append(module)
+    
+    # Check optional components
+    logger.info("Checking optional components...")
+    
+    # Check pokey_vq
+    try:
+        import pokey_vq
+        logger.info(f"  [OK] pokey_vq: available")
+    except ImportError:
+        logger.info(f"  [--] pokey_vq: not installed (will look for vq_converter folder)")
+    
+    # Check runtime paths
+    try:
+        import runtime
+        logger.info(f"  [OK] Runtime mode: {'bundled' if runtime.is_bundled() else 'development'}")
+        logger.info(f"       App dir: {runtime.get_app_dir()}")
+        logger.info(f"       ASM dir: {runtime.get_asm_dir()}")
+        logger.info(f"       Bin dir: {runtime.get_bin_dir()}")
+        
+        mads = runtime.get_mads_path()
+        if mads:
+            logger.info(f"  [OK] MADS assembler: {mads}")
+        else:
+            logger.info(f"  [--] MADS assembler: not found in bin/")
+    except Exception as e:
+        logger.error(f"  [!!] Runtime module error: {e}")
+    
+    logger.info("-" * 40)
+    
+    if 'dearpygui' in missing or 'numpy' in missing:
+        logger.error("Critical dependencies missing! Cannot start.")
+        return False
+    
+    if 'sounddevice' in missing:
+        logger.warning("Audio playback will not be available")
+    
+    if 'pydub' in missing:
+        logger.warning("Only WAV import supported (no MP3/OGG conversion)")
+    
+    return True
+
+# Run early diagnostics
+log_startup_info()
+if not check_dependencies():
+    logger.error("Exiting due to missing critical dependencies")
+    sys.exit(1)
+
+# =============================================================================
+# MAIN IMPORTS (after dependency check)
+# =============================================================================
+logger.debug("Loading main modules...")
+
+import dearpygui.dearpygui as dpg
 from constants import APP_NAME, APP_VERSION, WIN_WIDTH, WIN_HEIGHT
 from state import state
 from ui_theme import create_themes
 from keyboard import handle_key
 import operations as ops
+import runtime  # Bundle/dev mode detection
 
 # Import UI modules
 import ui_globals as G
@@ -25,15 +126,7 @@ import ui_build as B
 # Import file_io for working directory
 import file_io
 
-# =============================================================================
-# LOGGING SETUP
-# =============================================================================
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='[%(levelname)s] %(name)s: %(message)s',
-    handlers=[logging.StreamHandler()]
-)
-logger = logging.getLogger("tracker.main")
+logger.debug("All modules loaded successfully")
 
 
 # =============================================================================
@@ -157,14 +250,21 @@ def _trigger_auto_conversion_startup():
 # MAIN
 # =============================================================================
 def main():
-    logger.info(f"Starting {APP_NAME} v{APP_VERSION}")
+    logger.info("-" * 60)
+    logger.info(f"Initializing {APP_NAME} {APP_VERSION}")
+    logger.info("-" * 60)
     
-    # Get application directory
-    app_dir = os.path.dirname(os.path.abspath(__file__))
+    # Get application directory (works in both dev and bundled modes)
+    app_dir = runtime.get_app_dir()
+    logger.debug(f"Application directory: {app_dir}")
     
     # Initialize working directory
-    work_dir = file_io.init_working_directory(app_dir)
-    logger.info(f"Working directory: {work_dir.root}")
+    try:
+        work_dir = file_io.init_working_directory(app_dir)
+        logger.info(f"Working directory: {work_dir.root}")
+    except Exception as e:
+        logger.error(f"Failed to initialize working directory: {e}")
+        raise
     
     # Check instance lock
     instance_lock = file_io.InstanceLock(app_dir)
@@ -187,27 +287,33 @@ def main():
             print(f"ERROR: {lock_msg}")
         sys.exit(1)
     
-    logger.info("Instance lock acquired")
+    logger.debug("Instance lock acquired")
     
     # Initialize config paths (must be before load_config)
     G.init_paths(app_dir)
+    logger.debug(f"Config file: {G.CONFIG_FILE}")
+    logger.debug(f"Autosave dir: {G.AUTOSAVE_DIR}")
     
     # Load config first
     G.load_config()
+    logger.debug(f"Loaded {len(G.recent_files)} recent files from config")
     
     # Initialize DearPyGui
+    logger.debug("Creating DearPyGui context...")
     dpg.create_context()
     dpg.create_viewport(title=APP_NAME, width=WIN_WIDTH, height=WIN_HEIGHT, 
                         min_width=800, min_height=500)
     
     # Create themes
     create_themes()
+    logger.debug("UI themes created")
     
     # Initialize modules with cross-references
     R.set_instrument_callbacks(C.preview_instrument, C.select_inst_click)
     C.init_callbacks(B.rebuild_editor_grid, B.show_confirm_centered)
     
     # Build UI
+    logger.debug("Building UI...")
     B.build_ui()
     B.rebuild_recent_menu()
     
@@ -241,30 +347,51 @@ def main():
     R.refresh_editor()
     
     # Start audio
-    state.audio.start()
-    state.audio.set_song(state.song)  # Link song to audio engine
-    logger.info("Audio engine started")
+    try:
+        state.audio.start()
+        state.audio.set_song(state.song)  # Link song to audio engine
+        logger.info("Audio engine started")
+    except Exception as e:
+        logger.warning(f"Audio engine failed to start: {e}")
+        logger.warning("Audio preview will not be available")
     
     # Try to load last project on startup
     try_load_last_project()
     
-    # Main loop with autosave check
-    while dpg.is_dearpygui_running():
-        state.audio.process_callbacks()  # Process audio engine callbacks
-        G.check_autosave()
-        C.poll_vq_conversion()  # Poll VQ conversion status (thread-safe)
-        C.poll_build_progress()  # Poll build progress (thread-safe)
-        C.poll_button_blink()   # Update blinking attention buttons
-        dpg.render_dearpygui_frame()
+    logger.info("-" * 60)
+    logger.info("Ready! Entering main loop...")
+    logger.info("-" * 60)
     
-    # Cleanup
-    G.save_config()  # Save config (including recent files) on exit
-    state.audio.stop()
-    state.vq.cleanup()  # Clean up VQ temp directory
-    instance_lock.release()  # Release instance lock
-    dpg.destroy_context()
-    logger.info("Tracker closed")
+    # Main loop with autosave check
+    try:
+        while dpg.is_dearpygui_running():
+            state.audio.process_callbacks()  # Process audio engine callbacks
+            G.check_autosave()
+            C.poll_vq_conversion()  # Poll VQ conversion status (thread-safe)
+            C.poll_build_progress()  # Poll build progress (thread-safe)
+            C.poll_button_blink()   # Update blinking attention buttons
+            dpg.render_dearpygui_frame()
+    except Exception as e:
+        logger.exception(f"Error in main loop: {e}")
+        raise
+    finally:
+        # Cleanup
+        logger.info("Shutting down...")
+        G.save_config()  # Save config (including recent files) on exit
+        state.audio.stop()
+        state.vq.cleanup()  # Clean up VQ temp directory
+        instance_lock.release()  # Release instance lock
+        dpg.destroy_context()
+        logger.info("Tracker closed normally")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        logger.exception(f"Fatal error: {e}")
+        print("\n" + "=" * 60)
+        print("FATAL ERROR - Press Enter to exit...")
+        print("=" * 60)
+        input()  # Keep console open on Windows
+        sys.exit(1)
