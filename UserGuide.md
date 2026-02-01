@@ -12,17 +12,19 @@ The magic behind this is **Vector Quantization (VQ)** compression. Your audio sa
 
 ### The Technical Challenge
 
-The Atari 8-bit has approximately **29,500 CPU cycles per video frame** (PAL). That sounds like a lot until you consider what sample playback demands.
+The PAL Atari 8-bit runs at approximately **1.77 MHz** (1,773,447 Hz) with about **35,568 CPU cycles per video frame** (50 Hz). NTSC machines run slightly faster at 1.79 MHz with 29,859 cycles per frame at 60 Hz. That might sound like plenty, but consider what sample playback demands — and that ANTIC steals cycles for screen refresh.
 
-The CPU must output audio samples at rates of 4,000–8,000 Hz (or higher for better quality). At 5,278 Hz, that's **105 IRQ interrupts per frame**. Each IRQ must:
+The CPU must output audio samples at rates of 4,000–8,000 Hz (or higher for better quality). At 5,278 Hz, that's over **100 IRQ interrupts per frame**. Each IRQ must:
 
 - Output 3 audio samples to POKEY registers (one per channel)
-- Advance 3 pitch accumulators using 8.8 fixed-point multiplication
+- Advance 3 pitch accumulators using 8.8 fixed-point arithmetic
 - Handle vector boundary crossings when the compressed stream advances
 - Optionally apply volume scaling
-- All within roughly 100-200 cycles
+- All within roughly 100-300 cycles depending on settings
 
 When all three channels cross a vector boundary simultaneously (worst case), the IRQ handler must fetch new codebook pointers for each channel. This is where careful optimization becomes critical.
+
+Additionally, when the display is enabled, ANTIC steals approximately 9-15% of CPU cycles for memory refresh, display list fetching, and screen data access. The analyzer accounts for this when estimating timing margins.
 
 **Our key constraint:** Everything runs from the base 64KB RAM. No extended memory, no cartridge ROM, no bank switching. This keeps the player compatible with all Atari XL/XE machines but limits total sample storage to what fits alongside the player code, song data, and codebook.
 

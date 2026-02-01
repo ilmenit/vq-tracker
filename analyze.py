@@ -41,14 +41,30 @@ from constants import NOTE_OFF, MAX_NOTES
 # CPU and timing constants
 PAL_CPU_CLOCK = 1773447
 
-# ANTIC cycle stealing when display is enabled
-# With a simple 2-line text display (DMACTL=$02 or $22):
-# - Memory refresh: 9 cycles per scanline
-# - Display list: ~3 cycles per line
-# - Character data: ~40 cycles per text line
-# For IRQ timing analysis, we use conservative 15% reduction
-# when display is enabled (BLANK_SCREEN=0)
-ANTIC_CYCLE_STEAL_PERCENT = 15  # % of cycles stolen by ANTIC when display enabled
+# ANTIC cycle stealing
+# 
+# The Atari uses dynamic RAM which requires periodic refresh by ANTIC.
+# This happens regardless of DMACTL setting.
+#
+# Cycle counts per PAL frame (312 scanlines × 114 cycles/line = 35,568 total):
+#
+# MEMORY REFRESH (always, cannot be disabled):
+#   9 cycles per scanline × 312 lines = 2,808 cycles/frame (~8%)
+#
+# DISPLAY ENABLED (DMACTL != 0):
+#   With a minimal 2-line text display:
+#   - Display list fetches: ~3 cycles per line where DL is read
+#   - Screen data: ~40 cycles per text line (mode 2)
+#   - Player/missile (if enabled): 5-8 cycles per line
+#
+# Our estimates for analysis:
+#   BLANK_SCREEN=1 (DMACTL=0 during playback): ~8% cycle loss (refresh only)
+#   BLANK_SCREEN=0 (display during playback): ~15% cycle loss (refresh + display)
+#
+# These are conservative estimates. Actual values depend on display mode and width.
+
+ANTIC_REFRESH_PERCENT = 8       # Memory refresh alone (cannot be avoided)
+ANTIC_DISPLAY_PERCENT = 15      # Refresh + minimal display (2 text lines)
 
 # =============================================================================
 # CYCLE COSTS - OPTIMIZED PLAYER (no boundary loop, O(1) crossing)
@@ -369,13 +385,16 @@ def analyze_song(song, sample_rate: int, vector_size: int,
     # screen_control=True means screen is shown (BLANK_SCREEN=0)
     screen_blanked = not song.screen_control
     
-    # Account for ANTIC cycle stealing when display is enabled
+    # Account for ANTIC cycle stealing
+    # Memory refresh (DRAM) steals ~8% even with DMACTL=0
+    # Display adds another ~7% when enabled
     if screen_blanked:
-        # Screen blanked: DMACTL=0 during playback, no ANTIC stealing
-        available = cycles_per_irq - IRQ_OVERHEAD
+        # Screen blanked: DMACTL=0 during playback, only memory refresh
+        effective_cycles = cycles_per_irq * (100 - ANTIC_REFRESH_PERCENT) // 100
+        available = effective_cycles - IRQ_OVERHEAD
     else:
-        # Screen shown: ANTIC steals ~15% of cycles for display refresh
-        effective_cycles = cycles_per_irq * (100 - ANTIC_CYCLE_STEAL_PERCENT) // 100
+        # Screen shown: ANTIC steals ~15% total (refresh + display)
+        effective_cycles = cycles_per_irq * (100 - ANTIC_DISPLAY_PERCENT) // 100
         available = effective_cycles - IRQ_OVERHEAD
     
     result = AnalysisResult(
