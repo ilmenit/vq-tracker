@@ -1139,14 +1139,25 @@ def on_vq_setting_change(sender, app_data):
 
 def on_vq_use_converted_change(sender, app_data):
     """Toggle between original and converted sample playback."""
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    logger.info(f"on_vq_use_converted_change: app_data={app_data}")
+    logger.info(f"  state.vq.converted={state.vq.converted}")
+    logger.info(f"  state.vq.result={state.vq.result}")
+    if state.vq.result:
+        logger.info(f"  result.converted_wavs count={len(state.vq.result.converted_wavs)}")
+    
     state.vq.use_converted = app_data
     
     # Reload samples based on new setting
     if state.vq.converted and state.vq.result and state.vq.use_converted:
         # Load converted WAVs
+        logger.info("  -> Loading converted samples")
         _load_converted_samples()
     else:
         # Reload original samples from their source paths
+        logger.info("  -> Reloading original samples")
         _reload_original_samples()
     
     state.audio.set_song(state.song)
@@ -1202,27 +1213,53 @@ def _load_converted_samples():
     import logging
     logger = logging.getLogger(__name__)
     
-    if not state.vq.result or not state.vq.result.converted_wavs:
-        logger.warning("_load_converted_samples: No result or no converted_wavs")
+    # Debug: Show what we have
+    logger.info(f"_load_converted_samples called")
+    logger.info(f"  state.vq.result: {state.vq.result}")
+    
+    if not state.vq.result:
+        G.show_status("Error: No conversion result available")
+        logger.warning("_load_converted_samples: No result")
+        return
+    
+    if not state.vq.result.converted_wavs:
+        G.show_status("Error: No converted WAV files found")
+        logger.warning(f"_load_converted_samples: No converted_wavs (result.output_dir={state.vq.result.output_dir})")
         return
     
     from file_io import load_sample
     
-    logger.debug(f"Loading {len(state.vq.result.converted_wavs)} converted WAVs")
+    num_wavs = len(state.vq.result.converted_wavs)
+    num_instruments = len(state.song.instruments)
+    logger.info(f"Loading {num_wavs} converted WAVs for {num_instruments} instruments")
+    
+    loaded_count = 0
+    error_count = 0
+    
     for i, inst in enumerate(state.song.instruments):
-        if i < len(state.vq.result.converted_wavs):
+        if i < num_wavs:
             wav_path = state.vq.result.converted_wavs[i]
-            logger.debug(f"  Inst {i} ({inst.name}): {wav_path}")
+            logger.info(f"  Inst {i} ({inst.name}): {wav_path}")
+            
             if os.path.exists(wav_path):
                 # Load converted sample data WITHOUT updating sample_path
                 # This preserves sample_path pointing to the original working sample
                 ok, msg = load_sample(inst, wav_path, is_converted=True, update_path=False)
-                if not ok:
-                    G.show_status(f"Error loading {os.path.basename(wav_path)}: {msg}")
+                if ok:
+                    loaded_count += 1
+                    logger.info(f"    Loaded OK: {len(inst.sample_data) if inst.sample_data is not None else 0} samples")
                 else:
-                    logger.debug(f"    Loaded OK, {len(inst.sample_data) if inst.sample_data is not None else 0} samples")
+                    error_count += 1
+                    logger.error(f"    Load failed: {msg}")
+                    G.show_status(f"Error loading {os.path.basename(wav_path)}: {msg}")
             else:
+                error_count += 1
                 logger.warning(f"    File not found: {wav_path}")
+        else:
+            logger.warning(f"  Inst {i} ({inst.name}): No converted WAV (only {num_wavs} WAVs)")
+    
+    if loaded_count > 0:
+        G.show_status(f"Loaded {loaded_count} converted samples" + (f" ({error_count} errors)" if error_count else ""))
 
 
 def invalidate_vq_conversion():

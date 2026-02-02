@@ -34,15 +34,24 @@ Additionally, when the display is enabled, ANTIC steals approximately 9-15% of C
 
 ### Software Requirements
 
+**For running the standalone executable (POKEY_VQ_Tracker.exe):**
+- **MADS assembler** — `mads.exe` in `bin\windows_x86_64\`
+- **vq_converter** — the VQ compression tool in `vq_converter\` folder
+
+**vq_converter options (one required for CONVERT to work):**
+1. **Standalone executable** (recommended): Place `vq_converter.exe` in `vq_converter\` folder
+2. **Python-based**: Requires Python 3.8+ with numpy, scipy, soundfile installed
+
+**Optional tools:**
+- **Altirra emulator** — for auto-launching builds
+- **FFmpeg** — for MP3/OGG/FLAC/M4A import
+
+**For development (running from source):**
 - **Python 3.8+** with the following packages:
   - DearPyGui (GUI framework)
   - NumPy (audio processing)
   - SciPy (WAV file handling)
   - pydub (audio format conversion)
-- **MADS assembler** — for compiling 6502 assembly
-- **Altirra emulator** — for testing the output
-- **pokey_vq** — the VQ compression tool (included or separate)
-- **FFmpeg** (optional) — for importing MP3, OGG, FLAC, M4A files
 
 ### Audio Format Support
 
@@ -51,17 +60,34 @@ Additionally, when the display is enabled, ANTIC steals approximately 9-15% of C
 | WAV | Always supported (built-in) |
 | MP3, OGG, FLAC, M4A | Requires FFmpeg |
 
-**Windows users:** Place `ffmpeg.exe` in the `bin\windows_x86_64\` folder alongside `mads.exe`. Download from: https://www.gyan.dev/ffmpeg/builds/
+**Windows users:** Place `ffmpeg.exe` and `ffprobe.exe` in the `bin\windows_x86_64\` folder. Download from: https://www.gyan.dev/ffmpeg/builds/
 
 **Linux/macOS users:** Install ffmpeg via your package manager (`apt install ffmpeg`, `brew install ffmpeg`).
+
+### Folder Structure
+
+```
+tracker_folder/
+├── POKEY_VQ_Tracker.exe      (or main.py for development)
+├── asm/                      (ASM templates - required for BUILD)
+├── bin/
+│   └── windows_x86_64/
+│       ├── mads.exe          (required for BUILD)
+│       ├── ffmpeg.exe        (optional - audio import)
+│       └── ffprobe.exe       (optional - audio import)
+└── vq_converter/
+    ├── vq_converter.exe      (option 1: standalone)
+    └── pokey_vq/             (option 2: Python module)
+```
 
 ### Setup
 
 1. Extract the tracker to a folder
-2. Ensure MADS is in your system PATH or place `mads.exe` in the tracker folder
-3. (Optional) Add FFmpeg for MP3/OGG/FLAC import
-4. Configure the Altirra path if not auto-detected
-5. Run: `python main.py`
+2. Place `mads.exe` in `bin\windows_x86_64\`
+3. Set up vq_converter (exe or Python with dependencies)
+4. (Optional) Add FFmpeg for MP3/OGG/FLAC import
+5. (Optional) Configure Altirra path for auto-launch
+6. Run: `POKEY_VQ_Tracker.exe` (or `python main.py`)
 
 ---
 

@@ -11,6 +11,7 @@ REM   - MADS binary in bin\windows_x86_64\mads.exe
 REM
 REM Usage:
 REM   build.bat           - Build the application
+REM   build.bat dist      - Build AND create distribution folder
 REM   build.bat clean     - Clean build directories
 REM   build.bat check     - Check dependencies only
 REM ============================================================================
@@ -29,6 +30,7 @@ cd /d "%~dp0"
 REM Parse arguments
 if "%1"=="clean" goto :clean
 if "%1"=="check" goto :check
+if "%1"=="dist" goto :dist
 
 REM Full build
 goto :build
@@ -37,6 +39,8 @@ goto :build
 echo Cleaning build directories...
 if exist "build" rmdir /s /q "build"
 if exist "dist" rmdir /s /q "dist"
+if exist "release" rmdir /s /q "release"
+for %%f in (POKEY_VQ_Tracker_*.zip) do del "%%f" 2>nul
 for /d /r %%d in (__pycache__) do @if exist "%%d" rmdir /s /q "%%d"
 echo Done.
 if "%2"=="" goto :eof
@@ -59,7 +63,7 @@ echo Checking required packages...
 
 REM Check each package
 set MISSING=
-for %%p in (dearpygui numpy scipy sounddevice pydub PyInstaller) do (
+for %%p in (dearpygui numpy scipy sounddevice soundfile pydub PyInstaller) do (
     python -c "import %%p" >nul 2>&1
     if errorlevel 1 (
         echo   [X] %%p - MISSING
@@ -102,13 +106,21 @@ if exist "asm\song_player.asm" (
 )
 
 echo.
+echo Checking samples...
+if exist "samples" (
+    echo   [OK] samples\ directory found
+) else (
+    echo   [?] samples\ directory not found ^(optional^)
+)
+
+echo.
 if defined MISSING (
     echo ============================================================
     echo   Missing components:%MISSING%
     echo ============================================================
     echo.
     echo To install Python packages:
-    echo   pip install dearpygui numpy scipy sounddevice pydub pyinstaller
+    echo   pip install dearpygui numpy scipy sounddevice pydub soundfile pyinstaller
     echo.
     goto :error
 )
@@ -121,7 +133,7 @@ if "%1"=="check" goto :eof
 :build
 echo.
 echo Installing/updating dependencies...
-pip install --quiet --upgrade dearpygui numpy scipy sounddevice pydub pyinstaller
+pip install --quiet --upgrade dearpygui numpy scipy sounddevice pydub soundfile pyinstaller
 if errorlevel 1 (
     echo [ERROR] Failed to install dependencies
     goto :error
@@ -151,9 +163,34 @@ if exist "dist\POKEY_VQ_Tracker.exe" (
     )
     echo.
     echo   To run: dist\POKEY_VQ_Tracker.exe
+    echo.
+    echo   To create a complete distribution folder, run:
+    echo     build.bat dist
 )
 
 echo.
+goto :eof
+
+:dist
+echo.
+echo Installing/updating dependencies...
+pip install --quiet --upgrade dearpygui numpy scipy sounddevice pydub soundfile pyinstaller
+if errorlevel 1 (
+    echo [ERROR] Failed to install dependencies
+    goto :error
+)
+
+echo.
+echo Building and creating distribution...
+echo.
+
+python build_release.py --dist
+if errorlevel 1 (
+    echo.
+    echo [ERROR] Build failed!
+    goto :error
+)
+
 goto :eof
 
 :error

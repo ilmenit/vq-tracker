@@ -726,7 +726,6 @@ def build_xex_sync(song: Song, output_xex_path: str) -> BuildResult:
         for cf in critical_files:
             if not os.path.exists(os.path.join(build_dir, cf)):
                 missing_critical.append(cf)
-                missing_critical.append(cf)
         
         if missing_critical:
             result.error_message = (f"Missing player support files:\n"

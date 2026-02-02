@@ -11,6 +11,7 @@
 #
 # Usage:
 #   ./build.sh           - Build the application
+#   ./build.sh dist      - Build AND create distribution folder
 #   ./build.sh clean     - Clean build directories
 #   ./build.sh check     - Check dependencies only
 #   ./build.sh install   - Install dependencies only
@@ -77,7 +78,8 @@ find_python() {
 # Clean build directories
 clean() {
     echo "Cleaning build directories..."
-    rm -rf build dist
+    rm -rf build dist release
+    rm -f POKEY_VQ_Tracker_*.zip
     find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
     echo "Done."
 }
@@ -89,7 +91,7 @@ check_deps() {
     
     MISSING=""
     
-    for pkg in dearpygui numpy scipy sounddevice pydub PyInstaller; do
+    for pkg in dearpygui numpy scipy sounddevice soundfile pydub PyInstaller; do
         if $PYTHON -c "import $pkg" 2>/dev/null; then
             echo -e "  ${GREEN}[OK]${NC} $pkg"
         else
@@ -134,13 +136,22 @@ check_deps() {
     fi
     
     echo ""
+    echo "Checking samples..."
+    if [ -d "samples" ]; then
+        SAMPLE_COUNT=$(ls -1 samples/*.wav samples/*.mp3 2>/dev/null | wc -l)
+        echo -e "  ${GREEN}[OK]${NC} samples/ directory found ($SAMPLE_COUNT files)"
+    else
+        echo -e "  ${YELLOW}[?]${NC} samples/ directory not found (optional)"
+    fi
+    
+    echo ""
     if [ -n "$MISSING" ]; then
         echo "============================================================"
         echo -e "  ${RED}Missing components:${NC}$MISSING"
         echo "============================================================"
         echo ""
         echo "To install Python packages:"
-        echo "  pip install dearpygui numpy scipy sounddevice pydub pyinstaller"
+        echo "  pip install dearpygui numpy scipy sounddevice pydub soundfile pyinstaller"
         echo ""
         return 1
     fi
@@ -156,16 +167,16 @@ install_deps() {
     echo ""
     echo "Installing dependencies..."
     $PYTHON -m pip install --upgrade pip
-    $PYTHON -m pip install dearpygui numpy scipy sounddevice pydub pyinstaller
+    $PYTHON -m pip install dearpygui numpy scipy sounddevice pydub soundfile pyinstaller
     echo ""
     echo "Dependencies installed."
 }
 
-# Build executable
+# Build executable only
 build() {
     echo ""
     echo "Installing/updating dependencies..."
-    $PYTHON -m pip install --quiet --upgrade dearpygui numpy scipy sounddevice pydub pyinstaller
+    $PYTHON -m pip install --quiet --upgrade dearpygui numpy scipy sounddevice pydub soundfile pyinstaller
     
     echo ""
     echo "Building standalone executable..."
@@ -192,6 +203,24 @@ build() {
     fi
     
     echo ""
+    echo "  To create a complete distribution folder, run:"
+    echo "    ./build.sh dist"
+    echo ""
+}
+
+# Build and create distribution
+build_dist() {
+    echo ""
+    echo "Installing/updating dependencies..."
+    $PYTHON -m pip install --quiet --upgrade dearpygui numpy scipy sounddevice pydub soundfile pyinstaller
+    
+    echo ""
+    echo "Building and creating distribution..."
+    echo ""
+    
+    $PYTHON build_release.py --dist
+    
+    echo ""
 }
 
 # Main
@@ -208,6 +237,15 @@ case "${1:-build}" in
     install)
         install_deps
         ;;
+    dist)
+        if check_deps; then
+            build_dist
+        else
+            echo ""
+            echo "Please fix the issues above before building."
+            exit 1
+        fi
+        ;;
     build|"")
         if check_deps; then
             build
@@ -218,12 +256,13 @@ case "${1:-build}" in
         fi
         ;;
     *)
-        echo "Usage: $0 [clean|check|install|build]"
+        echo "Usage: $0 [clean|check|install|build|dist]"
         echo ""
         echo "  clean   - Remove build directories"
         echo "  check   - Check dependencies only"
         echo "  install - Install Python dependencies"
         echo "  build   - Build standalone executable (default)"
+        echo "  dist    - Build AND create complete distribution folder"
         exit 1
         ;;
 esac

@@ -194,6 +194,8 @@ class VQEncoder(Encoder):
             vec = codebook_entries[idx]
             full_vectors.extend(vec)
             
+        full_vectors = np.array(full_vectors)
+            
         # Single Channel Mode: No hardware glitch simulation needed (single channel is stable).
         # We just output the stepped waveform.
         if self.channels == 1:

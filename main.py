@@ -10,6 +10,7 @@ import sys
 import os
 import logging
 import platform
+import shutil
 
 # =============================================================================
 # EARLY LOGGING SETUP (before any imports that might fail)
@@ -116,12 +117,29 @@ def check_dependencies():
             logger.info(f"  [--] MADS assembler: not found in {bin_dir}")
             logger.info(f"       (BUILD will not work without MADS)")
         
-        # Check for vq_converter folder
-        vq_path = os.path.join(runtime.get_app_dir(), "vq_converter", "pokey_vq")
-        if os.path.isdir(vq_path):
-            logger.info(f"  [OK] vq_converter: found")
+        # Check for pokey_vq (VQ conversion)
+        # Import is already attempted in vq_convert.py at module load time
+        from vq_convert import get_pokey_vq_status
+        vq_available, vq_error = get_pokey_vq_status()
+        
+        if vq_available:
+            logger.info(f"  [OK] pokey_vq: direct import available (bundled)")
         else:
-            logger.info(f"  [--] vq_converter: not found (CONVERT will not work)")
+            # Check for subprocess fallback
+            vq_base = os.path.join(runtime.get_app_dir(), "vq_converter")
+            vq_path = os.path.join(vq_base, "pokey_vq")
+            
+            if os.path.isdir(vq_path):
+                python_found = shutil.which("python3") or shutil.which("python")
+                if python_found:
+                    logger.info(f"  [OK] vq_converter: subprocess mode (Python: {python_found})")
+                    logger.info(f"       Note: Requires numpy, scipy, soundfile")
+                else:
+                    logger.info(f"  [!!] vq_converter: folder found but no Python!")
+                    logger.info(f"       Import error: {vq_error}")
+            else:
+                logger.info(f"  [--] pokey_vq: not available")
+                logger.info(f"       Import error: {vq_error}")
         
         # Check for FFmpeg (needed for MP3/OGG/FLAC import)
         if platform.system() == "Windows":
