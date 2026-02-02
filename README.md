@@ -1,281 +1,129 @@
-# POKEY VQ Tracker - Beta 1
+# POKEY VQ Tracker
 
-An experimental cross-platform music tracker for composing sample-based music targeting Atari XL/XE 8-bit computers.
+A cross-platform music tracker for composing **sample-based music** targeting **Atari XL/XE 8-bit computers**. Create chiptunes using real audio samples compressed with Vector Quantization (VQ) technology.
+
+![POKEY VQ Tracker](screenshots/tracker.png)
 
 ## Features
 
 - **3-channel polyphonic playback** using VQ-compressed samples
-- **3 octaves** (C-1 to B-3) with pitch control
+- **3 octaves** (C-1 to B-3) with pitch control via 8.8 fixed-point multipliers
 - **Pattern-based sequencing** with variable-length event encoding
-- **Real-time audio preview** matching Atari output
-- **Export to Atari executable** (.xex) via MADS assembler
-- **ZIP-based project format** with embedded samples and VQ output
-- **Multi-format audio import** (WAV, MP3, OGG, FLAC, M4A, etc.)
+- **Real-time audio preview** that closely matches Atari hardware output
+- **Export to Atari executable** (.XEX) via MADS assembler
+- **Self-contained project format** (.pvq) with embedded samples
+- **Multi-format audio import** — WAV, MP3, OGG, FLAC, M4A, and more
 - **Timing analysis** to verify IRQ cycle budget before export
-- **Optional volume control** (requires lower sample rate)
-
-## Workflow
-
-The recommended workflow for creating Atari music:
-
-1. **Load Samples** - Add WAV/MP3/OGG files as instruments
-2. **CONVERT** - Process samples through VQ compression
-3. **Write Song** - Compose using patterns and the song editor
-4. **ANALYZE** - Check IRQ timing feasibility
-5. **BUILD** - Create Atari executable (.XEX)
-
-Press **F4** in the tracker to see keyboard shortcuts including this workflow.
-
-## Requirements
-
-- Python 3.8+
-- DearPyGui (`pip install dearpygui`)
-- NumPy (`pip install numpy`)
-- SoundDevice (`pip install sounddevice`)
-- pydub (`pip install pydub`) - for multi-format audio (requires ffmpeg)
-- MADS assembler (for building Atari executables)
-- VQ Converter (for sample compression)
+- **Optional per-note volume control** (at lower sample rates)
 
 ## Quick Start
 
-1. Run the tracker: `python main.py`
-2. Load audio samples (WAV, MP3, OGG, etc.) as instruments
-3. Compose music using piano keyboard (Z-M, Q-P keys)
-4. Convert samples: Song → VQ Convert
-5. Build executable: Song → Build XEX
+### Download
 
-## Building Standalone Executable
+Get the latest release from the [Releases](https://github.com/ilmenit/vq-tracker/releases) page.
 
-To create a single executable file (no Python installation required):
+### Workflow
 
-### Windows
-```batch
-# Using Command Prompt
-build.bat
+1. **Load samples** — Add WAV/MP3 files as instruments
+2. **Convert** — Process samples through VQ compression
+3. **Compose** — Write music using patterns and the song editor
+4. **Analyze** — Check IRQ timing feasibility
+5. **Build** — Export to Atari executable (.XEX)
 
-# Using PowerShell
-.\build.ps1
-
-# Check dependencies only
-build.bat check
-.\build.ps1 -Check
-```
-
-### Linux / macOS
-```bash
-# Make script executable (first time only)
-chmod +x build.sh
-
-# Build
-./build.sh
-
-# Check dependencies only
-./build.sh check
-```
-
-### Requirements for Building
-
-1. **Python 3.8+** with pip
-2. **PyInstaller** (installed automatically by build script)
-3. **MADS assembler** in the appropriate `bin/` subdirectory:
-   - Windows: `bin/windows_x86_64/mads.exe`
-   - Linux: `bin/linux_x86_64/mads`
-   - macOS Intel: `bin/macos_x86_64/mads`
-   - macOS Apple Silicon: `bin/macos_aarch64/mads`
-
-Download MADS from: http://mads.atari8.info/
-
-### Output
-
-The built executable will be in `dist/`:
-- Windows: `dist/POKEY_VQ_Tracker.exe`
-- Linux: `dist/POKEY_VQ_Tracker`
-- macOS: `dist/POKEY VQ Tracker.app`
-
-### Distribution Structure
-
-To distribute the standalone executable, create a folder with:
-
-```
-my_tracker/
-├── POKEY_VQ_Tracker       # The executable (or .exe on Windows)
-├── asm/                   # ASM player templates (required for BUILD)
-│   ├── song_player.asm
-│   ├── common/
-│   ├── tracker/
-│   └── pitch/
-├── bin/                   # MADS assembler (required for BUILD)
-│   ├── linux_x86_64/mads
-│   ├── macos_aarch64/mads
-│   ├── macos_x86_64/mads
-│   └── windows_x86_64/mads.exe
-├── vq_converter/          # VQ converter (required for CONVERT)
-│   └── pokey_vq/
-├── README.md              # Optional documentation
-└── UserGuide.md           # Optional documentation
-```
-
-The executable looks for `asm/`, `bin/`, and `vq_converter/` in the same directory.
-
-## File Browser
-
-The custom file browser supports:
-- **Multi-select** with checkboxes
-- **Audio preview** - click Play to hear samples before adding
-- **Sorting** by name, size, or date
-- **Folder mode** - select folders to import all audio files inside
-
-## Project Format (.pvq)
-
-Projects are saved as ZIP archives containing:
-
-```
-project.pvq (ZIP archive)
-├── project.json      # Song data, editor state, VQ settings
-├── samples/          # Embedded audio files (WAV)
-│   ├── 00_piano.wav
-│   └── 01_bass.wav
-├── vq_output/        # VQ conversion output (if converted)
-│   ├── VQ_CFG.asm
-│   ├── VQ_BLOB.asm
-│   └── ...
-└── metadata.json     # Format version, timestamps
-```
-
-**Benefits:**
-- Self-contained - share projects with all samples included
-- Editor state preserved - resume exactly where you left off
-- VQ output included - BUILD immediately after loading
-- Multi-format support - import MP3/OGG, stored as WAV
+Press **F4** in the tracker to see all keyboard shortcuts.
 
 ## Keyboard Controls
 
-### Note Entry (Pattern Editor)
-- **Z-M row**: C-B (base octave)
-- **S,D,G,H,J**: Sharp notes (C#,D#,F#,G#,A#)
-- **Q-P row**: C-E (octave+1)
-- **2,3,5,6,7,9,0**: Sharp notes (piano mode)
-- **` (backtick)**: Note OFF (silence channel)
-- **1**: Note OFF (tracker mode only)
-
-### Keyboard Modes (Settings)
-- **Piano mode** (default): Number keys play sharp notes
-- **Tracker mode**: 1=Note OFF, 2-3=Select octave
-
-### Octave Selection
-- **F1/F2/F3**: Select octave 1/2/3 (always available)
-- **\* (numpad)**: Octave up
-- **- (minus)**: Octave down
+### Note Entry
+| Keys | Function |
+|------|----------|
+| Z X C V B N M | Notes C D E F G A B (base octave) |
+| S D G H J | Sharp notes C# D# F# G# A# |
+| Q W E R T Y U I O P | Notes C-E (octave+1) |
+| ` (backtick) | Note OFF |
+| F1 / F2 / F3 | Select octave 1 / 2 / 3 |
+| [ / ] | Previous / next instrument |
 
 ### Navigation
-- **Arrow keys**: Move cursor
-- **Ctrl+Up/Down**: Jump by Step rows
-- **Ctrl+Shift+Up/Down**: Increase/decrease Edit Step
-- **Tab/Shift+Tab**: Switch channels
-- **Page Up/Down**: Jump 16 rows
-- **Home/End**: First/last row
-- **Ctrl+Home/End**: First/last songline
-
-### Editing
-- **Delete**: Remove row (shift remaining rows up)
-- **Insert**: Insert empty row (shift remaining rows down)
-- **Backspace**: Clear cell and jump up by Step
-- **[ / ]**: Previous/next instrument
+| Keys | Function |
+|------|----------|
+| Arrow keys | Move cursor |
+| Tab / Shift+Tab | Switch channels |
+| Page Up / Down | Jump 16 rows |
+| Home / End | First / last row |
 
 ### Playback
-- **Space**: Play/Stop
-- **Enter**: Preview current row
-- **F4**: Show keyboard shortcuts
-- **F5**: Play pattern
-- **F6**: Play song from start
-- **F7**: Play from current songline
-- **F8**: Stop
+| Keys | Function |
+|------|----------|
+| Space | Play / Stop |
+| Enter | Preview current row |
+| F5 | Play pattern |
+| F6 | Play song from start |
+| F8 | Stop |
 
-## Pitch System
+## Timing & Performance
 
-The tracker uses 8.8 fixed-point pitch multipliers:
+The Atari CPU runs at 1.77 MHz (PAL). The tracker includes timing analysis to ensure your music plays correctly.
 
-| Note | Pitch Index | Multiplier |
-|------|-------------|------------|
-| C-1  | 0           | 1.0x       |
-| C-2  | 12          | 2.0x       |
-| C-3  | 24          | 4.0x       |
+| Sample Rate | Cycles/IRQ | Speed Mode | Size Mode |
+|-------------|------------|------------|-----------|
+| 7917 Hz     | ~224       | OK         | Over      |
+| 5278 Hz     | ~336       | Safe       | OK        |
+| 3958 Hz     | ~448       | Safe       | Safe      |
 
-Samples should be recorded/prepared for playback at C-1 (1.0x speed).
+Use **ANALYZE** before BUILD to check for timing issues.
 
-## Timing Analysis
+## Project Format
 
-The **ANALYZE** button simulates Atari IRQ timing to detect potential playback issues before building. It reports:
+Projects are saved as `.pvq` files (ZIP archives) containing song data, embedded samples, and VQ conversion output. Projects are self-contained and can be shared with all assets included.
 
-- **Cycles per IRQ** based on sample rate
-- **Per-row analysis** showing active channels and their cycle costs
-- **Problem rows** that exceed the cycle budget
-- **Recommendations** for fixing timing issues
+## Building from Source
 
-### Optimization Modes
+### Requirements
 
-The **Optimize** setting controls CPU usage vs memory trade-off:
+- Python 3.8+
+- MADS assembler ([download](http://mads.atari8.info/))
 
-| Mode | Cycles/Channel | Codebook | Max Rate (3ch) |
-|------|----------------|----------|----------------|
-| **Speed** | ~58 | 4KB | 7917 Hz |
-| **Size** | ~83 | 2KB | 5278 Hz |
+### Install Dependencies
 
-**Speed mode** (default) uses full bytes with pre-baked POKEY bits, enabling faster sample rates. **Size mode** uses nibble-packed data for compact memory but limits maximum sample rate.
-
-### Cycle Budget
-
-The Atari CPU runs at 1.77 MHz (PAL). Each IRQ has limited cycles:
-
-| Sample Rate | Available Cycles | Speed Mode | Size Mode |
-|-------------|------------------|------------|-----------|
-| 15834 Hz    | ~112             | ❌ Over    | ❌ Over   |
-| 7917 Hz     | ~224             | ✅ OK      | ❌ Over   |
-| 5278 Hz     | ~336             | ✅✅ Easy  | ✅ OK     |
-| 3958 Hz     | ~448             | ✅✅ Easy  | ✅✅ Easy |
-
-## Volume Control
-
-Enable **Volume** checkbox in SONG INFO to include per-note volume in export.
-
-**Requirements:**
-- Sample rate ≤5757 Hz (adds ~10 cycles per active channel)
-- Use ANALYZE to verify timing with volume enabled
-
-When disabled, the volume column is hidden (data preserved). This saves cycles and allows higher sample rates.
-
-## Working Directory
-
-The tracker uses a `.tmp/` folder in the application directory:
-
-```
-.tmp/
-├── tracker.lock      # Single-instance lock
-├── samples/          # Imported/extracted samples
-├── vq_output/        # VQ conversion results
-└── build/            # Build artifacts
+```bash
+pip install dearpygui numpy scipy sounddevice pydub soundfile pyinstaller
 ```
 
-**Note:** Only one instance can run at a time to prevent conflicts.
+### Run from Source
 
-## Project Structure
+```bash
+python main.py
+```
 
+### Build Standalone Executable
+
+```bash
+# Linux / macOS
+./build.sh dist
+
+# Windows
+build.bat dist
 ```
-tracker_v3/
-├── main.py           # Application entry point
-├── data_model.py     # Song, Pattern, Instrument classes
-├── audio_engine.py   # Real-time audio playback
-├── file_io.py        # ZIP project format, audio import
-├── build.py          # XEX build system
-├── constants.py      # Configuration constants
-├── asm/              # 6502 assembly sources
-│   ├── song_player.asm
-│   ├── tracker/      # IRQ handler and API
-│   ├── pitch/        # Pitch tables
-│   └── common/       # Shared includes
-└── EXPORT_FORMAT.md  # Binary format documentation
-```
+
+The distribution package will be created in `release/` with everything needed to run.
+
+## VQ Converter
+
+The tracker includes a bundled VQ converter for sample compression. For standalone batch processing or advanced options, see the separate project:
+
+**[8bit-sound-compress](https://github.com/ilmenit/8bit-sound-compress)** — Vector Quantization audio compression for 8-bit systems
+
+![VQ Converter GUI](screenshots/converter.png)
+
+The standalone converter offers batch processing, advanced compression parameters, quality metrics, and a command-line interface.
+
+## Documentation
+
+- [User Guide](UserGuide.md) — Comprehensive documentation
+- [Export Format](EXPORT_FORMAT.md) — Technical specification for the binary format
+- [Changelog](CHANGELOG.md) — Version history
 
 ## License
 
-MIT License
+MIT License — see [LICENSE](LICENSE) for details.
