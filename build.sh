@@ -140,7 +140,7 @@ check_deps() {
         echo "============================================================"
         echo ""
         echo "To install Python packages:"
-        echo "  pip install dearpygui numpy scipy sounddevice pydub pyinstaller"
+        echo "  pip install dearpygui numpy scipy sounddevice pydub soundfile pyinstaller"
         echo ""
         return 1
     fi
@@ -156,7 +156,7 @@ install_deps() {
     echo ""
     echo "Installing dependencies..."
     $PYTHON -m pip install --upgrade pip
-    $PYTHON -m pip install dearpygui numpy scipy sounddevice pydub pyinstaller
+    $PYTHON -m pip install dearpygui numpy scipy sounddevice pydub soundfile pyinstaller
     echo ""
     echo "Dependencies installed."
 }
@@ -165,7 +165,7 @@ install_deps() {
 build() {
     echo ""
     echo "Installing/updating dependencies..."
-    $PYTHON -m pip install --quiet --upgrade dearpygui numpy scipy sounddevice pydub pyinstaller
+    $PYTHON -m pip install --quiet --upgrade dearpygui numpy scipy sounddevice pydub soundfile pyinstaller
     
     echo ""
     echo "Building standalone executable..."

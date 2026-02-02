@@ -85,7 +85,7 @@ function Check-Dependencies {
     Write-Header "Checking required packages..."
     
     $missing = @()
-    $packages = @("dearpygui", "numpy", "scipy", "sounddevice", "pydub", "PyInstaller")
+    $packages = @("dearpygui", "numpy", "scipy", "sounddevice", "pydub", "soundfile", "PyInstaller")
     
     foreach ($pkg in $packages) {
         # Suppress stderr warnings (e.g., pydub's ffmpeg warning)
@@ -160,7 +160,7 @@ function Check-Dependencies {
         Write-Host "============================================================" -ForegroundColor Red
         Write-Host ""
         Write-Host "To install Python packages:"
-        Write-Host "  pip install dearpygui numpy scipy sounddevice pydub pyinstaller"
+        Write-Host "  pip install dearpygui numpy scipy sounddevice pydub soundfile pyinstaller"
         Write-Host ""
         return $false
     }
@@ -175,7 +175,7 @@ function Check-Dependencies {
 function Install-Dependencies {
     Write-Header "Installing dependencies..."
     python -m pip install --upgrade pip
-    python -m pip install dearpygui numpy scipy sounddevice pydub pyinstaller
+    python -m pip install dearpygui numpy scipy sounddevice pydub soundfile pyinstaller
     Write-Host ""
     Write-Host "Dependencies installed."
 }
@@ -183,7 +183,7 @@ function Install-Dependencies {
 # Build
 function Build-App {
     Write-Header "Installing/updating dependencies..."
-    python -m pip install --quiet --upgrade dearpygui numpy scipy sounddevice pydub pyinstaller
+    python -m pip install --quiet --upgrade dearpygui numpy scipy sounddevice pydub soundfile pyinstaller
     
     Write-Header "Building standalone executable..."
     Write-Host ""

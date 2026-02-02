@@ -3,28 +3,25 @@
 PyInstaller spec file for POKEY VQ Tracker
 
 Build commands:
-  Windows:  pyinstaller tracker.spec
-  macOS:    pyinstaller tracker.spec  
-  Linux:    pyinstaller tracker.spec
+  Windows:  pyinstaller tracker.spec --clean
+  macOS:    pyinstaller tracker.spec --clean
+  Linux:    pyinstaller tracker.spec --clean
 
 The resulting executable will be in dist/ directory.
 
 Requirements before building:
   1. Install PyInstaller: pip install pyinstaller
-  2. Install all dependencies: pip install dearpygui numpy scipy sounddevice pydub
-  3. Install pokey_vq: pip install pokey_vq (or install from source)
-  4. Ensure bin/ folder contains MADS for target platform(s)
+  2. Install dependencies: pip install dearpygui numpy scipy sounddevice pydub soundfile
+  3. Place vq_converter folder alongside this spec file
+  4. Place bin/ folder with MADS for target platform(s)
 
 Directory structure expected:
   tracker_v3/
   ├── main.py
-  ├── asm/           <- Assembly templates (included as data)
-  ├── bin/           <- MADS executables (included as data)
-  │   ├── linux_x86_64/mads
-  │   ├── macos_aarch64/mads
-  │   ├── macos_x86_64/mads
+  ├── asm/           <- Assembly templates (alongside exe, not bundled)
+  ├── bin/           <- MADS executables (alongside exe, not bundled)
   │   └── windows_x86_64/mads.exe
-  └── vq_converter/  <- Optional, if not using pip-installed pokey_vq
+  └── vq_converter/  <- VQ conversion (bundled as Python package)
       └── pokey_vq/
 """
 
@@ -33,11 +30,9 @@ import sys
 import platform
 
 # SPECPATH is provided by PyInstaller - it's the directory containing the spec file
-# Note: __file__ is NOT defined in spec files, use SPECPATH instead
 try:
     spec_dir = SPECPATH
 except NameError:
-    # Fallback for running outside PyInstaller (shouldn't happen normally)
     spec_dir = os.getcwd()
 
 # Import version info
@@ -48,42 +43,29 @@ from version import VERSION, VERSION_DISPLAY, APP_NAME
 system = platform.system()
 if system == 'Windows':
     exe_name = 'POKEY_VQ_Tracker.exe'
-    icon_file = None  # Add icon path if available: 'resources/icon.ico'
-    console = True    # Keep console visible for debug output
+    icon_file = None
+    console = True
 elif system == 'Darwin':
     exe_name = 'POKEY_VQ_Tracker'
-    icon_file = None  # Add icon path if available: 'resources/icon.icns'
-    console = True    # Keep console visible for debug output
+    icon_file = None
+    console = True
 else:
     exe_name = 'POKEY_VQ_Tracker'
     icon_file = None
-    console = True    # Keep console visible for debug output
+    console = True
 
 # Collect data files
 datas = []
 
-# NOTE: asm/ is NOT bundled - it should be distributed alongside the executable
-# This allows users to modify the player ASM files easily.
-# asm_path = os.path.join(spec_dir, 'asm')
-# if os.path.isdir(asm_path):
-#     datas.append((asm_path, 'asm'))
+# Bundle vq_converter as a Python package (so it can be imported directly)
+vq_path = os.path.join(spec_dir, 'vq_converter')
+if os.path.isdir(vq_path):
+    # Add as data so the package structure is preserved
+    datas.append((vq_path, 'vq_converter'))
+    print(f"Bundling vq_converter from: {vq_path}")
 
-# NOTE: bin/ is NOT bundled - it should be distributed alongside the executable
-# This allows users to provide their own MADS binary and keeps the bundle smaller.
-# bin_path = os.path.join(spec_dir, 'bin')
-# if os.path.isdir(bin_path):
-#     datas.append((bin_path, 'bin'))
-
-# NOTE: vq_converter is NOT bundled - it should be distributed alongside the executable
-# The converter uses system Python to run, so bundling it doesn't help.
-# vq_path = os.path.join(spec_dir, 'vq_converter')
-# if os.path.isdir(vq_path):
-#     datas.append((vq_path, 'vq_converter'))
-
-# NOTE: tracker_config.json is NOT bundled - user creates their own config
-# config_path = os.path.join(spec_dir, 'tracker_config.json')
-# if os.path.isfile(config_path):
-#     datas.append((config_path, '.'))
+# NOTE: asm/ and bin/ are NOT bundled - they should be distributed alongside the executable
+# This allows users to modify ASM files and keeps the bundle smaller
 
 # Hidden imports for modules that PyInstaller might miss
 hiddenimports = [
@@ -93,12 +75,24 @@ hiddenimports = [
     'scipy.io.wavfile',
     'scipy.signal',
     'sounddevice',
+    'soundfile',  # Required by vq_converter
     'pydub',
     'dearpygui',
     'dearpygui.dearpygui',
-    # Note: pokey_vq is NOT included here because we use the local vq_converter
-    # folder which runs as a subprocess, not as an imported Python module
-    # Standard library modules that might be lazy-loaded
+    # pokey_vq submodules (bundled via vq_converter folder)
+    'pokey_vq',
+    'pokey_vq.cli',
+    'pokey_vq.cli.builder',
+    'pokey_vq.cli.helpers',
+    'pokey_vq.encoders',
+    'pokey_vq.encoders.vq',
+    'pokey_vq.encoders.raw',
+    'pokey_vq.utils',
+    'pokey_vq.utils.quality',
+    'pokey_vq.utils.mads_exporter',
+    'pokey_vq.core',
+    'pokey_vq.core.pokey_table',
+    # Standard library modules
     'queue',
     'threading',
     'json',
@@ -107,6 +101,8 @@ hiddenimports = [
     'tempfile',
     'logging',
     'dataclasses',
+    'io',
+    'contextlib',
 ]
 
 # Exclude unnecessary modules to reduce size
@@ -122,9 +118,14 @@ excludes = [
     'pydoc',
 ]
 
+# Add vq_converter to analysis paths so it can be found
+pathex = []
+if os.path.isdir(vq_path):
+    pathex.append(vq_path)
+
 a = Analysis(
     ['main.py'],
-    pathex=[],
+    pathex=pathex,
     binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,
@@ -133,7 +134,7 @@ a = Analysis(
     runtime_hooks=[],
     excludes=excludes,
     noarchive=False,
-    optimize=1,  # Basic optimization
+    optimize=1,
 )
 
 # Filter out unnecessary data files to reduce size
@@ -163,8 +164,8 @@ exe = EXE(
     name=exe_name,
     debug=False,
     bootloader_ignore_signals=False,
-    strip=False,  # Set to True for smaller size (removes debug symbols)
-    upx=True,     # Use UPX compression if available
+    strip=False,
+    upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=console,

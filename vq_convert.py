@@ -1,15 +1,21 @@
 """POKEY VQ Tracker - VQ Conversion Module
 
-Handles conversion of instruments to VQ format using pokey_vq subprocess.
+Handles conversion of instruments to VQ format.
+
+Supports two modes:
+1. Direct import (bundled or pip-installed pokey_vq)
+2. Subprocess fallback (external vq_converter folder)
 """
 import os
 import sys
 import json
 import shutil
-import tempfile
 import subprocess
 import threading
 import queue
+import logging
+import io
+from contextlib import redirect_stdout, redirect_stderr
 from typing import Optional, List, Dict, Callable
 from dataclasses import dataclass, field
 
@@ -19,6 +25,61 @@ from constants import (VQ_RATE_DEFAULT, VQ_VECTOR_DEFAULT, VQ_SMOOTHNESS_DEFAULT
 
 # Valid vector sizes (must be powers of 2 for ASM optimization)
 VALID_VECTOR_SIZES = {2, 4, 8, 16}
+
+# Check if pokey_vq can be imported directly
+POKEY_VQ_AVAILABLE = False
+_import_error = None
+
+def _try_import_pokey_vq():
+    """Try to import pokey_vq and return availability status."""
+    global POKEY_VQ_AVAILABLE, _import_error
+    try:
+        # First, try to add vq_converter to path if it exists
+        vq_paths = [
+            os.path.join(runtime.get_app_dir(), "vq_converter"),
+            os.path.join(os.path.dirname(__file__), "vq_converter"),
+        ]
+        for vq_path in vq_paths:
+            if os.path.isdir(vq_path) and vq_path not in sys.path:
+                sys.path.insert(0, vq_path)
+        
+        # Now try to import
+        from pokey_vq.cli.builder import PokeyVQBuilder
+        POKEY_VQ_AVAILABLE = True
+        return True
+    except ImportError as e:
+        _import_error = str(e)
+        POKEY_VQ_AVAILABLE = False
+        return False
+
+# Try import at module load time
+_try_import_pokey_vq()
+
+
+@dataclass
+class VQArgs:
+    """Arguments object mimicking argparse for PokeyVQBuilder."""
+    input: List[str] = field(default_factory=list)
+    input_folder: List[str] = field(default_factory=list)
+    output: str = ""
+    player: str = "vq_multi_channel"
+    rate: int = 5278
+    channels: int = 1
+    optimize: str = "speed"  # 'speed' or 'size'
+    no_player: bool = False
+    quality: float = 50.0
+    smoothness: float = 50.0
+    codebook: int = 256
+    iterations: int = 50
+    min_vector: int = 8
+    max_vector: int = 8
+    lbg: bool = False
+    voltage: str = "off"
+    enhance: str = "on"
+    # Set by builder
+    algo: str = "fixed"
+    tracker: bool = True
+    pitch: bool = False
 
 
 @dataclass
@@ -50,16 +111,14 @@ class VQSettings:
 class VQResult:
     """Result of VQ conversion."""
     success: bool = False
-    error_message: str = ""
+    output_dir: Optional[str] = None
     total_size: int = 0
     converted_wavs: List[str] = field(default_factory=list)
-    asm_files: List[str] = field(default_factory=list)
-    json_path: str = ""
-    output_dir: str = ""
+    error_message: str = ""
 
 
 class VQState:
-    """Manages VQ conversion state."""
+    """State manager for VQ conversion."""
     
     def __init__(self):
         self.settings = VQSettings()
@@ -140,118 +199,51 @@ class VQState:
 
 
 class VQConverter:
-    """Handles VQ conversion subprocess."""
+    """Handles VQ conversion using pokey_vq.
+    
+    Supports two modes:
+    1. Direct import (if pokey_vq is available as Python module)
+    2. Subprocess fallback (external Python or vq_converter.exe)
+    """
     
     def __init__(self, vq_state: VQState):
         self.vq_state = vq_state
-        self._vq_converter_path = None  # Set by build_command in bundled mode
-        import logging
-        self.logger = logging.getLogger(__name__)
+        self.logger = logging.getLogger("tracker.vq_convert")
+        self._vq_converter_path = None
     
     def find_vq_converter(self) -> Optional[str]:
-        """Find vq_converter folder path."""
-        # In bundled mode, check both bundle dir and app dir
-        bundle_dir = runtime.get_bundle_dir()
-        app_dir = runtime.get_app_dir()
+        """Find the vq_converter folder path."""
+        # Get application directory (different in bundled vs dev mode)
+        if runtime.is_bundled():
+            bundle_dir = runtime.get_bundle_dir()
+            app_dir = runtime.get_app_dir()
+            candidates = [
+                os.path.join(bundle_dir, "vq_converter"),  # Inside bundle
+                os.path.join(app_dir, "vq_converter"),     # Alongside exe
+            ]
+        else:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            candidates = [
+                os.path.join(script_dir, "vq_converter"),
+                os.path.join(os.path.dirname(script_dir), "vq_converter"),
+            ]
         
-        self.logger.debug(f"find_vq_converter: bundle_dir={bundle_dir}, app_dir={app_dir}")
-        
-        candidates = [
-            # Bundled inside the app
-            os.path.join(bundle_dir, "vq_converter"),
-            # Same directory as executable/script
-            os.path.join(app_dir, "vq_converter"),
-            # Parent directory  
-            os.path.join(os.path.dirname(app_dir), "vq_converter"),
-            # Sibling directory
-            os.path.normpath(os.path.join(app_dir, "..", "vq_converter")),
-        ]
+        self.logger.debug(f"find_vq_converter: bundle_dir={runtime.get_bundle_dir()}, app_dir={runtime.get_app_dir()}")
         
         for path in candidates:
-            path = os.path.normpath(path)
             self.logger.debug(f"  Checking: {path}")
-            pokey_vq_path = os.path.join(path, "pokey_vq")
-            if os.path.isdir(pokey_vq_path):
-                cli_path = os.path.join(pokey_vq_path, "cli")
-                if os.path.isdir(cli_path):
+            if os.path.isdir(path):
+                # Verify it has pokey_vq module
+                if os.path.isdir(os.path.join(path, "pokey_vq")):
                     self.logger.debug(f"  Found vq_converter at: {path}")
                     return path
         
         self.logger.warning("vq_converter not found in any candidate path")
         return None
     
-    def build_command(self, input_files: List[str], output_name: str) -> List[str]:
-        """Build subprocess command.
-        
-        Args:
-            input_files: List of WAV file paths
-            output_name: Output name/path for the XEX (ASM files go to parent dir)
-        """
-        settings = self.vq_state.settings
-        
-        # Determine optimization mode
-        # speed = full bytes with $10 pre-baked (faster playback, 2x codebook size)
-        # size = nibble-packed (slower playback, compact codebook)
-        optimize_mode = "speed" if settings.optimize_speed else "size"
-        
-        # Build command based on runtime mode
-        if runtime.is_bundled():
-            # When bundled, sys.executable is the tracker itself, NOT Python!
-            # We need to find system Python and run the vq_converter folder
-            vq_converter_path = self.find_vq_converter()
-            if not vq_converter_path:
-                self.logger.error("Cannot find vq_converter folder")
-                return []
-            
-            # Find system Python
-            python_cmd = self._find_system_python()
-            if not python_cmd:
-                self.logger.error("Cannot find system Python")
-                return []
-            
-            # Run the cli module from within vq_converter folder
-            # The vq_converter folder structure is: vq_converter/pokey_vq/cli/
-            cmd = [python_cmd, "-m", "pokey_vq.cli"]
-            # Set PYTHONPATH to include vq_converter folder (done in convert method via env)
-            self._vq_converter_path = vq_converter_path
-        else:
-            # Development mode - use Python module directly
-            cmd = [sys.executable, "-m", "pokey_vq.cli"]
-            self._vq_converter_path = None
-        
-        # Add arguments
-        # NOTE: We do NOT use --no-player because:
-        # 1. VQ converter writes ASM to temp directory
-        # 2. Assembly step copies ASM files to output_subdir
-        # 3. With --no-player, ASM files are lost when temp is cleaned up
-        cmd.extend([
-            *input_files,
-            "-p", "vq_multi_channel",
-            "-r", str(settings.rate),
-            "--channels", "1",  # Required for vq_multi_channel
-            "-miv", str(settings.vector_size),
-            "-mav", str(settings.vector_size),
-            "-q", "50",  # Quality (default but explicit)
-            "-s", str(settings.smoothness),
-            "-e", "on" if settings.enhance else "off",
-            "--optimize", optimize_mode,
-            # Let VQ converter run full assembly - it copies ASM files to output
-            "-o", output_name  # Output name
-        ])
-        return cmd
-    
-    def _find_system_python(self) -> Optional[str]:
-        """Find system Python executable (python3 or python)."""
-        import shutil
-        
-        # Try python3 first, then python
-        for name in ["python3", "python"]:
-            path = shutil.which(name)
-            if path:
-                self.logger.debug(f"Found system Python: {path}")
-                return path
-        
-        return None
+    def _queue_output(self, text: str):
+        """Queue output text for main thread to process."""
+        self.vq_state.output_queue.put(text)
     
     def _generate_output_dirname(self, num_files: int) -> str:
         """Generate output directory name based on settings."""
@@ -269,23 +261,10 @@ class VQConverter:
         
         return "-".join(parts)
     
-    def _queue_output(self, text: str):
-        """Queue output text for main thread to process."""
-        self.vq_state.output_queue.put(text)
-    
     def convert(self, input_files: List[str]):
-        """
-        Start conversion in background thread.
-        
-        Args:
-            input_files: List of WAV file paths to convert
-            
-        Output and completion are handled via VQState queue/flags.
-        Call vq_state.get_pending_output() and vq_state.check_completion()
-        from main thread to process results.
-        """
+        """Start conversion in background thread."""
         self.logger.debug(f"convert: {len(input_files)} files")
-        for f in input_files[:5]:  # Log first 5
+        for f in input_files[:5]:
             self.logger.debug(f"  - {f}")
         if len(input_files) > 5:
             self.logger.debug(f"  ... and {len(input_files) - 5} more")
@@ -319,19 +298,7 @@ class VQConverter:
             self.vq_state.conversion_complete = True
             return
         
-        # Find vq_converter
-        vq_converter_path = self.find_vq_converter()
-        if not vq_converter_path:
-            result = VQResult(
-                success=False,
-                error_message="vq_converter folder not found. Place it alongside the tracker."
-            )
-            self.vq_state.completion_result = result
-            self.vq_state.conversion_complete = True
-            return
-        
         # Create output directory in .tmp folder
-        # Use runtime.get_app_dir() so .tmp is alongside the executable, not in bundle
         app_dir = runtime.get_app_dir()
         output_dirname = self._generate_output_dirname(len(input_files))
         asm_output_dir = os.path.join(app_dir, ".tmp", "vq_output")
@@ -340,91 +307,236 @@ class VQConverter:
         # Ensure output directory exists
         os.makedirs(asm_output_dir, exist_ok=True)
         
-        # Build command with output name (ASM files go to asm_output_dir)
-        cmd = self.build_command(input_files, output_name)
-        
-        # Check if command build failed
-        if not cmd:
-            result = VQResult(
-                success=False,
-                error_message="Cannot build conversion command. System Python not found."
-            )
-            self.vq_state.completion_result = result
-            self.vq_state.conversion_complete = True
-            return
-        
-        self.logger.debug(f"Command: {' '.join(cmd[:10])}...")
+        self.logger.debug(f"Output dir: {asm_output_dir}")
         self.logger.debug(f"Output name: {output_name}")
-        self.logger.debug(f"ASM output dir: {asm_output_dir}")
         
-        # Start conversion in thread
-        thread = threading.Thread(
-            target=self._run_conversion,
-            args=(cmd, vq_converter_path, asm_output_dir, output_name, len(input_files)),
-            daemon=True
-        )
+        # Choose conversion method
+        if POKEY_VQ_AVAILABLE:
+            self.logger.info("Using direct import for VQ conversion")
+            thread = threading.Thread(
+                target=self._run_direct_conversion,
+                args=(input_files, asm_output_dir, output_name),
+                daemon=True
+            )
+        else:
+            self.logger.info(f"Using subprocess for VQ conversion (import error: {_import_error})")
+            thread = threading.Thread(
+                target=self._run_subprocess_conversion,
+                args=(input_files, asm_output_dir, output_name),
+                daemon=True
+            )
+        
         self.vq_state._is_converting = True
         thread.start()
     
-    def _run_conversion(self, cmd: List[str], vq_converter_path: str, 
-                        asm_output_dir: str, output_name: str, num_files: int):
-        """Run conversion subprocess (called in thread).
-        
-        Args:
-            cmd: Command to run
-            vq_converter_path: Path to vq_converter
-            asm_output_dir: Directory where ASM files will be created
-            output_name: Full path for output XEX
-            num_files: Number of input files
-        """
+    def _run_direct_conversion(self, input_files: List[str], asm_output_dir: str, output_name: str):
+        """Run conversion using direct Python import (called in thread)."""
         result = VQResult()
         
         try:
+            from pokey_vq.cli.builder import PokeyVQBuilder
+            
+            settings = self.vq_state.settings
+            
+            self._queue_output(f"Starting conversion of {len(input_files)} file(s)...\n")
+            self._queue_output(f"Mode: Direct import (bundled)\n")
+            self._queue_output(f"Output: {asm_output_dir}\n")
+            self._queue_output(f"Settings: rate={settings.rate}, "
+                               f"vec={settings.vector_size}, "
+                               f"smooth={settings.smoothness}, "
+                               f"enhance={'on' if settings.enhance else 'off'}\n")
+            self._queue_output("-" * 60 + "\n")
+            
+            # Build args object
+            args = VQArgs(
+                input=input_files,
+                output=output_name,
+                player="vq_multi_channel",
+                rate=settings.rate,
+                channels=1,
+                optimize="speed" if settings.optimize_speed else "size",
+                no_player=False,
+                quality=50.0,
+                smoothness=float(settings.smoothness),
+                codebook=256,
+                iterations=50,
+                min_vector=settings.vector_size,
+                max_vector=settings.vector_size,
+                lbg=False,
+                voltage="off",
+                enhance="on" if settings.enhance else "off",
+            )
+            
+            # Capture stdout/stderr
+            output_buffer = io.StringIO()
+            
+            try:
+                with redirect_stdout(output_buffer), redirect_stderr(output_buffer):
+                    builder = PokeyVQBuilder(args)
+                    builder.run()
+            except Exception as e:
+                self._queue_output(f"\nBuilder error: {e}\n")
+                raise
+            finally:
+                # Get captured output
+                captured = output_buffer.getvalue()
+                if captured:
+                    for line in captured.split('\n'):
+                        self._queue_output(line + '\n')
+            
+            # Check for required ASM files
+            required_files = ["VQ_BLOB.asm", "VQ_INDICES.asm", "SAMPLE_DIR.asm"]
+            found_files = [f for f in required_files 
+                          if os.path.exists(os.path.join(asm_output_dir, f))]
+            
+            if len(found_files) >= 2:
+                result.output_dir = asm_output_dir
+                result = self._parse_results(asm_output_dir, result)
+                result.success = True
+                self.vq_state.output_dir = result.output_dir
+                self._queue_output("\n" + "=" * 60 + "\n")
+                self._queue_output(f"SUCCESS: Conversion complete!\n")
+                self._queue_output(f"Output: {result.output_dir}\n")
+                self._queue_output(f"Total size: {result.total_size:,} bytes\n")
+                self._queue_output(f"Converted WAVs: {len(result.converted_wavs)}\n")
+            else:
+                result.success = False
+                result.error_message = f"Missing ASM files in {asm_output_dir}"
+                self._queue_output(f"\nWARNING: {result.error_message}\n")
+                self._queue_output(f"Required: {required_files}\n")
+                self._queue_output(f"Found: {found_files}\n")
+                self._list_directory(asm_output_dir)
+        
+        except Exception as e:
+            result.success = False
+            result.error_message = str(e)
+            self._queue_output(f"\nERROR: {result.error_message}\n")
+            import traceback
+            self._queue_output(traceback.format_exc())
+        
+        finally:
+            self.vq_state._is_converting = False
+            
+            if result.success:
+                self.vq_state.converted = True
+                self.vq_state.result = result
+            
+            self.vq_state.completion_result = result
+            self.vq_state.conversion_complete = True
+    
+    def _run_subprocess_conversion(self, input_files: List[str], asm_output_dir: str, output_name: str):
+        """Run conversion using subprocess (called in thread)."""
+        result = VQResult()
+        
+        try:
+            # Find vq_converter
+            vq_converter_path = self.find_vq_converter()
+            if not vq_converter_path:
+                result.success = False
+                result.error_message = "vq_converter folder not found."
+                self._queue_output(f"ERROR: {result.error_message}\n")
+                self.vq_state.completion_result = result
+                self.vq_state.conversion_complete = True
+                return
+            
+            # Build command
+            cmd = self._build_subprocess_command(input_files, output_name, vq_converter_path)
+            if not cmd:
+                result.success = False
+                result.error_message = ("CONVERT requires vq_converter.exe OR Python with dependencies.\n"
+                                       "Options:\n"
+                                       "1. Place vq_converter.exe in vq_converter\\ folder, OR\n"
+                                       "2. Install Python 3.8+ with: pip install numpy scipy soundfile")
+                self._queue_output(f"ERROR: {result.error_message}\n")
+                self.vq_state.completion_result = result
+                self.vq_state.conversion_complete = True
+                return
+            
+            settings = self.vq_state.settings
+            self._queue_output(f"Starting conversion of {len(input_files)} file(s)...\n")
+            self._queue_output(f"Mode: Subprocess\n")
+            self._queue_output(f"Command: {cmd[0]}\n")
+            self._queue_output(f"Output: {asm_output_dir}\n")
+            self._queue_output(f"Settings: rate={settings.rate}, "
+                               f"vec={settings.vector_size}, "
+                               f"smooth={settings.smoothness}, "
+                               f"enhance={'on' if settings.enhance else 'off'}\n")
+            self._queue_output("-" * 60 + "\n")
+            
             # Set up environment
             env = os.environ.copy()
             env["PYTHONPATH"] = vq_converter_path + os.pathsep + env.get("PYTHONPATH", "")
             
-            self._queue_output(f"Starting conversion of {num_files} file(s)...\n")
-            self._queue_output(f"VQ Converter: {vq_converter_path}\n")
-            self._queue_output(f"Python: {cmd[0] if cmd else 'N/A'}\n")
-            self._queue_output(f"Output: {asm_output_dir}\n")
-            self._queue_output(f"Settings: rate={self.vq_state.settings.rate}, "
-                               f"vec={self.vq_state.settings.vector_size}, "
-                               f"smooth={self.vq_state.settings.smoothness}, "
-                               f"enhance={'on' if self.vq_state.settings.enhance else 'off'}\n")
-            self._queue_output("-" * 60 + "\n")
-            
-            cwd = vq_converter_path
-            
             # Start process
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                env=env,
-                cwd=cwd
-            )
+            startupinfo = None
+            creationflags = 0
+            if sys.platform == 'win32':
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                creationflags = subprocess.CREATE_NO_WINDOW
+            
+            try:
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                    env=env,
+                    cwd=vq_converter_path,
+                    startupinfo=startupinfo,
+                    creationflags=creationflags
+                )
+            except FileNotFoundError as e:
+                self._queue_output(f"\nERROR: Command not found: {cmd[0]}\n")
+                result.success = False
+                result.error_message = f"Command not found: {cmd[0]}"
+                self.vq_state.completion_result = result
+                self.vq_state.conversion_complete = True
+                return
+            
             self.vq_state._process = process
+            self._queue_output(f"Process started (PID: {process.pid})\n")
             
-            # Read output line by line
-            output_lines = []
-            for line in process.stdout:
-                output_lines.append(line)
-                self._queue_output(line)
+            # Read output with timeout handling
+            import time
+            start_time = time.time()
+            TIMEOUT_SECONDS = 300
+            first_line_timeout = 10
+            got_first_line = False
             
-            # Wait for process
-            process.wait()
+            while True:
+                elapsed = time.time() - start_time
+                if elapsed > TIMEOUT_SECONDS:
+                    self._queue_output(f"\nERROR: Conversion timed out after {TIMEOUT_SECONDS}s\n")
+                    process.kill()
+                    break
+                
+                poll_result = process.poll()
+                if poll_result is not None:
+                    remaining = process.stdout.read()
+                    if remaining:
+                        self._queue_output(remaining)
+                    break
+                
+                line = process.stdout.readline()
+                if line:
+                    got_first_line = True
+                    self._queue_output(line)
+                elif not got_first_line and elapsed > first_line_timeout:
+                    self._queue_output(f"\nWARNING: No output after {first_line_timeout}s\n")
+                    self._queue_output("This may indicate missing dependencies.\n")
+                    first_line_timeout = float('inf')
+            
+            if process.poll() is None:
+                process.wait(timeout=5)
             
             if process.returncode == 0:
-                # VQ converter runs full assembly which copies ASM files to output_subdir
-                # Check for required ASM files
                 required_files = ["VQ_BLOB.asm", "VQ_INDICES.asm", "SAMPLE_DIR.asm"]
                 found_files = [f for f in required_files 
                               if os.path.exists(os.path.join(asm_output_dir, f))]
                 
-                if len(found_files) >= 2:  # At least VQ_BLOB and SAMPLE_DIR
+                if len(found_files) >= 2:
                     result.output_dir = asm_output_dir
                     result = self._parse_results(asm_output_dir, result)
                     result.success = True
@@ -433,25 +545,11 @@ class VQConverter:
                     self._queue_output(f"SUCCESS: Conversion complete!\n")
                     self._queue_output(f"Output: {result.output_dir}\n")
                     self._queue_output(f"Total size: {result.total_size:,} bytes\n")
-                    self._queue_output(f"Converted WAVs: {len(result.converted_wavs)}\n")
                 else:
                     result.success = False
-                    result.error_message = f"Missing ASM files in {asm_output_dir}"
+                    result.error_message = f"Missing ASM files"
                     self._queue_output(f"\nWARNING: {result.error_message}\n")
-                    self._queue_output(f"Required: {required_files}\n")
-                    self._queue_output(f"Found: {found_files}\n")
-                    
-                    # List what's in the output dir for debugging
-                    self._queue_output(f"\nContents of {asm_output_dir}:\n")
-                    try:
-                        for item in os.listdir(asm_output_dir):
-                            item_path = os.path.join(asm_output_dir, item)
-                            if os.path.isdir(item_path):
-                                self._queue_output(f"  [DIR] {item}/\n")
-                            else:
-                                self._queue_output(f"  {item}\n")
-                    except:
-                        pass
+                    self._list_directory(asm_output_dir)
             else:
                 result.success = False
                 result.error_message = f"Process exited with code {process.returncode}"
@@ -472,65 +570,121 @@ class VQConverter:
                 self.vq_state.converted = True
                 self.vq_state.result = result
             
-            # Signal completion (main thread will pick this up)
             self.vq_state.completion_result = result
             self.vq_state.conversion_complete = True
     
+    def _build_subprocess_command(self, input_files: List[str], output_name: str, 
+                                   vq_converter_path: str) -> List[str]:
+        """Build subprocess command for vq_converter."""
+        settings = self.vq_state.settings
+        optimize_mode = "speed" if settings.optimize_speed else "size"
+        
+        # Check for standalone executable first
+        if sys.platform == 'win32':
+            exe_path = os.path.join(vq_converter_path, "vq_converter.exe")
+            if os.path.isfile(exe_path):
+                cmd = [exe_path]
+                self.logger.info(f"Using standalone: {exe_path}")
+            else:
+                # Fall back to Python
+                python_cmd = self._find_system_python()
+                if not python_cmd:
+                    return []
+                cmd = [python_cmd, "-m", "pokey_vq.cli"]
+        else:
+            # Linux/macOS - check for executable
+            exe_found = False
+            for exe_name in ["vq_converter", "vq_converter.bin"]:
+                exe_path = os.path.join(vq_converter_path, exe_name)
+                if os.path.isfile(exe_path) and os.access(exe_path, os.X_OK):
+                    cmd = [exe_path]
+                    exe_found = True
+                    break
+            
+            if not exe_found:
+                python_cmd = self._find_system_python()
+                if not python_cmd:
+                    return []
+                cmd = [python_cmd, "-m", "pokey_vq.cli"]
+        
+        # Add arguments
+        cmd.extend([
+            *input_files,
+            "-p", "vq_multi_channel",
+            "-r", str(settings.rate),
+            "--channels", "1",
+            "-miv", str(settings.vector_size),
+            "-mav", str(settings.vector_size),
+            "-q", "50",
+            "-s", str(settings.smoothness),
+            "-e", "on" if settings.enhance else "off",
+            "--optimize", optimize_mode,
+            "-o", output_name
+        ])
+        
+        return cmd
+    
+    def _find_system_python(self) -> Optional[str]:
+        """Find system Python executable."""
+        for name in ["python3", "python"]:
+            path = shutil.which(name)
+            if path:
+                self.logger.debug(f"Found system Python: {path}")
+                return path
+        return None
+    
+    def _list_directory(self, path: str):
+        """List directory contents for debugging."""
+        self._queue_output(f"\nContents of {path}:\n")
+        try:
+            for item in os.listdir(path):
+                item_path = os.path.join(path, item)
+                if os.path.isdir(item_path):
+                    self._queue_output(f"  [DIR] {item}/\n")
+                else:
+                    self._queue_output(f"  {item}\n")
+        except:
+            pass
+    
     def _parse_results(self, output_dir: str, result: VQResult) -> VQResult:
         """Parse conversion results from output directory."""
-        # Find JSON file (conversion_info.json)
-        json_path = os.path.join(output_dir, "conversion_info.json")
-        if os.path.exists(json_path):
-            result.json_path = json_path
-            
+        # Calculate total size of ASM files
+        total_size = 0
+        converted_wavs = []
+        
+        for filename in os.listdir(output_dir):
+            filepath = os.path.join(output_dir, filename)
+            if os.path.isfile(filepath):
+                total_size += os.path.getsize(filepath)
+        
+        # Look for conversion_info.json for more details
+        info_path = os.path.join(output_dir, "conversion_info.json")
+        if os.path.isfile(info_path):
             try:
-                with open(json_path, 'r') as f:
-                    data = json.load(f)
-                
-                # Extract converted WAV paths from samples array
-                if 'samples' in data:
-                    for sample in data['samples']:
-                        if 'instrument_file' in sample:
-                            wav_path = sample['instrument_file']
-                            # instrument_file contains absolute path
-                            if os.path.exists(wav_path):
-                                result.converted_wavs.append(wav_path)
-                            else:
-                                # Try relative to output_dir/instruments
-                                rel_path = os.path.join(output_dir, "instruments", 
-                                                        os.path.basename(wav_path))
-                                if os.path.exists(rel_path):
-                                    result.converted_wavs.append(rel_path)
-                
-                # Get total size from stats (not compression)
-                if 'stats' in data:
-                    result.total_size = data['stats'].get('size_bytes', 0)
-                    
+                with open(info_path, 'r') as f:
+                    info = json.load(f)
+                    if 'converted_files' in info:
+                        converted_wavs = info['converted_files']
+                    if 'total_size' in info:
+                        total_size = info['total_size']
             except Exception as e:
                 self._queue_output(f"Warning: Could not parse JSON: {e}\n")
         
-        # Find ASM files
-        for root, dirs, files in os.walk(output_dir):
-            for f in files:
-                if f.endswith('.asm'):
-                    result.asm_files.append(os.path.join(root, f))
+        # Also check instruments folder
+        instruments_dir = os.path.join(output_dir, "instruments")
+        if os.path.isdir(instruments_dir):
+            for wav in os.listdir(instruments_dir):
+                if wav.endswith('.wav'):
+                    converted_wavs.append(wav)
+                    total_size += os.path.getsize(os.path.join(instruments_dir, wav))
         
-        # Calculate total size from ASM files if not in JSON
-        if result.total_size == 0:
-            data_files = ['VQ_BLOB.asm', 'VQ_INDICES.asm', 'SAMPLE_DIR.asm']
-            for data_file in data_files:
-                file_path = os.path.join(output_dir, data_file)
-                if os.path.exists(file_path):
-                    try:
-                        result.total_size += os.path.getsize(file_path)
-                    except:
-                        pass
-        
+        result.total_size = total_size
+        result.converted_wavs = converted_wavs
         return result
 
 
 def format_size(size_bytes: int) -> str:
-    """Format byte size as human readable string."""
+    """Format byte size for display."""
     if size_bytes < 1024:
         return f"{size_bytes} B"
     elif size_bytes < 1024 * 1024:

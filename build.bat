@@ -108,7 +108,7 @@ if defined MISSING (
     echo ============================================================
     echo.
     echo To install Python packages:
-    echo   pip install dearpygui numpy scipy sounddevice pydub pyinstaller
+    echo   pip install dearpygui numpy scipy sounddevice pydub soundfile pyinstaller
     echo.
     goto :error
 )
@@ -121,7 +121,7 @@ if "%1"=="check" goto :eof
 :build
 echo.
 echo Installing/updating dependencies...
-pip install --quiet --upgrade dearpygui numpy scipy sounddevice pydub pyinstaller
+pip install --quiet --upgrade dearpygui numpy scipy sounddevice pydub soundfile pyinstaller
 if errorlevel 1 (
     echo [ERROR] Failed to install dependencies
     goto :error

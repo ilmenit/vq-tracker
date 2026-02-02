@@ -10,6 +10,7 @@ import sys
 import os
 import logging
 import platform
+import shutil
 
 # =============================================================================
 # EARLY LOGGING SETUP (before any imports that might fail)
@@ -116,12 +117,50 @@ def check_dependencies():
             logger.info(f"  [--] MADS assembler: not found in {bin_dir}")
             logger.info(f"       (BUILD will not work without MADS)")
         
-        # Check for vq_converter folder
-        vq_path = os.path.join(runtime.get_app_dir(), "vq_converter", "pokey_vq")
-        if os.path.isdir(vq_path):
-            logger.info(f"  [OK] vq_converter: found")
-        else:
-            logger.info(f"  [--] vq_converter: not found (CONVERT will not work)")
+        # Check for vq_converter / pokey_vq
+        # Try to import pokey_vq directly first (bundled or pip-installed)
+        try:
+            # Add vq_converter to path if it exists
+            vq_base = os.path.join(runtime.get_app_dir(), "vq_converter")
+            if os.path.isdir(vq_base) and vq_base not in sys.path:
+                sys.path.insert(0, vq_base)
+            
+            from pokey_vq.cli.builder import PokeyVQBuilder
+            logger.info(f"  [OK] pokey_vq: direct import available (bundled)")
+        except ImportError as e:
+            # Fall back to checking for external vq_converter
+            vq_base = os.path.join(runtime.get_app_dir(), "vq_converter")
+            vq_path = os.path.join(vq_base, "pokey_vq")
+            
+            if os.path.isdir(vq_path):
+                # Check for standalone executable
+                if platform.system() == "Windows":
+                    exe_path = os.path.join(vq_base, "vq_converter.exe")
+                    if os.path.isfile(exe_path):
+                        logger.info(f"  [OK] vq_converter: standalone exe found")
+                    else:
+                        python_found = shutil.which("python") or shutil.which("python3")
+                        if python_found:
+                            logger.info(f"  [OK] vq_converter: subprocess mode (Python)")
+                            logger.info(f"       Note: Requires numpy, scipy, soundfile")
+                        else:
+                            logger.info(f"  [!!] vq_converter: folder found but no Python!")
+                else:
+                    exe_found = False
+                    for exe_name in ["vq_converter", "vq_converter.bin"]:
+                        exe_path = os.path.join(vq_base, exe_name)
+                        if os.path.isfile(exe_path) and os.access(exe_path, os.X_OK):
+                            logger.info(f"  [OK] vq_converter: standalone binary found")
+                            exe_found = True
+                            break
+                    if not exe_found:
+                        python_found = shutil.which("python3") or shutil.which("python")
+                        if python_found:
+                            logger.info(f"  [OK] vq_converter: subprocess mode (Python)")
+                        else:
+                            logger.info(f"  [!!] vq_converter: folder found but no Python!")
+            else:
+                logger.info(f"  [--] vq_converter: not found (import: {e})")
         
         # Check for FFmpeg (needed for MP3/OGG/FLAC import)
         if platform.system() == "Windows":

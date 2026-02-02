@@ -12,3 +12,9 @@ scipy>=1.7.0
 
 # Better file format support (optional)
 pydub>=0.25.1
+
+# For the vq_converter
+librosa>=0.8.1
+tqdm
+packaging
+pyinstaller
