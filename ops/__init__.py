@@ -1,6 +1,6 @@
 """POKEY VQ Tracker - Operations Package
 
-Split from the monolithic operations.py into focused modules:
+Focused modules for all tracker operations:
 - ops.base       : Shared state, callback access, formatting, undo helper
 - ops.file_ops   : File operations (new, open, save, export, import)
 - ops.editing    : Cell editing, note entry, copy/paste
@@ -10,9 +10,8 @@ Split from the monolithic operations.py into focused modules:
 - ops.pattern_ops    : Pattern add/clone/delete/clear/transpose
 - ops.songline_ops   : Songline add/delete/clone/select
 
-All public functions are re-exported here for backward compatibility,
-so existing code can still do:
-    import operations as ops
+All public functions are re-exported here so callers can do:
+    import ops
     ops.enter_note(5)
 """
 

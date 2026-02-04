@@ -79,13 +79,182 @@ if os.path.isdir(assets_path):
 from PyInstaller.utils.hooks import collect_dynamic_libs
 
 extra_binaries = []
-for pkg in ['scipy', 'numpy']:
+for pkg in ['scipy', 'numpy', 'sounddevice']:
     try:
         bins = collect_dynamic_libs(pkg)
         extra_binaries.extend(bins)
         print(f"[SPEC] collect_dynamic_libs('{pkg}'): {len(bins)} binary files")
     except Exception as e:
         print(f"[SPEC] collect_dynamic_libs('{pkg}') failed: {e}")
+
+# Also try _sounddevice_data which some pip installs use to bundle PortAudio
+try:
+    bins = collect_dynamic_libs('_sounddevice_data')
+    extra_binaries.extend(bins)
+    print(f"[SPEC] collect_dynamic_libs('_sounddevice_data'): {len(bins)} binary files")
+    for src, dst in bins:
+        print(f"[SPEC]   -> {src}")
+except Exception as e:
+    print(f"[SPEC] _sounddevice_data not available: {e}")
+
+# -------------------------------------------------------------------------
+# PORTAUDIO DIAGNOSTICS & BUNDLING
+# -------------------------------------------------------------------------
+# sounddevice loads PortAudio via ctypes at runtime. On Windows the DLL is
+# typically bundled with the pip package, but on Linux/macOS it's a system
+# library that PyInstaller does NOT auto-detect. Without it the app crashes
+# with "OSError: PortAudio library not found" on machines where libportaudio
+# is not installed.
+print(f"[SPEC] =========== PortAudio diagnostics ===========")
+print(f"[SPEC] Build platform: {system} ({platform.machine()})")
+
+# Diagnostic: How does sounddevice find PortAudio on THIS system?
+try:
+    import sounddevice as _sd
+    _pa_lib = getattr(_sd, '_lib', None)
+    if _pa_lib is not None:
+        print(f"[SPEC] sounddevice._lib = {_pa_lib}")
+        _ffi = getattr(_sd, '_ffi', None)
+        if _ffi:
+            print(f"[SPEC] sounddevice._ffi = {_ffi}")
+    else:
+        print(f"[SPEC] sounddevice._lib is None (unusual)")
+    print(f"[SPEC] sounddevice.__file__ = {_sd.__file__}")
+    _sd_dir = os.path.dirname(_sd.__file__)
+    print(f"[SPEC] sounddevice directory contents:")
+    for f in sorted(os.listdir(_sd_dir)):
+        fpath = os.path.join(_sd_dir, f)
+        if os.path.isfile(fpath):
+            fsize = os.path.getsize(fpath)
+            print(f"[SPEC]   {f} ({fsize:,} bytes)")
+        else:
+            print(f"[SPEC]   {f}/")
+except Exception as e:
+    print(f"[SPEC] sounddevice diagnostic import failed: {e}")
+
+# Diagnostic: Check _sounddevice_data package (pip-bundled PortAudio)
+try:
+    import _sounddevice_data
+    _sdd_dir = os.path.dirname(_sounddevice_data.__file__)
+    print(f"[SPEC] _sounddevice_data found at: {_sdd_dir}")
+    print(f"[SPEC] _sounddevice_data contents:")
+    for root, dirs, files in os.walk(_sdd_dir):
+        for f in sorted(files):
+            fpath = os.path.join(root, f)
+            relpath = os.path.relpath(fpath, _sdd_dir)
+            fsize = os.path.getsize(fpath)
+            print(f"[SPEC]   {relpath} ({fsize:,} bytes)")
+except ImportError:
+    print(f"[SPEC] _sounddevice_data package NOT installed (no pip-bundled PortAudio)")
+except Exception as e:
+    print(f"[SPEC] _sounddevice_data error: {e}")
+
+# Now actually find and bundle PortAudio
+import subprocess as _sp
+import glob as _glob
+
+_pa_binaries = []  # Collect PortAudio-specific binaries here
+
+if system in ('Linux', 'Darwin'):
+    # Method 1: Check if sounddevice ships its own PortAudio (via _sounddevice_data)
+    try:
+        import _sounddevice_data
+        _sdd_dir = os.path.dirname(_sounddevice_data.__file__)
+        for root, dirs, files in os.walk(_sdd_dir):
+            for f in files:
+                if 'portaudio' in f.lower() or f.endswith('.so') or f.endswith('.dylib'):
+                    fpath = os.path.join(root, f)
+                    _pa_binaries.append((fpath, '.'))
+                    print(f"[SPEC] PA Method 1 (_sounddevice_data): {fpath}")
+    except ImportError:
+        pass
+
+    # Method 2: ldconfig (Linux only)
+    if system == 'Linux' and not _pa_binaries:
+        try:
+            result = _sp.run(['ldconfig', '-p'], capture_output=True, text=True)
+            print(f"[SPEC] ldconfig returned {len(result.stdout.splitlines())} entries")
+            for line in result.stdout.split('\n'):
+                if 'libportaudio' in line:
+                    print(f"[SPEC]   ldconfig match: {line.strip()}")
+                    if '=>' in line:
+                        pa_path = line.split('=>')[-1].strip()
+                        if os.path.isfile(pa_path):
+                            _pa_binaries.append((pa_path, '.'))
+                            print(f"[SPEC] PA Method 2 (ldconfig): {pa_path}")
+                        else:
+                            print(f"[SPEC]   WARNING: path does not exist: {pa_path}")
+        except Exception as e:
+            print(f"[SPEC] ldconfig search failed: {e}")
+
+    # Method 3: Common library paths (broadest fallback)
+    if not _pa_binaries:
+        search_patterns = (
+            ['/usr/lib/x86_64-linux-gnu/libportaudio*',
+             '/usr/lib64/libportaudio*',
+             '/usr/lib/libportaudio*',
+             '/usr/local/lib/libportaudio*',
+             '/usr/local/lib64/libportaudio*']
+            if system == 'Linux' else
+            ['/usr/local/lib/libportaudio*',
+             '/opt/homebrew/lib/libportaudio*',
+             '/usr/lib/libportaudio*']
+        )
+        for pattern in search_patterns:
+            matches = sorted(_glob.glob(pattern))
+            if matches:
+                print(f"[SPEC] PA Method 3 glob '{pattern}': {matches}")
+            for path in matches:
+                if os.path.isfile(path):
+                    _pa_binaries.append((path, '.'))
+                    print(f"[SPEC] PA Method 3 (glob): {path}")
+
+    # Method 4: Use ctypes to find what sounddevice actually loaded
+    if not _pa_binaries:
+        try:
+            import ctypes.util
+            pa_name = ctypes.util.find_library('portaudio')
+            print(f"[SPEC] ctypes.util.find_library('portaudio') = {pa_name}")
+            if pa_name:
+                result = _sp.run(['ldconfig', '-p'], capture_output=True, text=True)
+                for line in result.stdout.split('\n'):
+                    if pa_name in line and '=>' in line:
+                        pa_path = line.split('=>')[-1].strip()
+                        if os.path.isfile(pa_path):
+                            _pa_binaries.append((pa_path, '.'))
+                            print(f"[SPEC] PA Method 4 (ctypes): {pa_path}")
+        except Exception as e:
+            print(f"[SPEC] ctypes search failed: {e}")
+
+    # Deduplicate and add to extra_binaries
+    if _pa_binaries:
+        seen = set()
+        for src, dst in _pa_binaries:
+            bname = os.path.basename(src)
+            if bname not in seen:
+                seen.add(bname)
+                extra_binaries.append((src, dst))
+                print(f"[SPEC] >>> WILL BUNDLE: {bname} <- {src}")
+    else:
+        print(f"[SPEC] !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+        print(f"[SPEC] WARNING: libportaudio NOT FOUND by any method!")
+        print(f"[SPEC] Audio will NOT work on target machines.")
+        print(f"[SPEC] Install:")
+        print(f"[SPEC]   Fedora:        sudo dnf install portaudio-devel")
+        print(f"[SPEC]   Debian/Ubuntu:  sudo apt install libportaudio2")
+        print(f"[SPEC]   macOS:          brew install portaudio")
+        print(f"[SPEC] !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+
+elif system == 'Windows':
+    print(f"[SPEC] Windows: PortAudio should be bundled by sounddevice pip package")
+
+# Final summary of ALL binaries being bundled that relate to audio
+print(f"[SPEC] =========== Audio-related binaries in bundle ===========")
+for src, dst in extra_binaries:
+    bname = os.path.basename(src).lower()
+    if any(k in bname for k in ('portaudio', 'sounddevice', '_sounddevice', 'pa_', 'audio')):
+        print(f"[SPEC]   {os.path.basename(src)} <- {src}")
+print(f"[SPEC] =========================================================")
 
 # =========================================================================
 # HIDDEN IMPORTS

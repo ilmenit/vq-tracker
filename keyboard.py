@@ -2,7 +2,7 @@
 import dearpygui.dearpygui as dpg
 from constants import NOTE_KEYS, FOCUS_EDITOR, FOCUS_SONG, FOCUS_INSTRUMENTS, MAX_CHANNELS, MAX_VOLUME, MAX_NOTES, NOTE_OFF
 from state import state
-import operations as ops
+import ops
 import ui_refresh as R
 import ui_globals as G
 

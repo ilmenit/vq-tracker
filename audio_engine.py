@@ -12,9 +12,9 @@ try:
     import sounddevice as sd
     AUDIO_OK = True
     logger.info("sounddevice imported successfully")
-except ImportError:
+except (ImportError, OSError) as e:
     AUDIO_OK = False
-    logger.warning("sounddevice not available, audio disabled")
+    logger.warning(f"sounddevice not available, audio disabled: {e}")
 
 SAMPLE_RATE = 44100
 BUFFER_SIZE = 512

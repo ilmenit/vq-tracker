@@ -13,6 +13,25 @@ import platform
 
 
 # =============================================================================
+# PRE-LOAD PORTAUDIO (must happen before ANY module imports sounddevice)
+# =============================================================================
+# When running from a PyInstaller bundle, libportaudio.so is bundled in MEIPASS
+# but ctypes.util.find_library('portaudio') doesn't search there (it only uses
+# ldconfig which knows system paths). Pre-loading the library into the process
+# makes it available when sounddevice tries to use it via ctypes/CFFI.
+if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+    for _pa_name in ('libportaudio.so.2', 'libportaudio.so', 'libportaudio.dylib'):
+        _pa_path = os.path.join(sys._MEIPASS, _pa_name)
+        if os.path.isfile(_pa_path):
+            try:
+                import ctypes
+                ctypes.cdll.LoadLibrary(_pa_path)
+            except Exception:
+                pass  # Will be diagnosed later
+            break
+
+
+# =============================================================================
 # EARLY LOGGING SETUP (before any imports that might fail)
 # =============================================================================
 logging.basicConfig(
@@ -27,28 +46,47 @@ logger = logging.getLogger("tracker.main")
 # STARTUP DIAGNOSTICS
 # =============================================================================
 def _setup_ffmpeg_for_pydub():
-    """Set up ffmpeg path before importing pydub to avoid warning."""
-    if platform.system() != "Windows":
-        return  # Linux/macOS typically have ffmpeg in PATH
+    """Set up ffmpeg path before importing pydub to avoid warning.
     
+    Searches for ffmpeg/ffprobe in the platform-specific bin/ directory
+    and adds it to PATH so pydub can find it. Works for both bundled
+    (PyInstaller) and source (python main.py) execution modes.
+    """
     # Determine app directory
     if getattr(sys, 'frozen', False):
         app_dir = os.path.dirname(sys.executable)
     else:
         app_dir = os.path.dirname(os.path.abspath(__file__))
     
-    # Search locations for ffmpeg.exe
+    system = platform.system()
+    machine = platform.machine().lower()
+    
+    # Build platform-specific search paths
+    if system == "Windows":
+        plat_dir = "windows_x86_64"
+        ffmpeg_name = "ffmpeg.exe"
+    elif system == "Linux":
+        plat_dir = "linux_x86_64"
+        ffmpeg_name = "ffmpeg"
+    elif system == "Darwin":
+        plat_dir = "macos_aarch64" if "arm" in machine or "aarch" in machine else "macos_x86_64"
+        ffmpeg_name = "ffmpeg"
+    else:
+        return
+    
     candidates = [
+        os.path.join(app_dir, "bin", plat_dir),
         os.path.join(app_dir, "bin", "ffmpeg"),
-        os.path.join(app_dir, "bin", "windows_x86_64"),
+        os.path.join(app_dir, "bin"),
         os.path.join(app_dir, "ffmpeg"),
-        app_dir,
     ]
     
     for candidate in candidates:
-        ffmpeg_exe = os.path.join(candidate, "ffmpeg.exe")
-        if os.path.isfile(ffmpeg_exe):
+        ffmpeg_path = os.path.join(candidate, ffmpeg_name)
+        if os.path.isfile(ffmpeg_path):
             os.environ["PATH"] = candidate + os.pathsep + os.environ.get("PATH", "")
+            logger.debug(f"Added to PATH for ffmpeg: {candidate}")
+            return
             return
 
 def log_startup_info():
@@ -60,6 +98,81 @@ def log_startup_info():
     logger.info(f"Platform: {platform.system()} {platform.release()} ({platform.machine()})")
     logger.info(f"Working directory: {os.getcwd()}")
     logger.info(f"Script location: {os.path.dirname(os.path.abspath(__file__))}")
+
+def _log_audio_diagnostics():
+    """Log detailed audio library diagnostics for troubleshooting."""
+    logger.debug("--- Audio library diagnostics ---")
+    
+    # Check if we're running from a PyInstaller bundle
+    is_frozen = getattr(sys, 'frozen', False)
+    mei_dir = getattr(sys, '_MEIPASS', None)
+    logger.debug(f"Frozen: {is_frozen}, MEIPASS: {mei_dir}")
+    
+    # Check if PortAudio was pre-loaded successfully
+    if is_frozen and mei_dir:
+        try:
+            import ctypes
+            # Try to find the already-loaded library
+            pa_loaded = False
+            for _pa_name in ('libportaudio.so.2', 'libportaudio.so'):
+                _pa_path = os.path.join(mei_dir, _pa_name)
+                if os.path.isfile(_pa_path):
+                    try:
+                        # If already loaded, this returns the same handle
+                        ctypes.cdll.LoadLibrary(_pa_path)
+                        logger.debug(f"PortAudio pre-load verified: {_pa_name}")
+                        pa_loaded = True
+                        break
+                    except Exception as e:
+                        logger.warning(f"PortAudio pre-load FAILED for {_pa_name}: {e}")
+            if not pa_loaded:
+                logger.warning("PortAudio pre-load: no library file found in MEIPASS")
+        except Exception as e:
+            logger.warning(f"PortAudio pre-load check error: {e}")
+    
+    if mei_dir:
+        # List audio-related files in the bundle
+        audio_files = []
+        for f in os.listdir(mei_dir):
+            fl = f.lower()
+            if any(k in fl for k in ('portaudio', 'sounddevice', '_sounddevice', 'libpa', 'audio')):
+                fpath = os.path.join(mei_dir, f)
+                fsize = os.path.getsize(fpath) if os.path.isfile(fpath) else 0
+                audio_files.append((f, fsize))
+        
+        if audio_files:
+            logger.debug(f"Audio-related files in MEIPASS:")
+            for fname, fsize in sorted(audio_files):
+                logger.debug(f"  {fname} ({fsize:,} bytes)")
+        else:
+            logger.warning(f"NO audio-related .so/.dll files found in MEIPASS!")
+            logger.debug(f"All .so files in MEIPASS:")
+            so_count = 0
+            for f in sorted(os.listdir(mei_dir)):
+                if f.endswith('.so') or '.so.' in f or f.endswith('.dll') or f.endswith('.dylib'):
+                    so_count += 1
+                    if so_count <= 20:  # Don't flood the log
+                        logger.debug(f"  {f}")
+            if so_count > 20:
+                logger.debug(f"  ... and {so_count - 20} more")
+            logger.debug(f"Total shared libraries: {so_count}")
+    
+    # Check what ctypes can find
+    try:
+        import ctypes.util
+        pa_name = ctypes.util.find_library('portaudio')
+        logger.debug(f"ctypes.util.find_library('portaudio') = {pa_name}")
+    except Exception as e:
+        logger.debug(f"ctypes.util.find_library failed: {e}")
+    
+    # Check LD_LIBRARY_PATH
+    ld_path = os.environ.get('LD_LIBRARY_PATH', '')
+    if ld_path:
+        logger.debug(f"LD_LIBRARY_PATH = {ld_path}")
+    else:
+        logger.debug("LD_LIBRARY_PATH not set")
+    
+    logger.debug("--- End audio diagnostics ---")
 
 def check_dependencies():
     """Check and log status of all dependencies."""
@@ -87,7 +200,7 @@ def check_dependencies():
             mod = __import__(module)
             version = getattr(mod, '__version__', 'unknown')
             logger.info(f"  [OK] {description}: {version}")
-        except ImportError as e:
+        except (ImportError, OSError) as e:
             logger.warning(f"  [--] {description}: NOT AVAILABLE ({e})")
             missing.append(module)
     
@@ -183,6 +296,7 @@ def check_dependencies():
 
 # Run early diagnostics
 log_startup_info()
+_log_audio_diagnostics()
 if not check_dependencies():
     logger.error("Exiting due to missing critical dependencies")
     sys.exit(1)
@@ -197,7 +311,7 @@ from constants import APP_NAME, APP_VERSION, WIN_WIDTH, WIN_HEIGHT
 from state import state
 from ui_theme import create_themes
 from keyboard import handle_key
-import operations as ops
+import ops
 import runtime  # Bundle/dev mode detection
 
 # Import UI modules
@@ -215,8 +329,8 @@ logger.debug("All modules loaded successfully")
 # =============================================================================
 # OPERATIONS CALLBACKS SETUP
 # =============================================================================
-def setup_operations_callbacks():
-    """Wire up operations module to UI refresh functions using UICallbacks."""
+def setup_ops_callbacks():
+    """Wire up ops module to UI refresh functions using UICallbacks."""
     from ui_dialogs import show_error, show_file_dialog, show_rename_dialog
     from ui_callbacks_interface import UICallbacks
     
@@ -402,7 +516,7 @@ def main():
     get_file_browser()  # Creates the browser window
     
     # Setup operations callbacks
-    setup_operations_callbacks()
+    setup_ops_callbacks()
     
     # Initial refresh
     R.refresh_all()

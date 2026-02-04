@@ -6,7 +6,7 @@ from constants import (MAX_CHANNELS, MAX_VOLUME, MAX_ROWS, ROW_HEIGHT, COL_CH,
                        VQ_SMOOTHNESS_VALUES, VQ_SMOOTHNESS_DEFAULT)
 from state import state
 from ui_dialogs import show_about, show_shortcuts
-import operations as ops
+import ops
 import ui_globals as G
 import ui_callbacks as C
 

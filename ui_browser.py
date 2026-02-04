@@ -13,7 +13,7 @@ try:
     import sounddevice as sd
     from pydub import AudioSegment
     AUDIO_PREVIEW_AVAILABLE = True
-except ImportError as e:
+except (ImportError, OSError) as e:
     logger.warning(f"Audio preview disabled: {e}")
 
 

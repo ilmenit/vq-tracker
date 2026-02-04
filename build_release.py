@@ -62,7 +62,7 @@ def check_dependencies():
         try:
             __import__(package.split('.')[0])
             print(f"  âœ“ {name}")
-        except ImportError:
+        except (ImportError, OSError):
             print(f"  âœ— {name} - MISSING")
             missing.append(name)
     

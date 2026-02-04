@@ -8,7 +8,7 @@ from constants import (MAX_CHANNELS, MAX_VOLUME, MAX_ROWS, PAL_HZ, NTSC_HZ,
                        FOCUS_SONG, FOCUS_EDITOR, FOCUS_INSTRUMENTS,
                        COL_NOTE, COL_INST, COL_VOL, ROW_HEIGHT)
 from state import state
-import operations as ops
+import ops
 import ui_globals as G
 import ui_refresh as R
 

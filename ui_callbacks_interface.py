@@ -2,9 +2,9 @@
 
 Provides a typed dataclass for all UI callback functions needed by the
 operations layer. Replaces the previous pattern of ~15 module-level mutable
-callback variables in operations.py with a single, typed, injectable object.
+callback variables with a single, typed, injectable object.
 
-This eliminates implicit coupling between operations.py and the UI layer,
+This eliminates implicit coupling between the ops package and the UI layer,
 makes dependencies explicit, and improves testability.
 """
 from dataclasses import dataclass, field
