@@ -58,9 +58,13 @@ def _load_file(path: str):
         ui.show_error("Load Error", "Working directory not initialized")
         return
 
+    # Stop audio BEFORE loading to release any file handles
+    # On Windows, the audio engine may hold references to sample files
+    state.audio.stop_playback()
+    
+    logger.info(f"Loading project: {path}")
     song, editor_state, msg = load_project(path, file_io.work_dir)
     if song:
-        state.audio.stop_playback()
         state.song = song
         state.undo.clear()
 

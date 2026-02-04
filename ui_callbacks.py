@@ -1022,6 +1022,9 @@ def _load_autosave(path: str):
         show_error("Load Error", "Working directory not initialized")
         return
     
+    # Stop audio BEFORE loading to release any file handles
+    state.audio.stop_playback()
+    
     # Autosave current work first
     if state.song.modified and G.autosave_enabled:
         G.do_autosave()
@@ -1064,6 +1067,10 @@ def load_recent_file(sender, app_data, user_data):
     if not file_io.work_dir:
         show_error("Load Error", "Working directory not initialized")
         return
+    
+    # Stop audio BEFORE loading to release any file handles
+    state.audio.stop_playback()
+    
     if state.song.modified and G.autosave_enabled:
         G.do_autosave()
     song, editor_state, msg = load_project(path, file_io.work_dir)

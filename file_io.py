@@ -321,21 +321,56 @@ class WorkingDirectory:
     
     def clear_samples(self):
         """Clear samples directory."""
-        if os.path.exists(self.samples):
-            shutil.rmtree(self.samples)
+        self._safe_rmtree(self.samples)
         os.makedirs(self.samples, exist_ok=True)
     
     def clear_vq_output(self):
         """Clear VQ output directory."""
-        if os.path.exists(self.vq_output):
-            shutil.rmtree(self.vq_output)
+        self._safe_rmtree(self.vq_output)
         os.makedirs(self.vq_output, exist_ok=True)
     
     def clear_build(self):
         """Clear build directory."""
-        if os.path.exists(self.build):
-            shutil.rmtree(self.build)
+        self._safe_rmtree(self.build)
         os.makedirs(self.build, exist_ok=True)
+    
+    def _safe_rmtree(self, path: str, retries: int = 3, delay: float = 0.2):
+        """Remove directory tree with retry logic for Windows file locks.
+        
+        On Windows, files may be briefly locked by antivirus, indexing services,
+        or audio playback. Retrying with small delays usually resolves this.
+        """
+        import time
+        import platform
+        
+        if not os.path.exists(path):
+            return
+        
+        for attempt in range(retries):
+            try:
+                shutil.rmtree(path)
+                return
+            except PermissionError as e:
+                if attempt < retries - 1:
+                    logger.debug(f"rmtree retry {attempt + 1}/{retries} for {path}: {e}")
+                    time.sleep(delay)
+                else:
+                    # On Windows, try to identify and log which file is locked
+                    if platform.system() == 'Windows':
+                        for root, dirs, files in os.walk(path):
+                            for f in files:
+                                fpath = os.path.join(root, f)
+                                try:
+                                    os.remove(fpath)
+                                except PermissionError:
+                                    logger.warning(f"File locked, cannot delete: {fpath}")
+                    raise
+            except OSError as e:
+                if attempt < retries - 1 and platform.system() == 'Windows':
+                    logger.debug(f"rmtree retry {attempt + 1}/{retries} for {path}: {e}")
+                    time.sleep(delay)
+                else:
+                    raise
     
     def clear_all(self):
         """Clear all working directories (for new project)."""
@@ -563,66 +598,129 @@ def load_project(path: str, work_dir: WorkingDirectory
     Returns:
         (song or None, editor_state or None, message)
     """
+    import traceback
+    
     try:
-        if not os.path.exists(path):
+        logger.info(f"load_project: === START ===")
+        logger.info(f"load_project: path = {path}")
+        logger.info(f"load_project: path type = {type(path)}")
+        logger.info(f"load_project: path repr = {repr(path)}")
+        
+        # Check if file exists and log details
+        exists = os.path.exists(path)
+        logger.info(f"load_project: os.path.exists = {exists}")
+        if not exists:
             return None, None, f"File not found: {path}"
         
-        # Clear working directories for new project
-        work_dir.clear_all()
+        # Log file stats
+        try:
+            stat = os.stat(path)
+            logger.info(f"load_project: file size = {stat.st_size} bytes")
+            logger.info(f"load_project: file mode = {oct(stat.st_mode)}")
+        except Exception as e:
+            logger.error(f"load_project: os.stat failed: {e}")
         
-        # Extract ZIP to working directory
-        with zipfile.ZipFile(path, 'r') as zf:
+        # Log working directory state
+        logger.info(f"load_project: work_dir.root = {work_dir.root}")
+        logger.info(f"load_project: work_dir.samples = {work_dir.samples}")
+        logger.info(f"load_project: work_dir exists = {os.path.exists(work_dir.root)}")
+        
+        # Step 1: Clear working directories
+        logger.info("load_project: Step 1 - clear_all()")
+        try:
+            work_dir.clear_all()
+            logger.info("load_project: Step 1 - OK")
+        except Exception as e:
+            logger.error(f"load_project: Step 1 FAILED: {type(e).__name__}: {e}")
+            logger.error(f"Traceback:\n{traceback.format_exc()}")
+            return None, None, f"Failed to clear working directory: {e}"
+        
+        # Step 2: Open ZIP file
+        logger.info(f"load_project: Step 2 - zipfile.ZipFile({repr(path)}, 'r')")
+        try:
+            zf = zipfile.ZipFile(path, 'r')
+            logger.info(f"load_project: Step 2 - OK, archive contains: {zf.namelist()}")
+        except Exception as e:
+            logger.error(f"load_project: Step 2 FAILED: {type(e).__name__}: {e}")
+            logger.error(f"Traceback:\n{traceback.format_exc()}")
+            return None, None, f"Failed to open project file: {e}"
+        
+        # Step 3: Extract ZIP
+        logger.info(f"load_project: Step 3 - extractall({repr(work_dir.root)})")
+        try:
             zf.extractall(work_dir.root)
+            logger.info("load_project: Step 3 - OK")
+        except Exception as e:
+            logger.error(f"load_project: Step 3 FAILED: {type(e).__name__}: {e}")
+            logger.error(f"Traceback:\n{traceback.format_exc()}")
+            return None, None, f"Failed to extract project file: {e}"
+        finally:
+            zf.close()
+            logger.info("load_project: ZIP file closed")
         
-        # Load project.json
+        # Step 4: Load project.json
         project_path = os.path.join(work_dir.root, "project.json")
+        logger.info(f"load_project: Step 4 - loading {project_path}")
+        logger.info(f"load_project: project.json exists = {os.path.exists(project_path)}")
         if not os.path.exists(project_path):
             return None, None, "Invalid project file: missing project.json"
         
         with open(project_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
+        logger.info(f"load_project: Step 4 - OK, keys: {list(data.keys())}")
         
-        # Remap sample paths: archive paths â†’ extracted working directory paths
-        # This must happen BEFORE Song.from_dict() so instruments get usable paths
+        # Step 5: Remap sample paths
+        logger.info("load_project: Step 5 - remapping sample paths")
+        sample_count = 0
         for inst_data in data.get('instruments', []):
             sample_file = inst_data.get('sample_file')
             if sample_file:
-                # File was extracted to work_dir.root/samples/...
+                sample_count += 1
                 extracted_path = os.path.join(work_dir.root, sample_file)
-                # Copy to canonical samples dir
                 dest_path = os.path.join(work_dir.samples, os.path.basename(sample_file))
+                logger.info(f"load_project:   sample {sample_count}: {sample_file}")
                 if os.path.exists(extracted_path):
                     if extracted_path != dest_path:
                         shutil.copy2(extracted_path, dest_path)
-                    # Update sample_path to point to working copy
+                        logger.info(f"load_project:     copied to: {dest_path}")
                     inst_data['sample_path'] = dest_path
+                else:
+                    logger.warning(f"load_project:     NOT FOUND: {extracted_path}")
+        logger.info(f"load_project: Step 5 - OK, {sample_count} samples")
         
-        # Single source of truth: Song.from_dict()
+        # Step 6: Create Song object
+        logger.info("load_project: Step 6 - Song.from_dict()")
         song = Song.from_dict(data)
         song.file_path = path
         song.modified = False
+        logger.info(f"load_project: Step 6 - OK, title={song.title}")
         
-        # Load actual audio data into instruments
+        # Step 7: Load sample audio data
+        logger.info("load_project: Step 7 - loading sample audio")
         loaded_samples = 0
         missing_samples = 0
-        for inst in song.instruments:
+        for idx, inst in enumerate(song.instruments):
             if inst.sample_path and os.path.exists(inst.sample_path):
-                ok, msg = load_sample(inst, inst.sample_path, is_converted=True)
+                logger.info(f"load_project:   [{idx}] loading {os.path.basename(inst.sample_path)}")
+                ok, load_msg = load_sample(inst, inst.sample_path, is_converted=True)
                 if ok:
                     loaded_samples += 1
                 else:
                     missing_samples += 1
-                    logger.warning(f"Failed to load sample: {msg}")
+                    logger.warning(f"load_project:   [{idx}] FAILED: {load_msg}")
             elif inst.sample_path:
                 missing_samples += 1
-                logger.warning(f"Sample not found: {inst.sample_path}")
+                logger.warning(f"load_project:   [{idx}] not found: {inst.sample_path}")
+        logger.info(f"load_project: Step 7 - OK, loaded={loaded_samples}, missing={missing_samples}")
         
-        # Load editor state
+        # Step 8: Load editor state
+        logger.info("load_project: Step 8 - EditorState.from_dict()")
         editor_data = data.get('editor', {})
         editor_state = EditorState.from_dict(editor_data)
-        
-        # VQ output is NOT loaded from archive - auto-regenerated with latest algorithm
         editor_state.vq_converted = False
+        logger.info("load_project: Step 8 - OK")
+        
+        logger.info("load_project: === SUCCESS ===")
         
         # Build message
         msg = f"Loaded: {os.path.basename(path)}"
@@ -638,7 +736,9 @@ def load_project(path: str, work_dir: WorkingDirectory
     except json.JSONDecodeError as e:
         return None, None, f"Invalid project file: JSON error - {e}"
     except Exception as e:
+        import traceback
         logger.error(f"Load failed: {e}")
+        logger.error(f"Full traceback:\n{traceback.format_exc()}")
         return None, None, f"Load failed: {e}"
 
 
