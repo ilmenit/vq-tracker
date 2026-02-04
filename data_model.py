@@ -4,7 +4,7 @@ from typing import List, Optional
 import numpy as np
 from constants import (MAX_CHANNELS, MAX_PATTERNS, MAX_ROWS, MAX_INSTRUMENTS,
                        MAX_SONGLINES, MAX_VOLUME, DEFAULT_SPEED, DEFAULT_LENGTH,
-                       PAL_HZ, MAX_NOTES, NOTE_OFF)
+                       PAL_HZ, MAX_NOTES, NOTE_OFF, FORMAT_VERSION)
 
 @dataclass
 class Row:
@@ -25,9 +25,9 @@ class Row:
     
     @classmethod
     def from_dict(cls, d: dict) -> 'Row':
-        note = d.get('n', d.get('note', 0))
-        inst = d.get('i', d.get('instrument', 0))
-        vol = d.get('v', d.get('volume', MAX_VOLUME))
+        note = d.get('n', 0)
+        inst = d.get('i', 0)
+        vol = d.get('v', MAX_VOLUME)
         # Clamp to valid ranges
         # Note: NOTE_OFF (255) must be allowed through
         if note != NOTE_OFF:
@@ -88,14 +88,20 @@ class Pattern:
         return p
     
     def to_dict(self) -> dict:
-        return {'len': self.length, 'rows': [r.to_dict() for r in self.rows]}
+        return {'length': self.length, 'rows': [r.to_dict() for r in self.rows]}
     
     @classmethod
     def from_dict(cls, d: dict) -> 'Pattern':
-        p = cls(length=d.get('len', d.get('length', DEFAULT_LENGTH)))
-        p.rows = [Row.from_dict(r) for r in d.get('rows', [])]
+        length = d.get('length', DEFAULT_LENGTH)
+        rows = [Row.from_dict(r) for r in d.get('rows', [])]
+        # Build pattern without triggering __post_init__ row creation
+        p = cls.__new__(cls)
+        p.length = length
+        p.rows = rows
+        # Pad or truncate to match length
         while len(p.rows) < p.length:
             p.rows.append(Row())
+        p.rows = p.rows[:p.length]
         return p
 
 @dataclass
@@ -137,22 +143,27 @@ class Instrument:
         return self.original_sample_path or self.sample_path
     
     def to_dict(self) -> dict:
+        """Serialize instrument metadata. Keys match field names exactly.
+        Note: sample_data (numpy array) is NOT serialized here - 
+        it's handled by the file I/O layer (embedded as WAV in ZIP).
+        """
         return {
-            'name': self.name, 
-            'path': self.sample_path, 
-            # Don't fall back to sample_path - keep original_path separate
-            'original_path': self.original_sample_path,
-            'base': self.base_note
+            'name': self.name,
+            'sample_path': self.sample_path,
+            'original_sample_path': self.original_sample_path,
+            'base_note': self.base_note,
+            'sample_rate': self.sample_rate,
         }
     
     @classmethod
     def from_dict(cls, d: dict) -> 'Instrument':
-        inst = cls(name=d.get('name', 'New'),
-                   sample_path=d.get('path', d.get('sample', '')),
-                   base_note=d.get('base', d.get('base_note', 1)))
-        # Don't fall back to sample_path - original_path may legitimately be empty
-        inst.original_sample_path = d.get('original_path', '')
-        return inst
+        return cls(
+            name=d.get('name', 'New'),
+            sample_path=d.get('sample_path', ''),
+            original_sample_path=d.get('original_sample_path', ''),
+            base_note=d.get('base_note', 1),
+            sample_rate=d.get('sample_rate', 44100),
+        )
 
 @dataclass
 class Songline:
@@ -291,69 +302,58 @@ class Song:
             return True
         return False
     
-    # === SERIALIZATION ===
+    # === SERIALIZATION (Single Source of Truth) ===
+    # These methods are used by BOTH undo system AND file persistence.
+    # save_project() calls to_dict(), load_project() calls from_dict().
+    # Keys must match exactly between the two methods.
+    
     def to_dict(self) -> dict:
         return {
-            'version': 4,
+            'version': FORMAT_VERSION,
             'meta': {
-                'title': self.title, 'author': self.author,
+                'title': self.title,
+                'author': self.author,
                 'system': self.system,
                 'volume_control': self.volume_control,
                 'screen_control': self.screen_control,
-                'keyboard_control': self.keyboard_control
+                'keyboard_control': self.keyboard_control,
             },
-            'songlines': [{'patterns': sl.patterns, 'speed': sl.speed} for sl in self.songlines],
+            'songlines': [
+                {'patterns': sl.patterns.copy(), 'speed': sl.speed}
+                for sl in self.songlines
+            ],
             'patterns': [p.to_dict() for p in self.patterns],
-            'instruments': [i.to_dict() for i in self.instruments]
+            'instruments': [i.to_dict() for i in self.instruments],
         }
     
     @classmethod
     def from_dict(cls, d: dict) -> 'Song':
-        meta = d.get('meta', d.get('metadata', {}))
-        
-        # Handle screen_control with backward compatibility for old 'blank_screen'
-        # Old: blank_screen=True meant blank the screen
-        # New: screen_control=True means show the screen
-        # So: screen_control = not blank_screen (inverted)
-        if 'screen_control' in meta:
-            screen_ctrl = meta.get('screen_control', False)
-        elif 'blank_screen' in meta:
-            # Old format: invert the value
-            screen_ctrl = not meta.get('blank_screen', False)
-        else:
-            screen_ctrl = False
+        meta = d.get('meta', {})
         
         song = cls(
             title=meta.get('title', 'Untitled'),
             author=meta.get('author', ''),
-            speed=meta.get('speed', DEFAULT_SPEED),  # Legacy global speed
             system=meta.get('system', PAL_HZ),
             volume_control=meta.get('volume_control', False),
-            screen_control=screen_ctrl,
-            keyboard_control=meta.get('keyboard_control', False)
+            screen_control=meta.get('screen_control', True),
+            keyboard_control=meta.get('keyboard_control', True),
         )
         
-        # Handle songlines - both old format (list of pattern arrays) and new format (list of dicts with speed)
-        raw_songlines = d.get('songlines', [[0, 1, 2]])
-        song.songlines = []
-        for sl in raw_songlines:
-            if isinstance(sl, dict):
-                # New format with speed
-                song.songlines.append(Songline(
-                    patterns=list(sl.get('patterns', [0, 0, 0])),
-                    speed=sl.get('speed', DEFAULT_SPEED)
-                ))
-            else:
-                # Old format - just pattern array, use default or legacy global speed
-                song.songlines.append(Songline(
-                    patterns=list(sl),
-                    speed=meta.get('speed', DEFAULT_SPEED)
-                ))
+        song.songlines = [
+            Songline(
+                patterns=list(sl.get('patterns', [0, 0, 0])),
+                speed=sl.get('speed', DEFAULT_SPEED)
+            )
+            for sl in d.get('songlines', [])
+        ]
         
-        song.patterns = [Pattern.from_dict(p) 
-                         for p in d.get('patterns', d.get('ptn', []))]
-        song.instruments = [Instrument.from_dict(i) 
-                            for i in d.get('instruments', d.get('inst', []))]
+        song.patterns = [Pattern.from_dict(p) for p in d.get('patterns', [])]
+        song.instruments = [Instrument.from_dict(i) for i in d.get('instruments', [])]
+        
+        # Ensure minimum structure
+        if not song.songlines:
+            song.songlines = [Songline(patterns=[0, 1, 2])]
         while len(song.patterns) < 3:
             song.patterns.append(Pattern())
+        
         return song

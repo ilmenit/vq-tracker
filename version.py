@@ -47,7 +47,7 @@ APP_TITLE = f"{APP_NAME} {VERSION_DISPLAY}"
 # =============================================================================
 
 # Project file format version (increment when format changes incompatibly)
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 
 # Minimum supported format version for loading
 MIN_FORMAT_VERSION = 1

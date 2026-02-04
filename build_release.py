@@ -14,13 +14,13 @@ Usage:
 
 The distribution folder contains everything needed to run the tracker:
     release/
-    ├── POKEY_VQ_Tracker.exe   # The executable
-    ├── asm/                   # ASM templates (required for BUILD)
-    ├── bin/                   # MADS assembler (required for BUILD)
-    ├── samples/               # Example samples to get started
-    ├── README.md              # Documentation
-    ├── UserGuide.md           # Detailed user guide
-    └── CHANGELOG.md           # Version history
+    â”œâ”€â”€ POKEY_VQ_Tracker.exe   # The executable
+    â”œâ”€â”€ asm/                   # ASM templates (required for BUILD)
+    â”œâ”€â”€ bin/                   # MADS assembler (required for BUILD)
+    â”œâ”€â”€ samples/               # Example samples to get started
+    â”œâ”€â”€ README.md              # Documentation
+    â”œâ”€â”€ UserGuide.md           # Detailed user guide
+    â””â”€â”€ CHANGELOG.md           # Version history
 
 Requirements:
     pip install pyinstaller dearpygui numpy scipy sounddevice pydub soundfile
@@ -61,16 +61,16 @@ def check_dependencies():
     for name, package in required:
         try:
             __import__(package.split('.')[0])
-            print(f"  ✓ {name}")
+            print(f"  âœ“ {name}")
         except ImportError:
-            print(f"  ✗ {name} - MISSING")
+            print(f"  âœ— {name} - MISSING")
             missing.append(name)
     
     # Check for vq_converter folder
     if os.path.isdir("vq_converter/pokey_vq"):
-        print(f"  ✓ vq_converter folder found")
+        print(f"  âœ“ vq_converter folder found")
     else:
-        print(f"  ○ vq_converter folder not found (needed for CONVERT functionality)")
+        print(f"  â—‹ vq_converter folder not found (needed for CONVERT functionality)")
     
     if missing:
         print(f"\nMissing required packages: {', '.join(missing)}")
@@ -97,16 +97,16 @@ def check_bin_directory():
         plat_dir = "windows_x86_64"
         binary = "mads.exe"
     else:
-        print(f"  ✗ Unsupported platform: {system}")
+        print(f"  âœ— Unsupported platform: {system}")
         return False
     
     mads_path = os.path.join("bin", plat_dir, binary)
     
     if os.path.exists(mads_path):
-        print(f"  ✓ Found: {mads_path}")
+        print(f"  âœ“ Found: {mads_path}")
         return True
     else:
-        print(f"  ✗ Not found: {mads_path}")
+        print(f"  âœ— Not found: {mads_path}")
         print(f"\nPlease download MADS from http://mads.atari8.info/")
         print(f"and place {binary} in bin/{plat_dir}/")
         return False
@@ -117,7 +117,7 @@ def check_asm_directory():
     print("\nChecking ASM templates...")
     
     if not os.path.isdir("asm"):
-        print("  ✗ asm/ directory not found")
+        print("  âœ— asm/ directory not found")
         return False
     
     # Count files recursively
@@ -129,7 +129,7 @@ def check_asm_directory():
     expected_subdirs = ["common", "tracker", "pitch"]
     found_subdirs = [d for d in expected_subdirs if os.path.isdir(os.path.join("asm", d))]
     
-    print(f"  ✓ Found asm/ directory with {total_files} files")
+    print(f"  âœ“ Found asm/ directory with {total_files} files")
     print(f"    Subdirectories: {', '.join(found_subdirs)}")
     
     return len(found_subdirs) >= 2  # At least common and tracker
@@ -142,10 +142,10 @@ def check_samples_directory():
     if os.path.isdir("samples"):
         samples = [f for f in os.listdir("samples") 
                    if f.lower().endswith(('.wav', '.mp3', '.ogg', '.flac'))]
-        print(f"  ✓ Found samples/ directory with {len(samples)} audio files")
+        print(f"  âœ“ Found samples/ directory with {len(samples)} audio files")
         return True, len(samples)
     else:
-        print("  ○ samples/ directory not found (optional - example samples)")
+        print("  â—‹ samples/ directory not found (optional - example samples)")
         return False, 0
 
 
@@ -215,7 +215,7 @@ def build_executable():
     
     if os.path.exists(exe_path):
         size = os.path.getsize(exe_path) / (1024 * 1024)
-        print(f"\n✓ Executable built: {exe_path}")
+        print(f"\nâœ“ Executable built: {exe_path}")
         print(f"  Size: {size:.1f} MB")
         return exe_path
     else:
@@ -245,16 +245,16 @@ def create_distribution(exe_path: str):
     dest_exe = os.path.join(release_dir, exe_name)
     shutil.copy2(exe_path, dest_exe)
     exe_size = os.path.getsize(dest_exe) / (1024 * 1024)
-    copied_items.append(f"  ✓ {exe_name} ({exe_size:.1f} MB)")
+    copied_items.append(f"  âœ“ {exe_name} ({exe_size:.1f} MB)")
     
     # 2. Copy asm/ folder (REQUIRED for BUILD)
     if os.path.isdir("asm"):
         shutil.copytree("asm", os.path.join(release_dir, "asm"))
         asm_count = sum(1 for r, d, f in os.walk("asm") 
                        for file in f if file.endswith(('.asm', '.inc')))
-        copied_items.append(f"  ✓ asm/ ({asm_count} files)")
+        copied_items.append(f"  âœ“ asm/ ({asm_count} files)")
     else:
-        warnings.append("  ⚠ asm/ folder missing - BUILD will not work!")
+        warnings.append("  âš  asm/ folder missing - BUILD will not work!")
     
     # 3. Copy bin/ folder (REQUIRED for BUILD - contains MADS)
     if os.path.isdir("bin"):
@@ -263,18 +263,18 @@ def create_distribution(exe_path: str):
         mads_count = 0
         for root, dirs, files in os.walk("bin"):
             mads_count += len([f for f in files if f.startswith('mads')])
-        copied_items.append(f"  ✓ bin/ ({mads_count} MADS executables)")
+        copied_items.append(f"  âœ“ bin/ ({mads_count} MADS executables)")
     else:
-        warnings.append("  ⚠ bin/ folder missing - BUILD will not work!")
+        warnings.append("  âš  bin/ folder missing - BUILD will not work!")
     
     # 4. Copy samples/ folder (OPTIONAL - example samples for users)
     if os.path.isdir("samples"):
         shutil.copytree("samples", os.path.join(release_dir, "samples"))
         sample_count = len([f for f in os.listdir("samples") 
                           if f.lower().endswith(('.wav', '.mp3', '.ogg', '.flac'))])
-        copied_items.append(f"  ✓ samples/ ({sample_count} example samples)")
+        copied_items.append(f"  âœ“ samples/ ({sample_count} example samples)")
     else:
-        copied_items.append("  ○ samples/ (not found, skipped)")
+        copied_items.append("  â—‹ samples/ (not found, skipped)")
     
     # 5. Copy documentation files
     docs = [
@@ -287,11 +287,11 @@ def create_distribution(exe_path: str):
     for doc_file, description, required in docs:
         if os.path.isfile(doc_file):
             shutil.copy2(doc_file, os.path.join(release_dir, doc_file))
-            copied_items.append(f"  ✓ {doc_file}")
+            copied_items.append(f"  âœ“ {doc_file}")
         elif required:
-            warnings.append(f"  ⚠ {doc_file} missing")
+            warnings.append(f"  âš  {doc_file} missing")
         else:
-            copied_items.append(f"  ○ {doc_file} (not found, skipped)")
+            copied_items.append(f"  â—‹ {doc_file} (not found, skipped)")
     
     # Print summary
     print("\nDistribution contents:")
@@ -344,19 +344,19 @@ def print_final_instructions(release_dir: str, zip_file: str):
 Distribution created successfully!
 
 Files:
-  • Folder: {os.path.abspath(release_dir)}/
-  • Archive: {os.path.abspath(zip_file)}
+  â€¢ Folder: {os.path.abspath(release_dir)}/
+  â€¢ Archive: {os.path.abspath(zip_file)}
 
 To distribute:
   1. Share the ZIP file ({zip_file}), OR
   2. Share the entire '{release_dir}/' folder
 
 Contents included:
-  • Executable (vq_converter bundled inside)
-  • asm/ folder (ASM templates for BUILD)
-  • bin/ folder (MADS assembler for BUILD)
-  • samples/ folder (example audio to get started)
-  • Documentation files
+  â€¢ Executable (vq_converter bundled inside)
+  â€¢ asm/ folder (ASM templates for BUILD)
+  â€¢ bin/ folder (MADS assembler for BUILD)
+  â€¢ samples/ folder (example audio to get started)
+  â€¢ Documentation files
 
 Users do NOT need Python installed - everything is self-contained!
 """)

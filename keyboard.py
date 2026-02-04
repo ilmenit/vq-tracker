@@ -511,6 +511,7 @@ def _apply_song_pattern_value(value: int):
     sl_idx = state.song_cursor_row
     col = state.song_cursor_col
     
+    ops.save_undo("Edit song")
     if col == 3:
         # SPD column: speed value (1-255, minimum 1)
         value = max(1, min(255, value))

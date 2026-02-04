@@ -11,43 +11,81 @@ class UndoManager:
     
     def __init__(self, max_size: int = 100):
         self.max_size = max_size
-        self.undo_stack: List[Tuple[dict, str]] = []
-        self.redo_stack: List[Tuple[dict, str]] = []
+        self.undo_stack: List[Tuple[dict, str, dict]] = []  # (state, desc, audio_refs)
+        self.redo_stack: List[Tuple[dict, str, dict]] = []
     
-    def save(self, song: Song, desc: str = ""):
+    def _capture_audio(self, song) -> dict:
+        """Capture sample_data references from current instruments."""
+        refs = {}
+        for inst in song.instruments:
+            if inst.sample_path and inst.sample_data is not None:
+                refs[inst.sample_path] = (inst.sample_data, inst.sample_rate)
+        return refs
+    
+    def save(self, song, desc: str = ""):
         """Save state before modification."""
-        self.undo_stack.append((song.to_dict(), desc))
+        audio_refs = self._capture_audio(song)
+        self.undo_stack.append((song.to_dict(), desc, audio_refs))
         self.redo_stack.clear()
         while len(self.undo_stack) > self.max_size:
             self.undo_stack.pop(0)
     
-    def undo(self, song: Song) -> Optional[str]:
+    def undo(self, song) -> Optional[str]:
         """Undo last action."""
         if not self.undo_stack:
             return None
-        self.redo_stack.append((song.to_dict(), "redo"))
-        state, desc = self.undo_stack.pop()
-        self._restore(song, state)
+        audio_refs = self._capture_audio(song)
+        self.redo_stack.append((song.to_dict(), "redo", audio_refs))
+        state, desc, saved_audio = self.undo_stack.pop()
+        self._restore(song, state, saved_audio)
         return desc
     
-    def redo(self, song: Song) -> Optional[str]:
+    def redo(self, song) -> Optional[str]:
         """Redo last undone action."""
         if not self.redo_stack:
             return None
-        self.undo_stack.append((song.to_dict(), "undo"))
-        state, desc = self.redo_stack.pop()
-        self._restore(song, state)
+        audio_refs = self._capture_audio(song)
+        self.undo_stack.append((song.to_dict(), "undo", audio_refs))
+        state, desc, saved_audio = self.redo_stack.pop()
+        self._restore(song, state, saved_audio)
         return desc
     
-    def _restore(self, song: Song, state: dict):
+    def _restore(self, song, state: dict, audio_refs: dict = None):
+        """Restore song from snapshot, re-attaching sample_data.
+        
+        Uses both the saved audio_refs from the snapshot AND any current
+        instruments as sources for sample_data recovery. This ensures
+        audio survives rename, remove+undo, and reorder operations.
+        """
+        # Build combined audio lookup from BOTH saved snapshot and current state
+        combined_audio = {}
+        if audio_refs:
+            combined_audio.update(audio_refs)
+        # Current instruments as fallback (for cases where audio_refs is incomplete)
+        for inst in song.instruments:
+            if inst.sample_path and inst.sample_data is not None:
+                if inst.sample_path not in combined_audio:
+                    combined_audio[inst.sample_path] = (inst.sample_data, inst.sample_rate)
+        
         restored = Song.from_dict(state)
         song.title = restored.title
         song.author = restored.author
         song.speed = restored.speed
         song.system = restored.system
+        song.volume_control = restored.volume_control
+        song.screen_control = restored.screen_control
+        song.keyboard_control = restored.keyboard_control
         song.songlines = restored.songlines
         song.patterns = restored.patterns
         song.instruments = restored.instruments
+        
+        # Re-attach sample_data by sample_path (unique within project)
+        for inst in song.instruments:
+            if inst.sample_path and inst.sample_path in combined_audio:
+                data, rate = combined_audio[inst.sample_path]
+                if inst.sample_data is None:
+                    inst.sample_data = data
+                    inst.sample_rate = rate
     
     def can_undo(self) -> bool:
         return len(self.undo_stack) > 0

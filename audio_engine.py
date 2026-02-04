@@ -4,7 +4,7 @@ import numpy as np
 import logging
 from typing import Optional, Callable, List, Tuple
 from dataclasses import dataclass
-from constants import MAX_CHANNELS, MAX_VOLUME, PAL_HZ
+from constants import MAX_CHANNELS, MAX_VOLUME, PAL_HZ, DEFAULT_LENGTH, DEFAULT_SPEED
 
 logger = logging.getLogger("tracker.audio")
 
@@ -55,14 +55,14 @@ class AudioEngine:
         self.songline = 0
         self.row = 0
         self.tick = 0
-        self.speed = 6
+        self.speed = DEFAULT_SPEED
         self.hz = PAL_HZ
         self.samples_per_tick = SAMPLE_RATE // PAL_HZ
         self.sample_count = 0
         
         # Pattern info
         self.patterns = [0, 1, 2]
-        self.lengths = [64, 64, 64]
+        self.lengths = [DEFAULT_LENGTH, DEFAULT_LENGTH, DEFAULT_LENGTH]
         
         # Callbacks (called from main thread via process_callbacks)
         self.on_row: Optional[Callable[[int, int], None]] = None
@@ -99,8 +99,8 @@ class AudioEngine:
             try:
                 self.stream.stop()
                 self.stream.close()
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"Error closing audio stream: {e}")
         self.running = False
         logger.info("Audio engine stopped")
     
@@ -154,7 +154,7 @@ class AudioEngine:
         # First increment the row
         self.row += 1
         
-        max_len = max(self.lengths) if self.lengths else 64
+        max_len = max(self.lengths) if self.lengths else DEFAULT_LENGTH
         if self.row >= max_len:
             self.row = 0
             if self.mode == 'song':
@@ -173,12 +173,16 @@ class AudioEngine:
         """Trigger notes for current row."""
         if not self.song:
             return
+        from constants import NOTE_OFF
         for ch_idx in range(MAX_CHANNELS):
             if ch_idx >= len(self.patterns):
                 continue
             ptn = self.song.get_pattern(self.patterns[ch_idx])
             row = ptn.get_row_wrapped(self.row)
-            if row.note > 0:
+            if row.note == NOTE_OFF:
+                # Note-off: silence the channel
+                self.channels[ch_idx].active = False
+            elif row.note > 0:
                 inst = self.song.get_instrument(row.instrument)
                 if inst and inst.is_loaded():
                     self._trigger_note(ch_idx, row.note, inst, row.volume)
@@ -225,8 +229,8 @@ class AudioEngine:
         for fn, args in callbacks:
             try:
                 fn(*args)
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"Callback error in {fn.__name__}: {e}")
     
     # === PUBLIC API ===
     
@@ -239,7 +243,7 @@ class AudioEngine:
                 if song.songlines:
                     self.speed = song.songlines[0].speed
                 else:
-                    self.speed = 6  # Default
+                    self.speed = DEFAULT_SPEED
                 self.hz = song.system
                 self.samples_per_tick = SAMPLE_RATE // self.hz
     
@@ -288,7 +292,7 @@ class AudioEngine:
                 self.row = 0
             else:
                 # Clamp row to valid range for current songline patterns
-                max_len = max(self.lengths) if self.lengths else 64
+                max_len = max(self.lengths) if self.lengths else DEFAULT_LENGTH
                 self.row = min(row, max_len - 1) if max_len > 0 else 0
             
             self._play_current_row()  # Play first row immediately
@@ -331,11 +335,14 @@ class AudioEngine:
         with self.lock:
             if not song or songline >= len(song.songlines):
                 return
+            from constants import NOTE_OFF
             sl = song.songlines[songline]
             for ch_idx in range(MAX_CHANNELS):
                 ptn = song.get_pattern(sl.patterns[ch_idx])
                 r = ptn.get_row_wrapped(row)
-                if r.note > 0:
+                if r.note == NOTE_OFF:
+                    self.channels[ch_idx].active = False
+                elif r.note > 0:
                     inst = song.get_instrument(r.instrument)
                     if inst and inst.is_loaded():
                         self._trigger_note(ch_idx, r.note, inst, r.volume)

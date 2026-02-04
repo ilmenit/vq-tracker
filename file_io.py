@@ -246,7 +246,7 @@ class InstanceLock:
                 # Corrupt lock file - remove it
                 try:
                     os.remove(self.lock_path)
-                except:
+                except OSError:
                     pass
         
         # Create new lock
@@ -268,8 +268,8 @@ class InstanceLock:
             try:
                 os.remove(self.lock_path)
                 self.locked = False
-            except:
-                pass
+            except OSError as e:
+                logger.warning(f"Failed to release lock: {e}")
     
     def _is_process_running(self, pid: int) -> bool:
         """Check if a process with given PID is running."""
@@ -281,7 +281,7 @@ class InstanceLock:
             return True
         except OSError:
             return False
-        except:
+        except Exception:
             # Windows fallback
             try:
                 import ctypes
@@ -292,7 +292,7 @@ class InstanceLock:
                     kernel32.CloseHandle(handle)
                     return True
                 return False
-            except:
+            except Exception:
                 return False
 
 
@@ -473,6 +473,9 @@ def save_project(song: Song, editor_state: EditorState,
                  path: str, work_dir: WorkingDirectory) -> Tuple[bool, str]:
     """Save project as ZIP archive.
     
+    Uses Song.to_dict() as single source of truth for serialization.
+    Only adds: editor state, sample WAV embedding, and archive metadata.
+    
     Args:
         song: Song data
         editor_state: Editor state to persist
@@ -486,54 +489,36 @@ def save_project(song: Song, editor_state: EditorState,
         if not path.lower().endswith(PROJECT_EXT):
             path += PROJECT_EXT
         
-        # Build project data
-        project_data = {
-            "version": FORMAT_VERSION,
-            "meta": {
-                "title": song.title,
-                "author": song.author,
-                "system": song.system,
-                "volume_control": song.volume_control,
-                "screen_control": song.screen_control,
-                "keyboard_control": song.keyboard_control,
-                "created": datetime.now().isoformat(),
-            },
-            "editor": editor_state.to_dict(),
-            "songlines": [{'patterns': sl.patterns, 'speed': sl.speed} 
-                          for sl in song.songlines],
-            "patterns": [p.to_dict() for p in song.patterns],
-            "instruments": []
-        }
+        # Single source of truth: Song.to_dict()
+        project_data = song.to_dict()
+        
+        # Add editor state (not part of song data)
+        project_data['editor'] = editor_state.to_dict()
+        project_data['meta']['created'] = datetime.now().isoformat()
         
         # Write to ZIP
         with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as zf:
             
-            # Add samples and build instrument list
-            for idx, inst in enumerate(song.instruments):
-                inst_data = {
-                    "name": inst.name,
-                    "base_note": inst.base_note,
-                    # Store original path for reference (external file location)
-                    # Do NOT fall back to sample_path - that's the .tmp working copy
-                    "original_path": inst.original_sample_path if inst.original_sample_path else "",
-                    "sample_file": None
-                }
+            # Embed sample WAV files and record archive paths in instrument dicts
+            embedded_count = 0
+            missing_samples = []
+            for idx, inst_data in enumerate(project_data['instruments']):
+                inst = song.instruments[idx]
                 
-                # Add sample file if exists
                 if inst.sample_path and os.path.exists(inst.sample_path):
                     # Archive path: samples/00_name.wav
                     safe_name = _safe_filename(inst.name)
                     archive_name = f"{SAMPLES_DIR}/{idx:02d}_{safe_name}.wav"
                     zf.write(inst.sample_path, archive_name)
-                    inst_data["sample_file"] = archive_name
-                
-                project_data["instruments"].append(inst_data)
+                    inst_data['sample_file'] = archive_name
+                    embedded_count += 1
+                elif inst.sample_path:
+                    # Sample path set but file missing - log warning
+                    missing_samples.append(f"{inst.name} ({os.path.basename(inst.sample_path)})")
+                    logger.warning(f"Sample file missing, not embedded: {inst.sample_path}")
             
             # Add project.json
             zf.writestr("project.json", json.dumps(project_data, indent=2))
-            
-            # NOTE: VQ output is NOT saved - it will be auto-regenerated on load
-            # This ensures loaded projects use the latest conversion algorithm
             
             # Add metadata
             metadata = {
@@ -541,14 +526,21 @@ def save_project(song: Song, editor_state: EditorState,
                 "format_version": FORMAT_VERSION,
                 "app_version": APP_VERSION,
                 "created": datetime.now().isoformat()
-                # NOTE: vq_converted not saved - VQ is auto-regenerated on load
             }
             zf.writestr("metadata.json", json.dumps(metadata, indent=2))
         
         song.file_path = path
         song.modified = False
         
-        return True, f"Saved: {os.path.basename(path)}"
+        # Build status message
+        msg = f"Saved: {os.path.basename(path)}"
+        if embedded_count:
+            msg += f" ({embedded_count} samples)"
+        if missing_samples:
+            msg += f" WARNING: {len(missing_samples)} sample(s) not embedded!"
+            logger.warning(f"Missing samples not embedded: {', '.join(missing_samples)}")
+        
+        return True, msg
         
     except PermissionError:
         return False, f"Permission denied: {path}"
@@ -560,6 +552,9 @@ def save_project(song: Song, editor_state: EditorState,
 def load_project(path: str, work_dir: WorkingDirectory
                  ) -> Tuple[Optional[Song], Optional[EditorState], str]:
     """Load project from ZIP archive.
+    
+    Uses Song.from_dict() as single source of truth for deserialization.
+    Only handles: ZIP extraction, sample path remapping, and audio loading.
     
     Args:
         path: Project file path
@@ -577,7 +572,6 @@ def load_project(path: str, work_dir: WorkingDirectory
         
         # Extract ZIP to working directory
         with zipfile.ZipFile(path, 'r') as zf:
-            # Extract all files
             zf.extractall(work_dir.root)
         
         # Load project.json
@@ -588,93 +582,46 @@ def load_project(path: str, work_dir: WorkingDirectory
         with open(project_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         
-        # Build Song object
-        meta = data.get('meta', {})
+        # Remap sample paths: archive paths â†’ extracted working directory paths
+        # This must happen BEFORE Song.from_dict() so instruments get usable paths
+        for inst_data in data.get('instruments', []):
+            sample_file = inst_data.get('sample_file')
+            if sample_file:
+                # File was extracted to work_dir.root/samples/...
+                extracted_path = os.path.join(work_dir.root, sample_file)
+                # Copy to canonical samples dir
+                dest_path = os.path.join(work_dir.samples, os.path.basename(sample_file))
+                if os.path.exists(extracted_path):
+                    if extracted_path != dest_path:
+                        shutil.copy2(extracted_path, dest_path)
+                    # Update sample_path to point to working copy
+                    inst_data['sample_path'] = dest_path
         
-        # Handle screen_control with backward compatibility for old 'blank_screen'
-        # Old: blank_screen=True meant blank the screen
-        # New: screen_control=True means show the screen (inverted)
-        if 'screen_control' in meta:
-            screen_ctrl = meta.get('screen_control', False)
-        elif 'blank_screen' in meta:
-            # Old format: invert the value
-            screen_ctrl = not meta.get('blank_screen', False)
-        else:
-            screen_ctrl = False
-        
-        song = Song(
-            title=meta.get('title', 'Untitled'),
-            author=meta.get('author', ''),
-            system=meta.get('system', PAL_HZ),
-            volume_control=meta.get('volume_control', False),
-            screen_control=screen_ctrl,
-            keyboard_control=meta.get('keyboard_control', False)
-        )
+        # Single source of truth: Song.from_dict()
+        song = Song.from_dict(data)
         song.file_path = path
         song.modified = False
         
-        # Load songlines
-        raw_songlines = data.get('songlines', [[0, 1, 2]])
-        from data_model import Songline
-        song.songlines = []
-        for sl in raw_songlines:
-            if isinstance(sl, dict):
-                song.songlines.append(Songline(
-                    patterns=list(sl.get('patterns', [0, 0, 0])),
-                    speed=sl.get('speed', DEFAULT_SPEED)
-                ))
-            else:
-                song.songlines.append(Songline(patterns=list(sl)))
-        
-        # Load patterns
-        song.patterns = [Pattern.from_dict(p) for p in data.get('patterns', [])]
-        while len(song.patterns) < 3:
-            song.patterns.append(Pattern())
-        
-        # Load instruments with samples
-        samples_dir = os.path.join(work_dir.root, SAMPLES_DIR)
+        # Load actual audio data into instruments
         loaded_samples = 0
         missing_samples = 0
-        
-        for inst_data in data.get('instruments', []):
-            inst = Instrument(
-                name=inst_data.get('name', 'New'),
-                base_note=inst_data.get('base_note', 1)
-            )
-            # Store the original path from the archive data
-            stored_original_path = inst_data.get('original_path', '')
-            
-            # Load sample from archive
-            sample_file = inst_data.get('sample_file')
-            if sample_file:
-                sample_path = os.path.join(work_dir.root, sample_file)
-                if os.path.exists(sample_path):
-                    # Copy to samples dir with consistent naming
-                    dest_path = os.path.join(work_dir.samples, os.path.basename(sample_file))
-                    if sample_path != dest_path:
-                        shutil.copy2(sample_path, dest_path)
-                    # Use is_converted=True to prevent overwriting original_sample_path
-                    ok, msg = load_sample(inst, dest_path, is_converted=True)
-                    if ok:
-                        loaded_samples += 1
-                    else:
-                        missing_samples += 1
-                        logger.warning(f"Failed to load sample: {msg}")
+        for inst in song.instruments:
+            if inst.sample_path and os.path.exists(inst.sample_path):
+                ok, msg = load_sample(inst, inst.sample_path, is_converted=True)
+                if ok:
+                    loaded_samples += 1
                 else:
                     missing_samples += 1
-                    logger.warning(f"Sample not found in archive: {sample_file}")
-            
-            # Restore the original sample path from archive (external file path)
-            inst.original_sample_path = stored_original_path
-            
-            song.instruments.append(inst)
+                    logger.warning(f"Failed to load sample: {msg}")
+            elif inst.sample_path:
+                missing_samples += 1
+                logger.warning(f"Sample not found: {inst.sample_path}")
         
         # Load editor state
         editor_data = data.get('editor', {})
         editor_state = EditorState.from_dict(editor_data)
         
-        # NOTE: VQ output is NOT loaded from archive
-        # Auto-conversion will happen after load with the latest algorithm
+        # VQ output is NOT loaded from archive - auto-regenerated with latest algorithm
         editor_state.vq_converted = False
         
         # Build message
@@ -770,8 +717,8 @@ def _read_wav(path: str) -> Tuple[int, Optional[np.ndarray]]:
     if SCIPY_OK:
         try:
             return scipy_wav.read(path)
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"scipy read failed for {path}: {e}")
     
     try:
         with wave.open(path, 'rb') as wf:
@@ -790,8 +737,8 @@ def _read_wav(path: str) -> Tuple[int, Optional[np.ndarray]]:
             if channels > 1:
                 data = data.reshape(-1, channels)
             return rate, data
-    except:
-        pass
+    except Exception as e:
+        logger.warning(f"wave read failed for {path}: {e}")
     
     return 44100, None
 

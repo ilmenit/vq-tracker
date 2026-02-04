@@ -15,14 +15,14 @@ SIZE MODE (OPTIMIZE_SPEED=0):
 - Nibble-packed data (2 samples per byte)
 - Each active channel: 83 cycles (no boundary cross)
 - With boundary cross: 145 cycles
-- Codebook size: 2KB (256 vectors × 8 bytes)
+- Codebook size: 2KB (256 vectors Ã— 8 bytes)
 - Best for: Memory-constrained projects
 
 SPEED MODE (OPTIMIZE_SPEED=1):
 - Full bytes with $10 pre-baked
 - Each active channel: 63 cycles (no boundary cross)  
 - With boundary cross: 125 cycles
-- Codebook size: 4KB (256 vectors × 16 bytes)
+- Codebook size: 4KB (256 vectors Ã— 16 bytes)
 - Best for: Higher sample rates, smoother playback
 
 Volume Control: +11 cycles per active channel (both modes)
@@ -46,10 +46,10 @@ PAL_CPU_CLOCK = 1773447
 # The Atari uses dynamic RAM which requires periodic refresh by ANTIC.
 # This happens regardless of DMACTL setting.
 #
-# Cycle counts per PAL frame (312 scanlines × 114 cycles/line = 35,568 total):
+# Cycle counts per PAL frame (312 scanlines Ã— 114 cycles/line = 35,568 total):
 #
 # MEMORY REFRESH (always, cannot be disabled):
-#   9 cycles per scanline × 312 lines = 2,808 cycles/frame (~8%)
+#   9 cycles per scanline Ã— 312 lines = 2,808 cycles/frame (~8%)
 #
 # DISPLAY ENABLED (DMACTL != 0):
 #   With a minimal 2-line text display:
@@ -76,15 +76,15 @@ ANTIC_DISPLAY_PERCENT = 15      # Refresh + minimal display (2 text lines)
 #
 # IRQ OVERHEAD (always):
 #   CPU auto push (PC, P):   7 cycles
-#   Entry (save regs, ack): 21 cycles (sta×3 + lda+sta×2)
-#   Exit (restore, rti):    15 cycles (lda×3 + rti)
+#   Entry (save regs, ack): 21 cycles (staÃ—3 + lda+staÃ—2)
+#   Exit (restore, rti):    15 cycles (ldaÃ—3 + rti)
 #   Total:                  43 cycles
 #
 # COMMON TO BOTH MODES:
 #   Inactive channel:        6 cycles (lda zp + beq taken)
 #   Active check:            5 cycles (lda zp + beq not taken)
-#   Pitch accumulator:      22 cycles (clc + 6×zp ops + beq not taken)
-#   Advance offset:         16 cycles (clc + 4×zp ops + lda# + sta)
+#   Pitch accumulator:      22 cycles (clc + 6Ã—zp ops + beq not taken)
+#   Advance offset:         16 cycles (clc + 4Ã—zp ops + lda# + sta)
 #   Boundary check (no):     8 cycles (lda + cmp + bcc taken)
 #   Boundary check (yes):    7 cycles (lda + cmp + bcc not taken)
 #   Boundary cross code:    63 cycles (tax + shifts + add + mask + end check + load)

@@ -424,7 +424,7 @@ def on_ptn_len_change(sender, value):
         
         # Warn if exceeding max (254 for export compatibility)
         if parsed > MAX_ROWS:
-            G.show_status(f"⚠ Max pattern length is {MAX_ROWS} (row 255 reserved for export)")
+            G.show_status(f"âš  Max pattern length is {MAX_ROWS} (row 255 reserved for export)")
             parsed = MAX_ROWS
         
         parsed = max(1, min(MAX_ROWS, parsed))
@@ -561,7 +561,7 @@ def on_volume_control_toggle(sender, value):
     
     # Show warning if rate is too high
     if value and state.vq.settings.rate > 5757:
-        G.show_status("Warning: Volume requires sample rate ≤5757 Hz")
+        G.show_status("Warning: Volume requires sample rate â‰¤5757 Hz")
     else:
         mode = "enabled" if value else "disabled"
         G.show_status(f"Volume control {mode}")
@@ -662,15 +662,15 @@ def show_analyze_dialog():
         ):
             # Status header
             if result.is_safe:
-                dpg.add_text("✓ PASS - No timing issues detected", color=(100, 255, 100))
+                dpg.add_text("âœ“ PASS - No timing issues detected", color=(100, 255, 100))
             else:
                 pct = (result.over_budget_count / result.total_rows * 100) if result.total_rows > 0 else 0
-                dpg.add_text(f"✗ FAIL - {result.over_budget_count} rows overflow ({pct:.1f}%)", 
+                dpg.add_text(f"âœ— FAIL - {result.over_budget_count} rows overflow ({pct:.1f}%)", 
                             color=(255, 100, 100))
             
             # Volume control warning
             if state.song.volume_control and not result.volume_safe:
-                dpg.add_text(f"⚠ Volume control requires rate ≤5757 Hz (current: {rate})", 
+                dpg.add_text(f"âš  Volume control requires rate â‰¤5757 Hz (current: {rate})", 
                             color=(255, 200, 100))
             
             dpg.add_separator()
@@ -1007,7 +1007,8 @@ def show_autosave_recovery():
 def _load_autosave(path: str):
     """Load an autosave file."""
     from ui_dialogs import show_error
-    from file_io import load_project, load_instrument_samples
+    import file_io
+    from file_io import load_project
     
     # Close the recovery dialog
     if dpg.does_item_exist("autosave_dialog"):
@@ -1017,18 +1018,21 @@ def _load_autosave(path: str):
         show_error("File Not Found", f"Autosave no longer exists:\n{path}")
         return
     
+    if not file_io.work_dir:
+        show_error("Load Error", "Working directory not initialized")
+        return
+    
     # Autosave current work first
     if state.song.modified and G.autosave_enabled:
         G.do_autosave()
     
     # Load the autosave
-    song, err = load_project(path)
-    if err:
-        show_error("Load Error", err)
+    song, editor_state, msg = load_project(path, file_io.work_dir)
+    if not song:
+        show_error("Load Error", msg)
         return
     
     state.song = song
-    load_instrument_samples(state.song)
     state.audio.set_song(state.song)
     
     # Reset state
@@ -1051,19 +1055,22 @@ def _load_autosave(path: str):
 
 def load_recent_file(sender, app_data, user_data):
     from ui_dialogs import show_error
+    import file_io
+    from file_io import load_project
     path = user_data
     if not os.path.exists(path):
         show_error("File Not Found", f"File no longer exists:\n{path}")
         return
+    if not file_io.work_dir:
+        show_error("Load Error", "Working directory not initialized")
+        return
     if state.song.modified and G.autosave_enabled:
         G.do_autosave()
-    from file_io import load_project, load_instrument_samples
-    song, err = load_project(path)
-    if err:
-        show_error("Load Error", err)
+    song, editor_state, msg = load_project(path, file_io.work_dir)
+    if not song:
+        show_error("Load Error", msg)
         return
     state.song = song
-    load_instrument_samples(state.song)
     state.audio.set_song(state.song)
     G.add_recent_file(path)
     state.songline = state.row = state.channel = state.selected_pattern = 0
@@ -1527,7 +1534,7 @@ def on_build_click(sender, app_data):
         warning_lines = []
         for issue in validation.issues:
             if issue.severity == "warning":
-                warning_lines.append(f"• {issue.location}: {issue.message}")
+                warning_lines.append(f"â€¢ {issue.location}: {issue.message}")
         # Log warnings but don't block
         logger.warning(f"Build warnings: {warning_lines}")
     
@@ -1572,10 +1579,10 @@ def show_build_validation_dialog(validation):
                     pos=[(vp_w - dlg_w) // 2, (vp_h - dlg_h) // 2]):
         
         # Summary line
-        dpg.add_text(f"✗ Cannot build: {validation.error_count} error(s) found", color=(255, 100, 100))
+        dpg.add_text(f"âœ— Cannot build: {validation.error_count} error(s) found", color=(255, 100, 100))
         
         if validation.warning_count > 0:
-            dpg.add_text(f"⚠ {validation.warning_count} warning(s)", color=(255, 200, 100))
+            dpg.add_text(f"âš  {validation.warning_count} warning(s)", color=(255, 200, 100))
         
         dpg.add_separator()
         dpg.add_spacer(height=5)
@@ -1588,10 +1595,10 @@ def show_build_validation_dialog(validation):
             for issue in validation.issues:
                 if issue.severity == "error":
                     color = (255, 100, 100)
-                    icon = "❌"
+                    icon = "âŒ"
                 else:
                     color = (255, 200, 100)
-                    icon = "⚠️"
+                    icon = "âš ï¸"
                 
                 with dpg.group(horizontal=True):
                     dpg.add_text(icon, color=color)

@@ -9,17 +9,17 @@
 ; Module Organization:
 ; ====================
 ;   song_player.asm (this file)
-;     ├── Constants, display list, entry point
-;     ├── do_process_row (ICL before main_loop for short branches)
-;     ├── Main loop with frame timing
-;     ├── Keyboard handling
-;     └── Includes:
-;         ├── tracker/process_row.asm     (included before main_loop)
-;         ├── tracker/parse_event.asm     (subroutine - event parsing)
-;         ├── tracker/seq_init.asm        (subroutine - initialization)
-;         ├── tracker/seq_load_songline.asm (subroutine - songline loading)
-;         ├── tracker/update_display.asm  (conditional - display update)
-;         └── tracker/tracker_irq_*.asm   (IRQ handler)
+;     â”œâ”€â”€ Constants, display list, entry point
+;     â”œâ”€â”€ do_process_row (ICL before main_loop for short branches)
+;     â”œâ”€â”€ Main loop with frame timing
+;     â”œâ”€â”€ Keyboard handling
+;     â””â”€â”€ Includes:
+;         â”œâ”€â”€ tracker/process_row.asm     (included before main_loop)
+;         â”œâ”€â”€ tracker/parse_event.asm     (subroutine - event parsing)
+;         â”œâ”€â”€ tracker/seq_init.asm        (subroutine - initialization)
+;         â”œâ”€â”€ tracker/seq_load_songline.asm (subroutine - songline loading)
+;         â”œâ”€â”€ tracker/update_display.asm  (conditional - display update)
+;         â””â”€â”€ tracker/tracker_irq_*.asm   (IRQ handler)
 ;
 ; Code Layout Rationale:
 ; ======================

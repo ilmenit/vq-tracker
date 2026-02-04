@@ -2,19 +2,19 @@
 
 ## What Is This?
 
-**POKEY VQ Tracker** is an experimental music tracker for creating sample-based music on the Atari 8-bit computer (XL/XE). Unlike traditional POKEY trackers that use synthesized waveforms, this one plays actual audio samples with variable pitch control — enabling realistic instruments like piano, bass, drums, and strings.
+**POKEY VQ Tracker** is an experimental music tracker for creating sample-based music on the Atari 8-bit computer (XL/XE). Unlike traditional POKEY trackers that use synthesized waveforms, this one plays actual audio samples with variable pitch control â€” enabling realistic instruments like piano, bass, drums, and strings.
 
 ### The Innovation
 
-Playing samples on an Atari isn't new. Various players have demonstrated single-channel sample playback at reasonable quality. But playing **three independent channels simultaneously**, each with **real-time pitch control**, on a **stock 64KB Atari without extended memory** — that's the challenge this project tackles.
+Playing samples on an Atari isn't new. Various players have demonstrated single-channel sample playback at reasonable quality. But playing **three independent channels simultaneously**, each with **real-time pitch control**, on a **stock 64KB Atari without extended memory** â€” that's the challenge this project tackles.
 
 The magic behind this is **Vector Quantization (VQ)** compression. Your audio samples are compressed into a codebook of small waveform patterns. Instead of storing every sample individually, we store indices into this codebook. The Atari's 1.77 MHz 6502 CPU then streams these patterns in real-time while handling pitch shifting across three independent channels.
 
 ### The Technical Challenge
 
-The PAL Atari 8-bit runs at approximately **1.77 MHz** (1,773,447 Hz) with about **35,568 CPU cycles per video frame** (50 Hz). NTSC machines run slightly faster at 1.79 MHz with 29,859 cycles per frame at 60 Hz. That might sound like plenty, but consider what sample playback demands — and that ANTIC steals cycles for screen refresh.
+The PAL Atari 8-bit runs at approximately **1.77 MHz** (1,773,447 Hz) with about **35,568 CPU cycles per video frame** (50 Hz). NTSC machines run slightly faster at 1.79 MHz with 29,859 cycles per frame at 60 Hz. That might sound like plenty, but consider what sample playback demands â€” and that ANTIC steals cycles for screen refresh.
 
-The CPU must output audio samples at rates of 4,000–8,000 Hz (or higher for better quality). At 5,278 Hz, that's over **100 IRQ interrupts per frame**. Each IRQ must:
+The CPU must output audio samples at rates of 4,000â€“8,000 Hz (or higher for better quality). At 5,278 Hz, that's over **100 IRQ interrupts per frame**. Each IRQ must:
 
 - Output 3 audio samples to POKEY registers (one per channel)
 - Advance 3 pitch accumulators using 8.8 fixed-point arithmetic
@@ -35,16 +35,16 @@ Additionally, when the display is enabled, ANTIC steals approximately 9-15% of C
 ### Software Requirements
 
 **For running the standalone executable (POKEY_VQ_Tracker.exe):**
-- **MADS assembler** — `mads.exe` in `bin\windows_x86_64\`
-- **vq_converter** — the VQ compression tool in `vq_converter\` folder
+- **MADS assembler** â€” `mads.exe` in `bin\windows_x86_64\`
+- **vq_converter** â€” the VQ compression tool in `vq_converter\` folder
 
 **vq_converter options (one required for CONVERT to work):**
 1. **Standalone executable** (recommended): Place `vq_converter.exe` in `vq_converter\` folder
 2. **Python-based**: Requires Python 3.8+ with numpy, scipy, soundfile installed
 
 **Optional tools:**
-- **Altirra emulator** — for auto-launching builds
-- **FFmpeg** — for MP3/OGG/FLAC/M4A import
+- **Altirra emulator** â€” for auto-launching builds
+- **FFmpeg** â€” for MP3/OGG/FLAC/M4A import
 
 **For development (running from source):**
 - **Python 3.8+** with the following packages:
@@ -68,16 +68,16 @@ Additionally, when the display is enabled, ANTIC steals approximately 9-15% of C
 
 ```
 tracker_folder/
-├── POKEY_VQ_Tracker.exe      (or main.py for development)
-├── asm/                      (ASM templates - required for BUILD)
-├── bin/
-│   └── windows_x86_64/
-│       ├── mads.exe          (required for BUILD)
-│       ├── ffmpeg.exe        (optional - audio import)
-│       └── ffprobe.exe       (optional - audio import)
-└── vq_converter/
-    ├── vq_converter.exe      (option 1: standalone)
-    └── pokey_vq/             (option 2: Python module)
+â”œâ”€â”€ POKEY_VQ_Tracker.exe      (or main.py for development)
+â”œâ”€â”€ asm/                      (ASM templates - required for BUILD)
+â”œâ”€â”€ bin/
+â”‚   â””â”€â”€ windows_x86_64/
+â”‚       â”œâ”€â”€ mads.exe          (required for BUILD)
+â”‚       â”œâ”€â”€ ffmpeg.exe        (optional - audio import)
+â”‚       â””â”€â”€ ffprobe.exe       (optional - audio import)
+â””â”€â”€ vq_converter/
+    â”œâ”€â”€ vq_converter.exe      (option 1: standalone)
+    â””â”€â”€ pokey_vq/             (option 2: Python module)
 ```
 
 ### Setup
@@ -95,15 +95,15 @@ tracker_folder/
 
 ### 1. Add Samples
 
-**File → Add Sample** or **File → Add Folder**
+**File â†’ Add Sample** or **File â†’ Add Folder**
 
 Import WAV, MP3, OGG, or FLAC files. They're automatically converted to mono WAV and stored in your project. The tracker creates working copies in the `.tmp/samples/` folder, so your originals remain untouched.
 
 **Sample Selection Tips:**
-- **Short samples work best** — long sustained sounds consume memory quickly
-- **Punchy attacks** — drums, plucks, and staccato instruments compress well
-- **Avoid heavy reverb** — reverb tails eat space and sound muddy after compression
-- **Mono is fine** — stereo is converted to mono anyway
+- **Short samples work best** â€” long sustained sounds consume memory quickly
+- **Punchy attacks** â€” drums, plucks, and staccato instruments compress well
+- **Avoid heavy reverb** â€” reverb tails eat space and sound muddy after compression
+- **Mono is fine** â€” stereo is converted to mono anyway
 
 *Samples are embedded in your project file (.pvq), so the originals can be moved or deleted after import.*
 
@@ -148,7 +148,7 @@ The analyzer calculates cycle budgets based on your current settings:
 **Understanding the Results:**
 - **Green/Safe**: Plenty of headroom, should work reliably
 - **Yellow/Tight**: May work but could have occasional glitches
-- **Red/Over**: Will definitely glitch — reduce settings
+- **Red/Over**: Will definitely glitch â€” reduce settings
 
 *Important: The analyzer provides estimates based on theoretical cycle counts. Actual behavior may vary slightly. Future versions will include cycle-accurate emulation for precise verification.*
 
@@ -156,10 +156,10 @@ The analyzer calculates cycle budgets based on your current settings:
 
 Click **BUILD & RUN** to:
 
-1. **Validate** — Check song data for errors (invalid notes, missing samples)
-2. **Export** — Generate 6502 assembly source files
-3. **Compile** — Run MADS assembler to create XEX executable
-4. **Launch** — Open the XEX in Altirra emulator
+1. **Validate** â€” Check song data for errors (invalid notes, missing samples)
+2. **Export** â€” Generate 6502 assembly source files
+3. **Compile** â€” Run MADS assembler to create XEX executable
+4. **Launch** â€” Open the XEX in Altirra emulator
 
 If everything works, you'll hear your music playing on the (emulated) Atari!
 
@@ -288,11 +288,11 @@ Click a songline to edit its patterns. Use arrow keys to navigate. Press Enter o
 The main composition area showing three channel columns:
 
 ```
-Row │ CH1 [Ptn 00]  │ CH2 [Ptn 01]  │ CH3 [Ptn 02]  │
-────┼───────────────┼───────────────┼───────────────┤
- 00 │ C-2  00   F   │ ---  --   -   │ D-3  01   8   │
- 01 │ ---  --   -   │ E-2  00   F   │ ---  --   -   │
- 02 │ D-2  --   C   │ ---  --   -   │ ---  --   -   │
+Row â”‚ CH1 [Ptn 00]  â”‚ CH2 [Ptn 01]  â”‚ CH3 [Ptn 02]  â”‚
+â”€â”€â”€â”€â”¼â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¼â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¼â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¤
+ 00 â”‚ C-2  00   F   â”‚ ---  --   -   â”‚ D-3  01   8   â”‚
+ 01 â”‚ ---  --   -   â”‚ E-2  00   F   â”‚ ---  --   -   â”‚
+ 02 â”‚ D-2  --   C   â”‚ ---  --   -   â”‚ ---  --   -   â”‚
 ```
 
 Each cell shows:
@@ -303,8 +303,8 @@ Each cell shows:
 **Navigation:**
 | Key | Action |
 |-----|--------|
-| ↑/↓ | Move up/down rows |
-| ←/→ | Move between columns (Note/Ins/Vol) |
+| â†‘/â†“ | Move up/down rows |
+| â†/â†’ | Move between columns (Note/Ins/Vol) |
 | Tab | Next channel |
 | Shift+Tab | Previous channel |
 | Page Up/Down | Jump 16 rows |
@@ -365,22 +365,22 @@ Shows:
 
 ```
 Upper Row (current octave + 1):
-┌───┬───┬───┬───┬───┬───┬───┬───┬───┬───┐
-│ 2 │ 3 │   │ 5 │ 6 │ 7 │   │ 9 │ 0 │   │ ← Black keys
-│C# │D# │   │F# │G# │A# │   │C# │D# │   │
-├───┼───┼───┼───┼───┼───┼───┼───┼───┼───┤
-│ Q │ W │ E │ R │ T │ Y │ U │ I │ O │ P │ ← White keys
-│ C │ D │ E │ F │ G │ A │ B │ C │ D │ E │
-└───┴───┴───┴───┴───┴───┴───┴───┴───┴───┘
+â”Œâ”€â”€â”€â”¬â”€â”€â”€â”¬â”€â”€â”€â”¬â”€â”€â”€â”¬â”€â”€â”€â”¬â”€â”€â”€â”¬â”€â”€â”€â”¬â”€â”€â”€â”¬â”€â”€â”€â”¬â”€â”€â”€â”
+â”‚ 2 â”‚ 3 â”‚   â”‚ 5 â”‚ 6 â”‚ 7 â”‚   â”‚ 9 â”‚ 0 â”‚   â”‚ â† Black keys
+â”‚C# â”‚D# â”‚   â”‚F# â”‚G# â”‚A# â”‚   â”‚C# â”‚D# â”‚   â”‚
+â”œâ”€â”€â”€â”¼â”€â”€â”€â”¼â”€â”€â”€â”¼â”€â”€â”€â”¼â”€â”€â”€â”¼â”€â”€â”€â”¼â”€â”€â”€â”¼â”€â”€â”€â”¼â”€â”€â”€â”¼â”€â”€â”€â”¤
+â”‚ Q â”‚ W â”‚ E â”‚ R â”‚ T â”‚ Y â”‚ U â”‚ I â”‚ O â”‚ P â”‚ â† White keys
+â”‚ C â”‚ D â”‚ E â”‚ F â”‚ G â”‚ A â”‚ B â”‚ C â”‚ D â”‚ E â”‚
+â””â”€â”€â”€â”´â”€â”€â”€â”´â”€â”€â”€â”´â”€â”€â”€â”´â”€â”€â”€â”´â”€â”€â”€â”´â”€â”€â”€â”´â”€â”€â”€â”´â”€â”€â”€â”´â”€â”€â”€â”˜
 
 Lower Row (current octave):
-┌───┬───┬───┬───┬───┬───┬───┐
-│ S │ D │   │ G │ H │ J │   │ ← Black keys
-│C# │D# │   │F# │G# │A# │   │
-├───┼───┼───┼───┼───┼───┼───┤
-│ Z │ X │ C │ V │ B │ N │ M │ ← White keys
-│ C │ D │ E │ F │ G │ A │ B │
-└───┴───┴───┴───┴───┴───┴───┘
+â”Œâ”€â”€â”€â”¬â”€â”€â”€â”¬â”€â”€â”€â”¬â”€â”€â”€â”¬â”€â”€â”€â”¬â”€â”€â”€â”¬â”€â”€â”€â”
+â”‚ S â”‚ D â”‚   â”‚ G â”‚ H â”‚ J â”‚   â”‚ â† Black keys
+â”‚C# â”‚D# â”‚   â”‚F# â”‚G# â”‚A# â”‚   â”‚
+â”œâ”€â”€â”€â”¼â”€â”€â”€â”¼â”€â”€â”€â”¼â”€â”€â”€â”¼â”€â”€â”€â”¼â”€â”€â”€â”¼â”€â”€â”€â”¤
+â”‚ Z â”‚ X â”‚ C â”‚ V â”‚ B â”‚ N â”‚ M â”‚ â† White keys
+â”‚ C â”‚ D â”‚ E â”‚ F â”‚ G â”‚ A â”‚ B â”‚
+â””â”€â”€â”€â”´â”€â”€â”€â”´â”€â”€â”€â”´â”€â”€â”€â”´â”€â”€â”€â”´â”€â”€â”€â”´â”€â”€â”€â”˜
 ```
 
 ### Playback Controls
@@ -470,13 +470,13 @@ Speed mode unrolls loops for faster execution. Size mode uses loops to save RAM.
 
 If your song glitches:
 
-1. ☐ Reduce **Rate** to 5278 Hz or lower
-2. ☐ Increase **Vec** to 8 or 16
-3. ☐ Disable **Screen** option
-4. ☐ Disable **Vol** option if not using volume changes
-5. ☐ Disable **Key** option
-6. ☐ Try **Speed** optimize mode
-7. ☐ Reduce simultaneous notes (avoid 3-channel chords on every row)
+1. â˜ Reduce **Rate** to 5278 Hz or lower
+2. â˜ Increase **Vec** to 8 or 16
+3. â˜ Disable **Screen** option
+4. â˜ Disable **Vol** option if not using volume changes
+5. â˜ Disable **Key** option
+6. â˜ Try **Speed** optimize mode
+7. â˜ Reduce simultaneous notes (avoid 3-channel chords on every row)
 
 ---
 
@@ -546,7 +546,7 @@ The tracker uses a `.tmp/` folder for working files:
   autosave/       - Automatic backups
 ```
 
-This folder can be safely deleted — it's regenerated as needed.
+This folder can be safely deleted â€” it's regenerated as needed.
 
 ### Autosave
 
@@ -568,7 +568,7 @@ The 20 most recent autosaves are kept.
 - Increase **Vec** (try 8 or 16)
 - Disable **Screen** option
 - Disable **Vol** if not needed
-- Check ANALYZE results — are you over budget?
+- Check ANALYZE results â€” are you over budget?
 
 **No sound at all**
 - Is Altirra audio enabled?
@@ -577,7 +577,7 @@ The 20 most recent autosaves are kept.
 - Check for errors in BUILD log
 
 **"Use Converted" sounds bad**
-- VQ compression is lossy — some quality loss is expected
+- VQ compression is lossy â€” some quality loss is expected
 - Try lower **Smooth** values for punchier sound
 - Short, simple samples compress better than complex ones
 - Very quiet passages may become silent
@@ -613,7 +613,7 @@ The 20 most recent autosaves are kept.
 
 ## Future Possibilities
 
-This is **Beta 1** — an experimental first release. The foundation is working, but there's enormous potential for improvement:
+This is **Beta 1** â€” an experimental first release. The foundation is working, but there's enormous potential for improvement:
 
 ### Planned Features
 
@@ -633,10 +633,10 @@ Instead of one global codebook for all samples, use instrument-specific codebook
 Pre-mix multiple samples into combined "virtual instruments" at conversion time. For example, a chord could be a single mixed sample instead of three separate channels.
 
 **Envelope Support**
-Volume automation without per-note overhead — fade-ins, fade-outs, and attack/decay curves baked into the sample stream.
+Volume automation without per-note overhead â€” fade-ins, fade-outs, and attack/decay curves baked into the sample stream.
 
 **Effect Commands**
-Pitch slides, arpeggios, vibrato — pre-computed into the VQ stream rather than calculated at runtime.
+Pitch slides, arpeggios, vibrato â€” pre-computed into the VQ stream rather than calculated at runtime.
 
 ### Platform Expansion
 
@@ -654,11 +654,11 @@ Traditional sample playback stores raw sample values (4-bit for POKEY). VQ inste
 
 **Advantages:**
 - Better compression than raw samples
-- Fast playback — just table lookups
+- Fast playback â€” just table lookups
 - Codebook can be optimized per sample set
 
 **Trade-offs:**
-- Lossy compression — quality depends on codebook size
+- Lossy compression â€” quality depends on codebook size
 - Boundary crossings add CPU overhead
 - Fixed vector sizes may not suit all material
 
@@ -708,6 +708,6 @@ $C000-$FFFF  OS ROM / hardware
 
 ---
 
-*Happy tracking! 🎵*
+*Happy tracking! ðŸŽµ*
 
 *Questions, bugs, or music to share? Find us on AtariAge!*

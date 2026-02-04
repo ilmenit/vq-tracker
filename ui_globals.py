@@ -90,7 +90,7 @@ def parse_int_value(text: str, default: int = 0) -> int:
             return int(text, 16)
         else:
             return int(text.strip())
-    except:
+    except (ValueError, TypeError):
         return default
 
 
@@ -171,7 +171,7 @@ def get_autosave_files() -> list:
     try:
         files = list(AUTOSAVE_DIR.glob("*.pvq"))
         return sorted(files, key=lambda f: f.stat().st_mtime, reverse=True)
-    except:
+    except Exception:
         return []
 
 
@@ -217,7 +217,9 @@ def do_autosave():
             vq_converted=state.vq.is_valid,
             vq_rate=state.vq.rate,
             vq_vector_size=state.vq.vector_size,
-            vq_smoothness=state.vq.smoothness
+            vq_smoothness=state.vq.smoothness,
+            vq_enhance=state.vq.settings.enhance,
+            vq_optimize_speed=state.vq.settings.optimize_speed,
         )
         
         save_project(state.song, editor_state, str(filename), file_io.work_dir)
@@ -235,8 +237,8 @@ def do_autosave():
                              key=lambda f: f.stat().st_mtime, reverse=True)
             for old in autosaves[MAX_AUTOSAVES:]:
                 old.unlink()
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"Autosave cleanup error: {e}")
     except Exception as e:
         logger.error(f"Autosave error: {e}")
 

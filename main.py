@@ -10,7 +10,7 @@ import sys
 import os
 import logging
 import platform
-import shutil
+
 
 # =============================================================================
 # EARLY LOGGING SETUP (before any imports that might fail)
@@ -123,23 +123,10 @@ def check_dependencies():
         vq_available, vq_error = get_pokey_vq_status()
         
         if vq_available:
-            logger.info(f"  [OK] pokey_vq: direct import available (bundled)")
+            logger.info(f"  [OK] pokey_vq: available")
         else:
-            # Check for subprocess fallback
-            vq_base = os.path.join(runtime.get_app_dir(), "vq_converter")
-            vq_path = os.path.join(vq_base, "pokey_vq")
-            
-            if os.path.isdir(vq_path):
-                python_found = shutil.which("python3") or shutil.which("python")
-                if python_found:
-                    logger.info(f"  [OK] vq_converter: subprocess mode (Python: {python_found})")
-                    logger.info(f"       Note: Requires numpy, scipy, soundfile")
-                else:
-                    logger.info(f"  [!!] vq_converter: folder found but no Python!")
-                    logger.info(f"       Import error: {vq_error}")
-            else:
-                logger.info(f"  [--] pokey_vq: not available")
-                logger.info(f"       Import error: {vq_error}")
+            logger.info(f"  [--] pokey_vq: not available")
+            logger.info(f"       Error: {vq_error}")
         
         # Check for FFmpeg (needed for MP3/OGG/FLAC import)
         if platform.system() == "Windows":
@@ -229,25 +216,34 @@ logger.debug("All modules loaded successfully")
 # OPERATIONS CALLBACKS SETUP
 # =============================================================================
 def setup_operations_callbacks():
-    """Wire up operations module to UI refresh functions."""
+    """Wire up operations module to UI refresh functions using UICallbacks."""
     from ui_dialogs import show_error, show_file_dialog, show_rename_dialog
+    from ui_callbacks_interface import UICallbacks
     
-    ops.refresh_all = R.refresh_all
-    ops.refresh_editor = R.refresh_editor
-    ops.refresh_song_editor = R.refresh_song_editor
-    ops.refresh_songlist = R.refresh_song_editor
-    ops.refresh_instruments = R.refresh_instruments
-    ops.refresh_pattern_combo = R.refresh_pattern_info
-    ops.refresh_all_pattern_combos = R.refresh_all_pattern_combos
-    ops.refresh_all_instrument_combos = R.refresh_all_instrument_combos
-    ops.update_controls = R.update_controls
-    ops.show_status = G.show_status
-    ops.update_title = G.update_title
-    ops.show_error = show_error
-    ops.show_confirm = B.show_confirm_centered
-    ops.show_file_dialog = show_file_dialog
-    ops.show_rename_dialog = show_rename_dialog
-    ops.rebuild_recent_menu = B.rebuild_recent_menu
+    callbacks = UICallbacks(
+        refresh_all=R.refresh_all,
+        refresh_editor=R.refresh_editor,
+        refresh_song_editor=R.refresh_song_editor,
+        refresh_songlist=R.refresh_song_editor,
+        refresh_instruments=R.refresh_instruments,
+        refresh_pattern_combo=R.refresh_pattern_info,
+        refresh_all_pattern_combos=R.refresh_all_pattern_combos,
+        refresh_all_instrument_combos=R.refresh_all_instrument_combos,
+        update_controls=R.update_controls,
+        show_status=G.show_status,
+        update_title=G.update_title,
+        show_error=show_error,
+        show_confirm=B.show_confirm_centered,
+        show_file_dialog=show_file_dialog,
+        show_rename_dialog=show_rename_dialog,
+        rebuild_recent_menu=B.rebuild_recent_menu,
+    )
+    
+    # Set the typed callbacks object (this is the primary mechanism)
+    from ops.base import set_ui_callbacks
+    set_ui_callbacks(callbacks)
+    
+    # Wire playback callbacks (these go on the audio engine, not UICallbacks)
     ops.set_playback_row_callback(C.on_playback_row)
     ops.set_playback_stop_callback(C.on_playback_stop)
 
@@ -368,19 +364,7 @@ def main():
     if not ok:
         # Show error dialog and exit
         logger.error(f"Instance lock failed: {lock_msg}")
-        try:
-            import tkinter as tk
-            from tkinter import messagebox
-            root = tk.Tk()
-            root.withdraw()
-            messagebox.showerror(
-                "Instance Already Running",
-                f"{APP_NAME} is already running.\n\n{lock_msg}\n\n"
-                "Please close the other instance first."
-            )
-            root.destroy()
-        except:
-            print(f"ERROR: {lock_msg}")
+        print(f"ERROR: {APP_NAME} is already running.\n{lock_msg}\nPlease close the other instance first.")
         sys.exit(1)
     
     logger.debug("Instance lock acquired")

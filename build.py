@@ -33,7 +33,7 @@ class ValidationIssue:
     message: str
     
     def __str__(self):
-        icon = "❌" if self.severity == "error" else "⚠️"
+        icon = "âŒ" if self.severity == "error" else "âš ï¸"
         return f"{icon} {self.location}: {self.message}"
 
 
@@ -60,7 +60,7 @@ class ValidationResult:
     
     def format_summary(self) -> str:
         if not self.issues:
-            return "✓ Song validation passed"
+            return "âœ“ Song validation passed"
         parts = []
         if self.error_count:
             parts.append(f"{self.error_count} error(s)")

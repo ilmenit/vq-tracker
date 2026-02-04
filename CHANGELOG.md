@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Initial Public Release
 
-This is the first public beta release of POKEY VQ Tracker — an experimental sample-based music tracker for Atari XL/XE computers.
+This is the first public beta release of POKEY VQ Tracker â€” an experimental sample-based music tracker for Atari XL/XE computers.
 
 ### Core Features
 

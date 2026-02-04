@@ -12,7 +12,7 @@ A cross-platform music tracker for composing **sample-based music** targeting **
 - **Real-time audio preview** that closely matches Atari hardware output
 - **Export to Atari executable** (.XEX) via MADS assembler
 - **Self-contained project format** (.pvq) with embedded samples
-- **Multi-format audio import** — WAV, MP3, OGG, FLAC, M4A, and more
+- **Multi-format audio import** â€” WAV, MP3, OGG, FLAC, M4A, and more
 - **Timing analysis** to verify IRQ cycle budget before export
 - **Optional per-note volume control** (at lower sample rates)
 
@@ -24,11 +24,11 @@ Get the latest release from the [Releases](https://github.com/ilmenit/vq-tracker
 
 ### Workflow
 
-1. **Load samples** — Add WAV/MP3 files as instruments
-2. **Convert** — Process samples through VQ compression
-3. **Compose** — Write music using patterns and the song editor
-4. **Analyze** — Check IRQ timing feasibility
-5. **Build** — Export to Atari executable (.XEX)
+1. **Load samples** â€” Add WAV/MP3 files as instruments
+2. **Convert** â€” Process samples through VQ compression
+3. **Compose** â€” Write music using patterns and the song editor
+4. **Analyze** â€” Check IRQ timing feasibility
+5. **Build** â€” Export to Atari executable (.XEX)
 
 Press **F4** in the tracker to see all keyboard shortcuts.
 
@@ -112,7 +112,7 @@ The distribution package will be created in `release/` with everything needed to
 
 The tracker includes a bundled VQ converter for sample compression. For standalone batch processing or advanced options, see the separate project:
 
-**[8bit-sound-compress](https://github.com/ilmenit/8bit-sound-compress)** — Vector Quantization audio compression for 8-bit systems
+**[8bit-sound-compress](https://github.com/ilmenit/8bit-sound-compress)** â€” Vector Quantization audio compression for 8-bit systems
 
 ![VQ Converter GUI](screenshots/converter.png)
 
@@ -120,10 +120,10 @@ The standalone converter offers batch processing, advanced compression parameter
 
 ## Documentation
 
-- [User Guide](UserGuide.md) — Comprehensive documentation
-- [Export Format](EXPORT_FORMAT.md) — Technical specification for the binary format
-- [Changelog](CHANGELOG.md) — Version history
+- [User Guide](UserGuide.md) â€” Comprehensive documentation
+- [Export Format](EXPORT_FORMAT.md) â€” Technical specification for the binary format
+- [Changelog](CHANGELOG.md) â€” Version history
 
 ## License
 
-MIT License — see [LICENSE](LICENSE) for details.
+MIT License â€” see [LICENSE](LICENSE) for details.

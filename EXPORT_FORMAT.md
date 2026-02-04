@@ -215,9 +215,9 @@ read_event:
 
 | Format | Calculation | Size |
 |--------|-------------|------|
-| Full row storage | 3 bytes × 64 rows × 16 patterns | 3072 bytes |
-| Fixed 4-byte events | 4 bytes × 16 events × 16 patterns + 16 | 1040 bytes |
-| Variable-length | ~2.5 bytes × 16 events × 16 patterns + 16 | ~656 bytes |
+| Full row storage | 3 bytes Ã— 64 rows Ã— 16 patterns | 3072 bytes |
+| Fixed 4-byte events | 4 bytes Ã— 16 events Ã— 16 patterns + 16 | 1040 bytes |
+| Variable-length | ~2.5 bytes Ã— 16 events Ã— 16 patterns + 16 | ~656 bytes |
 
 **Savings vs full storage: ~79%**
 **Savings vs fixed events: ~37%**

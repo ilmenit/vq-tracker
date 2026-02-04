@@ -468,18 +468,18 @@ def update_validation_indicator():
     if errors > 0:
         # Red - errors found
         dpg.configure_item("validation_indicator", color=(255, 100, 100))
-        dpg.set_value("validation_indicator", f"⚠ {errors} error(s)")
+        dpg.set_value("validation_indicator", f"âš  {errors} error(s)")
         if dpg.does_item_exist("validation_tooltip_text"):
             dpg.set_value("validation_tooltip_text", first_issue or "Click VALIDATE for details")
     elif warnings > 0:
         # Yellow - warnings only
         dpg.configure_item("validation_indicator", color=(255, 200, 100))
-        dpg.set_value("validation_indicator", f"⚠ {warnings} warning(s)")
+        dpg.set_value("validation_indicator", f"âš  {warnings} warning(s)")
         if dpg.does_item_exist("validation_tooltip_text"):
             dpg.set_value("validation_tooltip_text", first_issue or "Click VALIDATE for details")
     else:
         # Green - all good
         dpg.configure_item("validation_indicator", color=(100, 200, 100))
-        dpg.set_value("validation_indicator", "✓ Valid")
+        dpg.set_value("validation_indicator", "âœ“ Valid")
         if dpg.does_item_exist("validation_tooltip_text"):
             dpg.set_value("validation_tooltip_text", "Song is ready for export")
