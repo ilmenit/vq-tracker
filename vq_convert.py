@@ -8,7 +8,6 @@ When running from PyInstaller bundle: pokey_vq is frozen into the executable
 """
 import os
 import sys
-import json
 import threading
 import queue
 import logging
@@ -159,8 +158,7 @@ class VQResult:
     """Result of VQ conversion."""
     success: bool = False
     output_dir: Optional[str] = None
-    total_size: int = 0          # Total size of all output files
-    vq_data_size: int = 0        # Size of VQ data that goes into .xex
+    vq_data_size: int = 0        # Actual binary size for Atari (from builder.stats)
     converted_wavs: List[str] = field(default_factory=list)
     error_message: str = ""
 
@@ -347,6 +345,7 @@ class VQConverter:
             # Capture builder's stdout/stderr
             output_buffer = io.StringIO()
             return_code = 1
+            builder = None
             
             try:
                 with redirect_stdout(output_buffer), redirect_stderr(output_buffer):
@@ -382,12 +381,18 @@ class VQConverter:
                 if len(found) >= 2:
                     result.output_dir = asm_output_dir
                     result = self._parse_results(asm_output_dir, result)
+                    
+                    # Get stats directly from builder instance
+                    if builder and builder.stats:
+                        result.vq_data_size = builder.stats.get('size_bytes', 0)
+                    
                     result.success = True
                     self.vq_state.output_dir = result.output_dir
                     self._queue_output("\n" + "=" * 60 + "\n")
                     self._queue_output(f"SUCCESS: Conversion complete!\n")
                     self._queue_output(f"Output: {result.output_dir}\n")
-                    self._queue_output(f"Atari data size: {format_size(result.vq_data_size)}\n")
+                    if result.vq_data_size > 0:
+                        self._queue_output(f"Atari data: {format_size(result.vq_data_size)}\n")
                     self._queue_output(f"Preview WAVs: {len(result.converted_wavs)} files\n")
                 else:
                     result.success = False
@@ -427,47 +432,20 @@ class VQConverter:
             self._queue_output(f"  Error listing: {e}\n")
     
     def _parse_results(self, output_dir: str, result: VQResult) -> VQResult:
-        """Parse conversion results from output directory."""
-        total_size = 0
-        vq_data_size = 0  # Size of actual Atari data (ASM/bin files)
+        """Find converted WAV files for preview playback.
+        
+        Size data comes from builder.stats directly, not from file scanning.
+        """
         converted_wavs = []
         
-        for filename in os.listdir(output_dir):
-            filepath = os.path.join(output_dir, filename)
-            if os.path.isfile(filepath):
-                fsize = os.path.getsize(filepath)
-                total_size += fsize
-                # Track VQ data size (ASM files that go into .xex)
-                if filename.endswith('.asm'):
-                    vq_data_size += fsize
+        # Scan instruments folder for preview WAVs
+        instruments_dir = os.path.join(output_dir, "instruments")
+        if os.path.isdir(instruments_dir):
+            for wav in sorted(os.listdir(instruments_dir)):
+                if wav.endswith('.wav'):
+                    wav_path = os.path.join(instruments_dir, wav)
+                    converted_wavs.append(wav_path)
         
-        # Try conversion_info.json first
-        info_path = os.path.join(output_dir, "conversion_info.json")
-        if os.path.isfile(info_path):
-            try:
-                with open(info_path, 'r') as f:
-                    info = json.load(f)
-                    if 'samples' in info:
-                        for sample_info in info['samples']:
-                            if 'instrument_file' in sample_info:
-                                wav_path = sample_info['instrument_file']
-                                if os.path.exists(wav_path):
-                                    converted_wavs.append(wav_path)
-            except Exception as e:
-                self._queue_output(f"Warning: Could not parse JSON: {e}\n")
-        
-        # Fallback: scan instruments folder
-        if not converted_wavs:
-            instruments_dir = os.path.join(output_dir, "instruments")
-            if os.path.isdir(instruments_dir):
-                for wav in sorted(os.listdir(instruments_dir)):
-                    if wav.endswith('.wav'):
-                        wav_path = os.path.join(instruments_dir, wav)
-                        converted_wavs.append(wav_path)
-                        total_size += os.path.getsize(wav_path)
-        
-        result.total_size = total_size
-        result.vq_data_size = vq_data_size if vq_data_size > 0 else total_size
         result.converted_wavs = converted_wavs
         return result
 

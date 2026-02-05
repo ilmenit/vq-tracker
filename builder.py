@@ -611,10 +611,6 @@ class PokeyVQBuilder:
                      converted_files_info[j]["original_path"] = self.input_files[j]
             
             # Create JSON
-            # Recalculate bitrate using actual exported size
-            actual_size = getattr(self, 'actual_data_size', size)
-            actual_bitrate = actual_size * 8 / duration if duration > 0 else 0
-            
             json_data = {
                 "config": {
                     "rate": self.actual_rate,
@@ -627,8 +623,8 @@ class PokeyVQBuilder:
                     "algorithm": self.args.algo
                 },
                 "stats": {
-                    "size_bytes": actual_size,
-                    "bitrate_bps": int(actual_bitrate),
+                    "size_bytes": size,
+                    "bitrate_bps": int(bitrate),
                     "rmse": round(float(rmse), 4),
                     "psnr_db": round(float(psnr), 2),
                     "lsd": round(float(lsd), 4),
@@ -654,13 +650,9 @@ class PokeyVQBuilder:
         # duration = len(audio) / sr
         # bitrate = size * 8 / duration
 
-        # Use actual data size if available
-        actual_size = getattr(self, 'actual_data_size', size)
-        actual_bitrate = actual_size * 8 / duration if duration > 0 else 0
-        
         print(f"\n  > Compression Results:")
-        print(f"    Size:    {actual_size:,} bytes")
-        print(f"    Bitrate: {actual_bitrate:.0f} bps")
+        print(f"    Size:    {size:,} bytes")
+        print(f"    Bitrate: {bitrate:.0f} bps")
         print(f"    RMSE:    {rmse:.4f}")
         print(f"    PSNR:    {psnr:.2f} dB")
         print(f"    LSD:     {lsd:.4f}")
@@ -987,8 +979,8 @@ class PokeyVQBuilder:
              table = POKEY_VOLTAGE_TABLE_DUAL
              map_full = None
              
-        # Export and capture actual data size
-        self.actual_data_size = exporter.export(self.output_asm, codebook, stream_indices, table, map_full, fast=(self.args.fast or (self.args.optimize == 'speed')), channels=self.args.channels)
+        # Export
+        exporter.export(self.output_asm, codebook, stream_indices, table, map_full, fast=(self.args.fast or (self.args.optimize == 'speed')), channels=self.args.channels)
 
 
         

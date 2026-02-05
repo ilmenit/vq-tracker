@@ -20,10 +20,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   function only set up the bundled FFmpeg path on Windows. Now works on all
   platforms, enabling MP3/OGG/FLAC import from both source and PyInstaller builds.
   (`main.py`)
-- **Misleading VQ conversion size**: The size shown after conversion included
-  preview WAV files (~30KB), not just the actual Atari data (~7KB). Now shows
-  "Atari data size" which reflects what goes into the .xex file. (`vq_convert.py`,
-  `ui_callbacks.py`, `ui_refresh.py`)
+- **Misleading VQ conversion size**: The size shown after conversion (~30KB) didn't match
+  the actual .xex size (~7KB). The encoder's estimated size didn't account for nibble
+  packing. Fixed by having `MADSExporter.export()` return the actual byte count after
+  export, which `builder.py` now stores in `conversion_info.json`. (`vq_converter/`:
+  `mads_exporter.py`, `builder.py`; tracker: `vq_convert.py`, `ui_callbacks.py`,
+  `ui_refresh.py`)
 - **Song editor undo not recorded**: Editing pattern assignments or speed
   values in the song editor via keyboard did not create an undo snapshot.
   Changes were silently permanent. (`keyboard.py`: added `save_undo("Edit song")`

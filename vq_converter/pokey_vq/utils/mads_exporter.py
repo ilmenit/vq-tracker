@@ -105,7 +105,7 @@ class MADSExporter:
                         blob_bytes.append(mask_ch2 | v_ch2)  # AUDC2 value
                     else:
                         # Packed: 1 byte per sample
-                        # Player extracts: AND #$0F = Ch1 (low nibble), LSR×4 = Ch2 (high nibble)
+                        # Player extracts: AND #$0F = Ch1 (low nibble), LSRÃ—4 = Ch2 (high nibble)
                         packed = (v_ch2 << 4) | v_ch1
                         blob_bytes.append(packed)
             
@@ -205,6 +205,9 @@ class MADSExporter:
             print(f"  - Format: Dual channel interleaved (32 bytes/16 samples)")
         else:
             print(f"  - Format: Dual channel packed (16 bytes/16 samples)")
+        
+        # Return actual binary data size (codebook blob + indices)
+        return len(blob_bytes) + len(indices)
 
     def export_sample_directory(self, filepath, sample_boundaries, indices, codebook_entries, sample_names=None):
         """

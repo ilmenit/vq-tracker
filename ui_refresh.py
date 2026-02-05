@@ -215,7 +215,7 @@ def _update_vq_ui():
     
     # Update size label
     if dpg.does_item_exist("vq_size_label"):
-        if state.vq.converted and state.vq.result:
+        if state.vq.converted and state.vq.result and state.vq.result.vq_data_size > 0:
             dpg.set_value("vq_size_label", f"Atari data: {format_size(state.vq.result.vq_data_size)}")
         else:
             dpg.set_value("vq_size_label", "")
