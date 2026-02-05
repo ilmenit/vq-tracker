@@ -436,8 +436,7 @@ def try_load_last_project():
 def _trigger_auto_conversion_startup():
     """Auto-trigger VQ conversion after loading project at startup.
     
-    Uses sample_path (extracted files in work_dir) rather than original_sample_path,
-    since the original files may no longer exist on the user's disk.
+    Uses sample_path which points to extracted files in .tmp/samples/.
     """
     # Collect input files from extracted samples
     input_files = []

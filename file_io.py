@@ -395,13 +395,6 @@ def init_working_directory(app_dir: str) -> WorkingDirectory:
 # AUDIO FORMAT CONVERSION
 # =============================================================================
 
-def _safe_filename(name: str) -> str:
-    """Convert name to safe filename."""
-    # Remove/replace problematic characters
-    safe = "".join(c if c.isalnum() or c in "._- " else "_" for c in name)
-    return safe.strip()[:64] or "sample"
-
-
 def convert_to_wav(source_path: str, dest_path: str) -> Tuple[bool, str]:
     """Convert audio file to WAV format.
     
@@ -439,50 +432,52 @@ def convert_to_wav(source_path: str, dest_path: str) -> Tuple[bool, str]:
 
 
 def import_audio_file(source_path: str, dest_dir: str, 
-                      index: int = 0) -> Tuple[Optional[str], str]:
+                      index: int = 0) -> Tuple[Optional[str], Optional[str], str]:
     """Import audio file to working directory, converting if needed.
+    
+    Uses simple numbered filenames (00.wav, 01.wav) for safety across platforms.
+    Returns the clean display name derived from original filename.
     
     Args:
         source_path: Path to source audio file
         dest_dir: Destination directory (usually work_dir.samples)
-        index: Instrument index for filename prefix
+        index: Instrument index for filename
         
     Returns:
-        (dest_path or None, message)
+        (dest_path or None, display_name or None, message)
     """
     if not os.path.exists(source_path):
-        return None, f"File not found: {source_path}"
+        return None, None, f"File not found: {source_path}"
     
     ext = os.path.splitext(source_path)[1].lower()
-    basename = os.path.splitext(os.path.basename(source_path))[0]
-    safe_name = _safe_filename(basename)
     
-    # Generate destination filename with index prefix
-    dest_filename = f"{index:02d}_{safe_name}.wav"
+    # Extract clean display name from original filename
+    original_name = os.path.splitext(os.path.basename(source_path))[0]
+    # Clean up the name (remove leading numbers/underscores that might be from previous exports)
+    display_name = original_name.lstrip('0123456789_')[:16] or original_name[:16]
+    
+    # Simple numbered filename - safe on all platforms
+    dest_filename = f"{index:03d}.wav"
     dest_path = os.path.join(dest_dir, dest_filename)
     
-    # Ensure unique filename
-    counter = 1
-    while os.path.exists(dest_path):
-        dest_filename = f"{index:02d}_{safe_name}_{counter}.wav"
-        dest_path = os.path.join(dest_dir, dest_filename)
-        counter += 1
+    # If file exists (re-importing to same slot), overwrite is fine
+    # The working directory is cleared on new project anyway
     
     if ext == '.wav':
         # Just copy WAV files
         try:
             shutil.copy2(source_path, dest_path)
-            return dest_path, "Copied"
+            return dest_path, display_name, "Copied"
         except Exception as e:
-            return None, f"Copy failed: {e}"
+            return None, None, f"Copy failed: {e}"
     elif ext in SUPPORTED_AUDIO:
         # Convert other formats to WAV
         ok, msg = convert_to_wav(source_path, dest_path)
         if ok:
-            return dest_path, msg
-        return None, msg
+            return dest_path, display_name, msg
+        return None, None, msg
     else:
-        return None, f"Unsupported format: {ext}"
+        return None, None, f"Unsupported format: {ext}"
 
 
 def get_supported_extensions() -> List[str]:
@@ -534,23 +529,13 @@ def save_project(song: Song, editor_state: EditorState,
         # Write to ZIP
         with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as zf:
             
-            # Embed sample WAV files and record archive paths in instrument dicts
+            # Embed sample WAV files (numbered by instrument index)
             embedded_count = 0
-            missing_samples = []
-            for idx, inst_data in enumerate(project_data['instruments']):
-                inst = song.instruments[idx]
-                
+            for idx, inst in enumerate(song.instruments):
                 if inst.sample_path and os.path.exists(inst.sample_path):
-                    # Archive path: samples/00_name.wav
-                    safe_name = _safe_filename(inst.name)
-                    archive_name = f"{SAMPLES_DIR}/{idx:02d}_{safe_name}.wav"
+                    archive_name = f"{SAMPLES_DIR}/{idx:03d}.wav"
                     zf.write(inst.sample_path, archive_name)
-                    inst_data['sample_file'] = archive_name
                     embedded_count += 1
-                elif inst.sample_path:
-                    # Sample path set but file missing - log warning
-                    missing_samples.append(f"{inst.name} ({os.path.basename(inst.sample_path)})")
-                    logger.warning(f"Sample file missing, not embedded: {inst.sample_path}")
             
             # Add project.json
             zf.writestr("project.json", json.dumps(project_data, indent=2))
@@ -571,9 +556,6 @@ def save_project(song: Song, editor_state: EditorState,
         msg = f"Saved: {os.path.basename(path)}"
         if embedded_count:
             msg += f" ({embedded_count} samples)"
-        if missing_samples:
-            msg += f" WARNING: {len(missing_samples)} sample(s) not embedded!"
-            logger.warning(f"Missing samples not embedded: {', '.join(missing_samples)}")
         
         return True, msg
         
@@ -588,9 +570,6 @@ def load_project(path: str, work_dir: WorkingDirectory
                  ) -> Tuple[Optional[Song], Optional[EditorState], str]:
     """Load project from ZIP archive.
     
-    Uses Song.from_dict() as single source of truth for deserialization.
-    Only handles: ZIP extraction, sample path remapping, and audio loading.
-    
     Args:
         path: Project file path
         work_dir: Working directory instance
@@ -601,126 +580,80 @@ def load_project(path: str, work_dir: WorkingDirectory
     import traceback
     
     try:
-        logger.info(f"load_project: === START ===")
-        logger.info(f"load_project: path = {path}")
-        logger.info(f"load_project: path type = {type(path)}")
-        logger.info(f"load_project: path repr = {repr(path)}")
+        logger.info(f"load_project: {path}")
         
-        # Check if file exists and log details
-        exists = os.path.exists(path)
-        logger.info(f"load_project: os.path.exists = {exists}")
-        if not exists:
+        if not os.path.exists(path):
             return None, None, f"File not found: {path}"
         
-        # Log file stats
-        try:
-            stat = os.stat(path)
-            logger.info(f"load_project: file size = {stat.st_size} bytes")
-            logger.info(f"load_project: file mode = {oct(stat.st_mode)}")
-        except Exception as e:
-            logger.error(f"load_project: os.stat failed: {e}")
-        
-        # Log working directory state
-        logger.info(f"load_project: work_dir.root = {work_dir.root}")
-        logger.info(f"load_project: work_dir.samples = {work_dir.samples}")
-        logger.info(f"load_project: work_dir exists = {os.path.exists(work_dir.root)}")
-        
         # Step 1: Clear working directories
-        logger.info("load_project: Step 1 - clear_all()")
+        logger.debug("load_project: clearing working directories")
         try:
             work_dir.clear_all()
-            logger.info("load_project: Step 1 - OK")
         except Exception as e:
-            logger.error(f"load_project: Step 1 FAILED: {type(e).__name__}: {e}")
+            logger.error(f"load_project: clear_all failed: {type(e).__name__}: {e}")
             logger.error(f"Traceback:\n{traceback.format_exc()}")
             return None, None, f"Failed to clear working directory: {e}"
         
-        # Step 2: Open ZIP file
-        logger.info(f"load_project: Step 2 - zipfile.ZipFile({repr(path)}, 'r')")
+        # Step 2: Open and extract ZIP
+        logger.debug(f"load_project: opening ZIP")
         try:
             zf = zipfile.ZipFile(path, 'r')
-            logger.info(f"load_project: Step 2 - OK, archive contains: {zf.namelist()}")
+            logger.debug(f"load_project: extracting {len(zf.namelist())} files")
         except Exception as e:
-            logger.error(f"load_project: Step 2 FAILED: {type(e).__name__}: {e}")
+            logger.error(f"load_project: ZIP open failed: {type(e).__name__}: {e}")
             logger.error(f"Traceback:\n{traceback.format_exc()}")
             return None, None, f"Failed to open project file: {e}"
         
-        # Step 3: Extract ZIP
-        logger.info(f"load_project: Step 3 - extractall({repr(work_dir.root)})")
         try:
             zf.extractall(work_dir.root)
-            logger.info("load_project: Step 3 - OK")
         except Exception as e:
-            logger.error(f"load_project: Step 3 FAILED: {type(e).__name__}: {e}")
+            logger.error(f"load_project: extraction failed: {type(e).__name__}: {e}")
             logger.error(f"Traceback:\n{traceback.format_exc()}")
             return None, None, f"Failed to extract project file: {e}"
         finally:
             zf.close()
-            logger.info("load_project: ZIP file closed")
         
-        # Step 4: Load project.json
+        # Load project.json
         project_path = os.path.join(work_dir.root, "project.json")
-        logger.info(f"load_project: Step 4 - loading {project_path}")
-        logger.info(f"load_project: project.json exists = {os.path.exists(project_path)}")
         if not os.path.exists(project_path):
             return None, None, "Invalid project file: missing project.json"
         
         with open(project_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
-        logger.info(f"load_project: Step 4 - OK, keys: {list(data.keys())}")
         
-        # Step 5: Remap sample paths
-        logger.info("load_project: Step 5 - remapping sample paths")
-        sample_count = 0
-        for inst_data in data.get('instruments', []):
-            sample_file = inst_data.get('sample_file')
-            if sample_file:
-                sample_count += 1
-                extracted_path = os.path.join(work_dir.root, sample_file)
-                dest_path = os.path.join(work_dir.samples, os.path.basename(sample_file))
-                logger.info(f"load_project:   sample {sample_count}: {sample_file}")
-                if os.path.exists(extracted_path):
-                    if extracted_path != dest_path:
-                        shutil.copy2(extracted_path, dest_path)
-                        logger.info(f"load_project:     copied to: {dest_path}")
-                    inst_data['sample_path'] = dest_path
-                else:
-                    logger.warning(f"load_project:     NOT FOUND: {extracted_path}")
-        logger.info(f"load_project: Step 5 - OK, {sample_count} samples")
+        # Set runtime sample_path for each instrument
+        # Samples are stored as samples/00.wav, samples/01.wav, etc.
+        for idx, inst_data in enumerate(data.get('instruments', [])):
+            sample_path = os.path.join(work_dir.samples, f"{idx:03d}.wav")
+            if os.path.exists(sample_path):
+                inst_data['sample_path'] = sample_path
         
-        # Step 6: Create Song object
-        logger.info("load_project: Step 6 - Song.from_dict()")
+        # Create Song object
         song = Song.from_dict(data)
         song.file_path = path
         song.modified = False
-        logger.info(f"load_project: Step 6 - OK, title={song.title}")
         
-        # Step 7: Load sample audio data
-        logger.info("load_project: Step 7 - loading sample audio")
+        # Load sample audio data
         loaded_samples = 0
         missing_samples = 0
         for idx, inst in enumerate(song.instruments):
             if inst.sample_path and os.path.exists(inst.sample_path):
-                logger.info(f"load_project:   [{idx}] loading {os.path.basename(inst.sample_path)}")
-                ok, load_msg = load_sample(inst, inst.sample_path, is_converted=True)
+                ok, load_msg = load_sample(inst, inst.sample_path)
                 if ok:
                     loaded_samples += 1
                 else:
                     missing_samples += 1
-                    logger.warning(f"load_project:   [{idx}] FAILED: {load_msg}")
+                    logger.warning(f"Failed to load sample [{idx}]: {load_msg}")
             elif inst.sample_path:
                 missing_samples += 1
-                logger.warning(f"load_project:   [{idx}] not found: {inst.sample_path}")
-        logger.info(f"load_project: Step 7 - OK, loaded={loaded_samples}, missing={missing_samples}")
+                logger.warning(f"Sample file not found [{idx}]: {inst.sample_path}")
         
-        # Step 8: Load editor state
-        logger.info("load_project: Step 8 - EditorState.from_dict()")
+        # Load editor state
         editor_data = data.get('editor', {})
         editor_state = EditorState.from_dict(editor_data)
         editor_state.vq_converted = False
-        logger.info("load_project: Step 8 - OK")
         
-        logger.info("load_project: === SUCCESS ===")
+        logger.info(f"Loaded: {os.path.basename(path)} ({loaded_samples} samples)")
         
         # Build message
         msg = f"Loaded: {os.path.basename(path)}"
@@ -747,20 +680,18 @@ def load_project(path: str, work_dir: WorkingDirectory
 # =============================================================================
 
 def load_sample(inst: Instrument, path: str, 
-                is_converted: bool = False,
                 update_path: bool = True) -> Tuple[bool, str]:
     """Load WAV sample into instrument.
     
     Args:
         inst: Instrument to load into
         path: Path to WAV file
-        is_converted: If True, don't update original_sample_path
-        update_path: If True, update inst.sample_path (set False when loading converted)
+        update_path: If True, update inst.sample_path
         
     Returns:
         (success, message)
     """
-    logger.debug(f"load_sample: path={path}, is_converted={is_converted}, update_path={update_path}")
+    logger.debug(f"load_sample: path={path}, update_path={update_path}")
     try:
         if not os.path.exists(path):
             return False, f"File not found: {path}"
@@ -793,16 +724,15 @@ def load_sample(inst: Instrument, path: str,
         inst.sample_data = data
         inst.sample_rate = rate
         
-        # Only update sample_path if requested (not when loading converted samples)
         if update_path:
             inst.sample_path = path
         
-        if not is_converted and update_path:
-            inst.original_sample_path = path
-        
-        # Auto-name from filename if empty
+        # Auto-name from filename if empty (but not from numbered archive files like 00.wav)
         if inst.name in ("New", "New Instrument", ""):
-            inst.name = os.path.splitext(os.path.basename(path))[0][:16]
+            basename = os.path.splitext(os.path.basename(path))[0]
+            # Skip if filename is just a number (from archive)
+            if not basename.isdigit():
+                inst.name = basename[:16]
         
         duration = len(data) / rate
         return True, f"Loaded: {len(data):,} samples, {rate}Hz, {duration:.2f}s"
@@ -864,13 +794,14 @@ def import_samples_multi(paths: List[str], dest_dir: str,
     
     for i, path in enumerate(paths):
         inst = Instrument()
-        # Always set original path for error reporting
-        inst.original_sample_path = path
         
         # Import and convert to WAV if needed
-        dest_path, import_msg = import_audio_file(path, dest_dir, start_index + i)
+        dest_path, display_name, import_msg = import_audio_file(path, dest_dir, start_index + i)
         
         if dest_path:
+            # Set display name from original filename
+            if display_name:
+                inst.name = display_name
             # Load the WAV file
             ok, load_msg = load_sample(inst, dest_path)
             results.append((inst, ok, f"{import_msg}; {load_msg}" if ok else import_msg))

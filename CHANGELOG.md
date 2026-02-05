@@ -9,6 +9,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Bug Fixes
 
+- **Windows: WinError 32 when loading .pvq files**: Loading projects failed with
+  "The process cannot access the file because it is being used by another process".
+  Root cause: ZIP archives use forward slashes (`samples/00.wav`) but Windows uses
+  backslashes. When checking if source and destination paths were the same,
+  string comparison failed due to mixed separators, causing `shutil.copy2()` to
+  attempt copying a file onto itself. Fixed with `os.path.normpath()` before
+  path comparison. (`file_io.py`)
+- **Linux/macOS: FFmpeg not found for MP3 import**: The `_setup_ffmpeg_for_pydub()`
+  function only set up the bundled FFmpeg path on Windows. Now works on all
+  platforms, enabling MP3/OGG/FLAC import from both source and PyInstaller builds.
+  (`main.py`)
 - **Song editor undo not recorded**: Editing pattern assignments or speed
   values in the song editor via keyboard did not create an undo snapshot.
   Changes were silently permanent. (`keyboard.py`: added `save_undo("Edit song")`
@@ -17,6 +28,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   fields were not included in the `EditorState` written by autosave, causing
   these settings to reset to defaults when restoring from an autosave.
   (`ui_globals.py`: added both fields to the autosave `EditorState` constructor)
+
+### Project File Format
+
+- **Simplified and portable .pvq format**: Complete redesign of sample storage:
+  - Samples stored as numbered files: `samples/000.wav`, `samples/001.wav`, etc.
+  - No paths stored in JSON — sample existence determined by file presence
+  - Removed `sample_path`, `original_sample_path`, `sample_file` from serialization
+  - Instrument `name`, `base_note`, `sample_rate` are the only persisted fields
+  - `sample_path` is now runtime-only, reconstructed on load
+  - Changed numbering from `02d` to `03d` to support all 128 instruments
+- **Cross-platform compatibility**: Project files now fully portable between
+  Windows, macOS, and Linux without path separator issues
 
 ### Architecture
 
@@ -45,6 +68,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **Magic numbers replaced with constants**: Hardcoded `6` (speed) and `64`
   (pattern length) in `audio_engine.py` replaced with `DEFAULT_SPEED` and
   `DEFAULT_LENGTH` from `constants.py`.
+- **Removed unused code**:
+  - `original_sample_path` field from `Instrument` dataclass
+  - `is_converted` parameter from `load_sample()` function
+  - `_safe_filename()` function (no longer needed with numbered samples)
+  - Backward compatibility code for old project formats
 
 ### Testing
 
@@ -67,10 +95,10 @@ New files: `ops/` (10 modules), `ui_callbacks_interface.py`, `tests/` (5 test
 modules + runner scripts).
 Removed: `operations.py`.
 Modified: `keyboard.py`, `main.py`, `ui_globals.py`, `ui_callbacks.py`,
-`ui_build.py`, `audio_engine.py`, `file_io.py`.
-Unchanged: all ASM sources, `build.py`, `data_model.py`, `state.py`,
-`constants.py`, `runtime.py`, `ui_refresh.py`, `ui_theme.py`, `ui_browser.py`,
-`ui_dialogs.py`, `analyze.py`, `vq_convert.py`, `build_release.py`.
+`ui_build.py`, `audio_engine.py`, `file_io.py`, `data_model.py`.
+Unchanged: all ASM sources, `build.py`, `state.py`, `constants.py`, `runtime.py`,
+`ui_refresh.py`, `ui_theme.py`, `ui_browser.py`, `ui_dialogs.py`, `analyze.py`,
+`vq_convert.py`, `build_release.py`.
 
 ---
 
@@ -119,9 +147,13 @@ tracker for Atari XL/XE computers using Vector Quantization audio compression.
 
 ### Known Issues (fixed in Beta 2)
 
+- Windows: Loading .pvq files failed with WinError 32 due to path separator mismatch
+- Linux/macOS: FFmpeg not found for MP3/OGG/FLAC import in bundled builds
+- Project files not portable across platforms (absolute paths stored)
 - Song editor keyboard edits did not record undo snapshots
 - Autosave did not persist `vq_enhance` and `vq_optimize_speed` settings
 - Bare `except:` clauses throughout the codebase silently swallowed errors
+- Sample filenames limited to 99 instruments (used `02d` format)
 - No unit tests
 
 ### Known Limitations

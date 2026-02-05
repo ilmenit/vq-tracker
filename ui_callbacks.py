@@ -1185,8 +1185,7 @@ def on_vq_use_converted_change(sender, app_data):
 def _reload_original_samples():
     """Reload original samples from their working copy paths.
     
-    Uses sample_path (the working copy in .tmp/samples/) rather than
-    original_sample_path (the external file which might not exist).
+    Uses sample_path which points to .tmp/samples/ where samples are stored.
     """
     import logging
     logger = logging.getLogger(__name__)
@@ -1194,28 +1193,14 @@ def _reload_original_samples():
     
     logger.debug(f"Reloading {len(state.song.instruments)} original samples")
     for inst in state.song.instruments:
-        # Use sample_path (working copy) - this should always exist
-        # sample_path points to .tmp/samples/ where the original was extracted/imported
         working_path = inst.sample_path
         if working_path and os.path.exists(working_path):
             logger.debug(f"  Inst {inst.name}: {working_path}")
-            # Load without updating paths (they're already correct)
-            ok, msg = load_sample(inst, working_path, is_converted=False, update_path=False)
+            ok, msg = load_sample(inst, working_path, update_path=False)
             if not ok:
                 G.show_status(f"Error reloading {inst.name}: {msg}")
-            else:
-                logger.debug(f"    Loaded OK, {len(inst.sample_data) if inst.sample_data is not None else 0} samples")
-        else:
-            # Fallback to original_sample_path if working copy not available
-            original_path = inst.original_sample_path
-            if original_path and os.path.exists(original_path):
-                logger.debug(f"  Inst {inst.name}: fallback to {original_path}")
-                # Don't update paths - just load the sample data
-                ok, msg = load_sample(inst, original_path, is_converted=True, update_path=False)
-                if not ok:
-                    G.show_status(f"Error reloading {inst.name}: {msg}")
-            else:
-                logger.warning(f"  Inst {inst.name}: No valid sample path (working={working_path}, original={original_path})")
+        elif working_path:
+            logger.warning(f"  Inst {inst.name}: sample not found: {working_path}")
 
 
 def _load_converted_samples():
@@ -1258,7 +1243,7 @@ def _load_converted_samples():
             if os.path.exists(wav_path):
                 # Load converted sample data WITHOUT updating sample_path
                 # This preserves sample_path pointing to the original working sample
-                ok, msg = load_sample(inst, wav_path, is_converted=True, update_path=False)
+                ok, msg = load_sample(inst, wav_path, update_path=False)
                 if ok:
                     loaded_count += 1
                     logger.info(f"    Loaded OK: {len(inst.sample_data) if inst.sample_data is not None else 0} samples")
@@ -1375,10 +1360,8 @@ def on_vq_convert_click(sender, app_data):
         return
     
     # Check all instruments have files - use sample_path (working copy in .tmp)
-    # NOT original_sample_path which may point to external files that no longer exist
     input_files = []
     for i, inst in enumerate(state.song.instruments):
-        # Use sample_path - the working copy extracted from project archive
         working_path = inst.sample_path
         logger.debug(f"  Inst {i}: name='{inst.name}', sample_path='{working_path}'")
         if working_path and os.path.exists(working_path):

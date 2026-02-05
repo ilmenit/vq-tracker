@@ -110,8 +110,7 @@ class Instrument:
     
     Attributes:
         name: Display name for the instrument
-        sample_path: Path to loaded sample file
-        original_sample_path: Original WAV path before VQ conversion
+        sample_path: Runtime path to sample file in .tmp/samples/ (not serialized)
         sample_data: Audio samples as numpy array (float32, normalized)
         sample_rate: Sample rate of loaded audio (Hz)
         base_note: Note number where sample plays at original pitch
@@ -121,8 +120,7 @@ class Instrument:
                    - Index 24 (C-3) = 4.0x playback speed
     """
     name: str = "New"
-    sample_path: str = ""
-    original_sample_path: str = ""
+    sample_path: str = ""  # Runtime only - path to .tmp/samples/XX.wav
     sample_data: Optional[np.ndarray] = None
     sample_rate: int = 44100
     base_note: int = 1  # C-1 = 1.0x pitch (matches Atari pitch table index 0)
@@ -133,34 +131,25 @@ class Instrument:
     def duration(self) -> float:
         return len(self.sample_data) / self.sample_rate if self.is_loaded() else 0.0
     
-    def get_original_path(self) -> str:
-        """Get original external sample path (for reference/info only).
-        
-        WARNING: Do NOT use this for conversion - use sample_path instead.
-        original_sample_path points to the user's original file which may not exist.
-        sample_path points to the working copy in .tmp/samples/ which always exists.
-        """
-        return self.original_sample_path or self.sample_path
-    
     def to_dict(self) -> dict:
-        """Serialize instrument metadata. Keys match field names exactly.
-        Note: sample_data (numpy array) is NOT serialized here - 
-        it's handled by the file I/O layer (embedded as WAV in ZIP).
+        """Serialize instrument metadata for project file.
+        
+        Only serializes portable fields. Runtime-only fields are excluded:
+        - sample_path: Reconstructed on load from .tmp/samples/XX.wav
+        - sample_data: Embedded as WAV file in archive
         """
         return {
             'name': self.name,
-            'sample_path': self.sample_path,
-            'original_sample_path': self.original_sample_path,
             'base_note': self.base_note,
             'sample_rate': self.sample_rate,
         }
     
     @classmethod
     def from_dict(cls, d: dict) -> 'Instrument':
+        """Deserialize instrument from project file."""
         return cls(
             name=d.get('name', 'New'),
             sample_path=d.get('sample_path', ''),
-            original_sample_path=d.get('original_sample_path', ''),
             base_note=d.get('base_note', 1),
             sample_rate=d.get('sample_rate', 44100),
         )
