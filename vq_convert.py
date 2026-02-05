@@ -159,7 +159,8 @@ class VQResult:
     """Result of VQ conversion."""
     success: bool = False
     output_dir: Optional[str] = None
-    total_size: int = 0
+    total_size: int = 0          # Total size of all output files
+    vq_data_size: int = 0        # Size of VQ data that goes into .xex
     converted_wavs: List[str] = field(default_factory=list)
     error_message: str = ""
 
@@ -386,8 +387,8 @@ class VQConverter:
                     self._queue_output("\n" + "=" * 60 + "\n")
                     self._queue_output(f"SUCCESS: Conversion complete!\n")
                     self._queue_output(f"Output: {result.output_dir}\n")
-                    self._queue_output(f"Total size: {result.total_size:,} bytes\n")
-                    self._queue_output(f"Converted WAVs: {len(result.converted_wavs)}\n")
+                    self._queue_output(f"Atari data size: {format_size(result.vq_data_size)}\n")
+                    self._queue_output(f"Preview WAVs: {len(result.converted_wavs)} files\n")
                 else:
                     result.success = False
                     result.error_message = f"Missing ASM files in {asm_output_dir}"
@@ -428,12 +429,17 @@ class VQConverter:
     def _parse_results(self, output_dir: str, result: VQResult) -> VQResult:
         """Parse conversion results from output directory."""
         total_size = 0
+        vq_data_size = 0  # Size of actual Atari data (ASM/bin files)
         converted_wavs = []
         
         for filename in os.listdir(output_dir):
             filepath = os.path.join(output_dir, filename)
             if os.path.isfile(filepath):
-                total_size += os.path.getsize(filepath)
+                fsize = os.path.getsize(filepath)
+                total_size += fsize
+                # Track VQ data size (ASM files that go into .xex)
+                if filename.endswith('.asm'):
+                    vq_data_size += fsize
         
         # Try conversion_info.json first
         info_path = os.path.join(output_dir, "conversion_info.json")
@@ -461,6 +467,7 @@ class VQConverter:
                         total_size += os.path.getsize(wav_path)
         
         result.total_size = total_size
+        result.vq_data_size = vq_data_size if vq_data_size > 0 else total_size
         result.converted_wavs = converted_wavs
         return result
 

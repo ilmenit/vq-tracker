@@ -1466,7 +1466,7 @@ def poll_vq_conversion():
         
         if result.success:
             if dpg.does_item_exist("vq_size_label"):
-                dpg.set_value("vq_size_label", f"Size: {format_size(result.total_size)}")
+                dpg.set_value("vq_size_label", f"Atari data: {format_size(result.vq_data_size)}")
             
             # Auto-enable and check "Use converted" checkbox
             if dpg.does_item_exist("vq_use_converted_cb"):
@@ -1483,7 +1483,7 @@ def poll_vq_conversion():
             
             # Refresh instruments (will show green because use_converted=True)
             R.refresh_instruments()
-            G.show_status(f"Conversion complete: {format_size(result.total_size)} - Using converted samples")
+            G.show_status(f"Conversion complete: {format_size(result.vq_data_size)} Atari data")
         else:
             G.show_status(f"Conversion failed: {result.error_message}")
 

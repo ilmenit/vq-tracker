@@ -20,6 +20,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   function only set up the bundled FFmpeg path on Windows. Now works on all
   platforms, enabling MP3/OGG/FLAC import from both source and PyInstaller builds.
   (`main.py`)
+- **Misleading VQ conversion size**: The size shown after conversion included
+  preview WAV files (~30KB), not just the actual Atari data (~7KB). Now shows
+  "Atari data size" which reflects what goes into the .xex file. (`vq_convert.py`,
+  `ui_callbacks.py`, `ui_refresh.py`)
 - **Song editor undo not recorded**: Editing pattern assignments or speed
   values in the song editor via keyboard did not create an undo snapshot.
   Changes were silently permanent. (`keyboard.py`: added `save_undo("Edit song")`
@@ -95,10 +99,10 @@ New files: `ops/` (10 modules), `ui_callbacks_interface.py`, `tests/` (5 test
 modules + runner scripts).
 Removed: `operations.py`.
 Modified: `keyboard.py`, `main.py`, `ui_globals.py`, `ui_callbacks.py`,
-`ui_build.py`, `audio_engine.py`, `file_io.py`, `data_model.py`.
+`ui_build.py`, `audio_engine.py`, `file_io.py`, `data_model.py`, `vq_convert.py`,
+`ui_refresh.py`.
 Unchanged: all ASM sources, `build.py`, `state.py`, `constants.py`, `runtime.py`,
-`ui_refresh.py`, `ui_theme.py`, `ui_browser.py`, `ui_dialogs.py`, `analyze.py`,
-`vq_convert.py`, `build_release.py`.
+`ui_theme.py`, `ui_browser.py`, `ui_dialogs.py`, `analyze.py`, `build_release.py`.
 
 ---
 
@@ -150,6 +154,7 @@ tracker for Atari XL/XE computers using Vector Quantization audio compression.
 - Windows: Loading .pvq files failed with WinError 32 due to path separator mismatch
 - Linux/macOS: FFmpeg not found for MP3/OGG/FLAC import in bundled builds
 - Project files not portable across platforms (absolute paths stored)
+- VQ conversion showed misleading size (included preview WAVs, not just Atari data)
 - Song editor keyboard edits did not record undo snapshots
 - Autosave did not persist `vq_enhance` and `vq_optimize_speed` settings
 - Bare `except:` clauses throughout the codebase silently swallowed errors
