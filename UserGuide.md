@@ -258,7 +258,7 @@ Click an instrument to select it for note entry. Double-click to rename.
 
 | Setting | Description |
 |---------|-------------|
-| **Oct** | Current octave for keyboard entry (1-4). Also set with F1-F4. |
+| **Oct** | Current octave for keyboard entry (1-3). Also set with F1-F3. |
 | **Step** | Cursor advance after note entry (0-16). 0 = no advance. |
 | **Vol** | Default volume for new notes (0-F in hex, 0-15 in decimal) |
 
@@ -401,7 +401,6 @@ Lower Row (current octave):
 | F1 | Set octave 1 |
 | F2 | Set octave 2 |
 | F3 | Set octave 3 |
-| F4 | Set octave 4 |
 | * | Octave up |
 | / | Octave down |
 | [ | Previous instrument |

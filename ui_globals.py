@@ -33,14 +33,14 @@ def init_paths(app_dir: str):
 
 # UI SIZING
 TOP_PANEL_HEIGHT = 230
-EDITOR_WIDTH = 560
+EDITOR_WIDTH = 640
 SONG_INFO_WIDTH = 225
 INPUT_ROW_HEIGHT = 40
 EDITOR_HEADER_HEIGHT = 85
 MIN_VISIBLE_ROWS = 1
 MAX_VISIBLE_ROWS = 50
 SONG_VISIBLE_ROWS = 5
-SONG_PANEL_WIDTH = 295
+SONG_PANEL_WIDTH = 340
 
 # =============================================================================
 # SHARED STATE

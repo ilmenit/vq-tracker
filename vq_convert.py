@@ -87,7 +87,7 @@ class VQArgs:
     player: str = "vq_multi_channel"
     
     # Audio settings
-    rate: int = 5278
+    rate: int = VQ_RATE_DEFAULT
     channels: int = 1
     
     # Optimization

@@ -134,8 +134,8 @@ def refresh_song_editor():
                 sl = state.song.songlines[sl_idx]
                 dpg.configure_item(spd_tag, label=G.fmt(sl.speed))
                 
-                # SPD column is index 3 (after C1=0, C2=1, C3=2)
-                is_cursor = is_cursor_row and state.song_cursor_col == 3 and state.focus == FOCUS_SONG
+                # SPD column is after all channel columns
+                is_cursor = is_cursor_row and state.song_cursor_col == MAX_CHANNELS and state.focus == FOCUS_SONG
                 if is_cursor:
                     theme = "theme_cell_cursor"
                 elif is_playing:

@@ -311,6 +311,7 @@ from constants import APP_NAME, APP_VERSION, WIN_WIDTH, WIN_HEIGHT
 from state import state
 from ui_theme import create_themes
 from keyboard import handle_key
+import key_config
 import ops
 import runtime  # Bundle/dev mode detection
 
@@ -501,6 +502,12 @@ def main():
     create_themes()
     logger.debug("UI themes created")
     
+    # Load configurable keyboard bindings (needs DPG for key codes)
+    kc = key_config.init()
+    if kc.errors:
+        logger.error(f"Keyboard config has {len(kc.errors)} error(s) - check keyboard.json")
+    logger.debug(f"Key config: {len(kc.bindings)} bindings from {kc.source}")
+    
     # Initialize modules with cross-references
     R.set_instrument_callbacks(C.preview_instrument, C.select_inst_click)
     C.init_callbacks(B.rebuild_editor_grid, B.show_confirm_centered)
@@ -520,6 +527,10 @@ def main():
     # Initial refresh
     R.refresh_all()
     G.update_title()
+    
+    # Show keyboard config warnings in status bar (UI must be ready)
+    if kc.errors:
+        G.show_status(f"\u26a0 keyboard.json: {len(kc.errors)} error(s) - check log!")
     
     # Register handlers
     with dpg.handler_registry():

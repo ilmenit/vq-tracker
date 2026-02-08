@@ -73,7 +73,7 @@ class Pattern:
     
     def transpose(self, semitones: int):
         for row in self.rows:
-            if row.note > 0:
+            if row.note > 0 and row.note != NOTE_OFF:
                 new_note = row.note + semitones
                 if 1 <= new_note <= MAX_NOTES:
                     row.note = new_note
@@ -121,6 +121,7 @@ class Instrument:
     """
     name: str = "New"
     sample_path: str = ""  # Runtime only - path to .tmp/samples/XX.wav
+    original_sample_path: str = ""  # Original path on user's disk when first imported
     sample_data: Optional[np.ndarray] = None
     sample_rate: int = 44100
     base_note: int = 1  # C-1 = 1.0x pitch (matches Atari pitch table index 0)
@@ -132,16 +133,19 @@ class Instrument:
         return len(self.sample_data) / self.sample_rate if self.is_loaded() else 0.0
     
     def to_dict(self) -> dict:
-        """Serialize instrument metadata for project file.
+        """Serialize instrument metadata.
         
-        Only serializes portable fields. Runtime-only fields are excluded:
-        - sample_path: Reconstructed on load from .tmp/samples/XX.wav
-        - sample_data: Embedded as WAV file in archive
+        Used by BOTH undo system AND file persistence.
+        sample_path is included so undo can re-attach audio data.
+        For file persistence, sample_path is overwritten on load anyway.
+        sample_data is excluded (embedded as WAV file in archive,
+        or preserved via audio_refs in undo system).
         """
         return {
             'name': self.name,
             'base_note': self.base_note,
             'sample_rate': self.sample_rate,
+            'sample_path': self.sample_path,
         }
     
     @classmethod
@@ -150,6 +154,7 @@ class Instrument:
         return cls(
             name=d.get('name', 'New'),
             sample_path=d.get('sample_path', ''),
+            original_sample_path=d.get('original_sample_path', ''),
             base_note=d.get('base_note', 1),
             sample_rate=d.get('sample_rate', 44100),
         )
@@ -157,7 +162,7 @@ class Instrument:
 @dataclass
 class Songline:
     """One row in song arrangement."""
-    patterns: List[int] = field(default_factory=lambda: [0, 0, 0])
+    patterns: List[int] = field(default_factory=lambda: [0] * MAX_CHANNELS)
     speed: int = DEFAULT_SPEED  # Speed for this songline (VBLANKs per row)
     
     def __post_init__(self):
@@ -186,9 +191,9 @@ class Song:
     
     def __post_init__(self):
         if not self.songlines:
-            self.songlines = [Songline(patterns=[0, 1, 2])]
+            self.songlines = [Songline(patterns=list(range(MAX_CHANNELS)))]
         if not self.patterns:
-            self.patterns = [Pattern() for _ in range(3)]
+            self.patterns = [Pattern() for _ in range(MAX_CHANNELS)]
     
     def reset(self):
         self.title = "Untitled"
@@ -198,8 +203,8 @@ class Song:
         self.volume_control = False
         self.screen_control = True
         self.keyboard_control = True
-        self.songlines = [Songline(patterns=[0, 1, 2])]
-        self.patterns = [Pattern() for _ in range(3)]
+        self.songlines = [Songline(patterns=list(range(MAX_CHANNELS)))]
+        self.patterns = [Pattern() for _ in range(MAX_CHANNELS)]
         self.instruments = []
         self.modified = False
         self.file_path = ""
@@ -287,6 +292,13 @@ class Song:
     def remove_instrument(self, idx: int) -> bool:
         if 0 <= idx < len(self.instruments):
             self.instruments.pop(idx)
+            # Remap instrument references in all pattern rows
+            for pattern in self.patterns:
+                for row in pattern.rows:
+                    if row.instrument == idx:
+                        row.instrument = 0
+                    elif row.instrument > idx:
+                        row.instrument -= 1
             self.modified = True
             return True
         return False
@@ -330,7 +342,7 @@ class Song:
         
         song.songlines = [
             Songline(
-                patterns=list(sl.get('patterns', [0, 0, 0])),
+                patterns=list(sl.get('patterns', [0] * MAX_CHANNELS)),
                 speed=sl.get('speed', DEFAULT_SPEED)
             )
             for sl in d.get('songlines', [])
@@ -341,8 +353,8 @@ class Song:
         
         # Ensure minimum structure
         if not song.songlines:
-            song.songlines = [Songline(patterns=[0, 1, 2])]
-        while len(song.patterns) < 3:
+            song.songlines = [Songline(patterns=list(range(MAX_CHANNELS)))]
+        while len(song.patterns) < MAX_CHANNELS:
             song.patterns.append(Pattern())
         
         return song

@@ -129,7 +129,6 @@ def enter_digit(d: int):
     if state.column == 1:  # Instrument (2 hex digits)
         if state.pending_digit is not None and state.pending_col == 1:
             val = (state.pending_digit << 4) | (d & 0xF)
-            save_undo("Enter instrument")
             row.instrument = min(val, MAX_INSTRUMENTS - 1)
             if row.instrument >= len(state.song.instruments):
                 ui.show_status(f"\u26a0 Instrument {row.instrument:02X} not defined")
@@ -138,6 +137,7 @@ def enter_digit(d: int):
             move_cursor(state.step, 0)
             return
         else:
+            save_undo("Enter instrument")
             state.pending_digit = d & 0xF
             state.pending_col = 1
             row.instrument = d & 0xF
@@ -164,7 +164,6 @@ def enter_digit_decimal(d: int):
         if state.pending_digit is not None and state.pending_col == 1:
             if state.pending_digit >= 10:  # Already have 2 digits
                 val = state.pending_digit * 10 + d
-                save_undo("Enter instrument")
                 row.instrument = min(val, MAX_INSTRUMENTS - 1)
                 if row.instrument >= len(state.song.instruments):
                     ui.show_status(f"\u26a0 Instrument {row.instrument} not defined")
@@ -176,19 +175,20 @@ def enter_digit_decimal(d: int):
                 state.pending_digit = state.pending_digit * 10 + d
                 row.instrument = min(state.pending_digit, MAX_INSTRUMENTS - 1)
         else:
+            save_undo("Enter instrument")
             state.pending_digit = d
             state.pending_col = 1
             row.instrument = d
     else:  # Volume (2 decimal digits, 00-15)
         if state.pending_digit is not None and state.pending_col == 2:
             val = state.pending_digit * 10 + d
-            save_undo("Enter volume")
             row.volume = min(val, MAX_VOLUME)
             state.clear_pending()
             from ops.navigation import move_cursor
             move_cursor(state.step, 0)
             return
         else:
+            save_undo("Enter volume")
             state.pending_digit = d
             state.pending_col = 2
             row.volume = min(d, MAX_VOLUME)

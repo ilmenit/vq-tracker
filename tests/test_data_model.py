@@ -13,8 +13,8 @@ import unittest
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from constants import (MAX_VOLUME, MAX_NOTES, MAX_INSTRUMENTS, NOTE_OFF,
-                       DEFAULT_LENGTH, DEFAULT_SPEED, PAL_HZ)
+from constants import (MAX_VOLUME, MAX_NOTES, MAX_INSTRUMENTS, MAX_CHANNELS,
+                       NOTE_OFF, DEFAULT_LENGTH, DEFAULT_SPEED, PAL_HZ)
 from data_model import Row, Pattern, Instrument, Songline, Song
 
 
@@ -212,8 +212,10 @@ class TestInstrument(unittest.TestCase):
         d = i.to_dict()
         i2 = Instrument.from_dict(d)
         self.assertEqual(i2.name, "Bass")
+        # sample_path is persisted (needed by undo system for audio re-attachment)
         self.assertEqual(i2.sample_path, "/tmp/bass.wav")
-        self.assertEqual(i2.original_sample_path, "/home/user/bass.wav")
+        # original_sample_path is runtime-only, not persisted
+        self.assertEqual(i2.original_sample_path, "")
         self.assertEqual(i2.base_note, 13)
         self.assertEqual(i2.sample_rate, 22050)
         self.assertIsNone(i2.sample_data)  # Audio not serialized
@@ -229,13 +231,13 @@ class TestSongline(unittest.TestCase):
 
     def test_defaults(self):
         sl = Songline()
-        self.assertEqual(len(sl.patterns), 3)
+        self.assertEqual(len(sl.patterns), MAX_CHANNELS)
         self.assertEqual(sl.speed, DEFAULT_SPEED)
 
     def test_copy(self):
-        sl = Songline(patterns=[5, 6, 7], speed=8)
+        sl = Songline(patterns=[5, 6, 7, 8], speed=8)
         c = sl.copy()
-        self.assertEqual(c.patterns, [5, 6, 7])
+        self.assertEqual(c.patterns, [5, 6, 7, 8])
         self.assertEqual(c.speed, 8)
         c.patterns[0] = 99
         self.assertEqual(sl.patterns[0], 5)  # Original unchanged
@@ -248,7 +250,7 @@ class TestSong(unittest.TestCase):
         s = Song()
         self.assertEqual(s.title, "Untitled")
         self.assertGreaterEqual(len(s.songlines), 1)
-        self.assertGreaterEqual(len(s.patterns), 3)
+        self.assertGreaterEqual(len(s.patterns), MAX_CHANNELS)
 
     def test_reset(self):
         s = Song(title="Test", author="Me")
@@ -270,7 +272,7 @@ class TestSong(unittest.TestCase):
         s.patterns[0].rows[0].instrument = 1
 
         # Add songlines
-        s.songlines.append(Songline(patterns=[1, 2, 0], speed=4))
+        s.songlines.append(Songline(patterns=[1, 2, 0, 3], speed=4))
 
         # Add instruments
         s.instruments.append(Instrument(name="Kick", base_note=1))
@@ -286,7 +288,7 @@ class TestSong(unittest.TestCase):
         self.assertEqual(s2.patterns[0].rows[0].note, 12)
         self.assertEqual(s2.patterns[0].rows[0].instrument, 1)
         self.assertEqual(len(s2.songlines), 2)
-        self.assertEqual(s2.songlines[1].patterns, [1, 2, 0])
+        self.assertEqual(s2.songlines[1].patterns, [1, 2, 0, 3])
         self.assertEqual(s2.songlines[1].speed, 4)
         self.assertEqual(len(s2.instruments), 2)
         self.assertEqual(s2.instruments[0].name, "Kick")
@@ -332,7 +334,7 @@ class TestSongSerializationEdgeCases(unittest.TestCase):
     def test_empty_dict(self):
         s = Song.from_dict({})
         self.assertEqual(s.title, "Untitled")
-        self.assertGreaterEqual(len(s.patterns), 3)
+        self.assertGreaterEqual(len(s.patterns), MAX_CHANNELS)
         self.assertGreaterEqual(len(s.songlines), 1)
 
     def test_note_off_survives_roundtrip(self):
@@ -350,6 +352,28 @@ class TestSongSerializationEdgeCases(unittest.TestCase):
         self.assertEqual(r2.note, MAX_NOTES)
         self.assertEqual(r2.instrument, MAX_INSTRUMENTS - 1)
         self.assertEqual(r2.volume, MAX_VOLUME)
+
+    def test_backward_compat_3ch_song(self):
+        """Old 3-channel song files load into 4-channel tracker."""
+        old_dict = {
+            'version': 1,
+            'meta': {'title': 'Old Song'},
+            'songlines': [
+                {'patterns': [0, 1, 2], 'speed': 6},
+            ],
+            'patterns': [
+                {'length': 16, 'rows': []},
+                {'length': 32, 'rows': []},
+                {'length': 64, 'rows': []},
+            ],
+            'instruments': [],
+        }
+        song = Song.from_dict(old_dict)
+        # 3-element pattern list padded to 4
+        self.assertEqual(len(song.songlines[0].patterns), MAX_CHANNELS)
+        self.assertEqual(song.songlines[0].patterns, [0, 1, 2, 0])
+        # Minimum 4 patterns created
+        self.assertGreaterEqual(len(song.patterns), MAX_CHANNELS)
 
 
 if __name__ == '__main__':

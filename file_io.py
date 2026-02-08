@@ -143,8 +143,9 @@ except ImportError:
     SCIPY_OK = False
 
 from constants import (PROJECT_EXT, BINARY_EXT, DEFAULT_SPEED, DEFAULT_OCTAVE,
-                       DEFAULT_STEP, MAX_VOLUME, PAL_HZ, FOCUS_EDITOR, NOTE_OFF,
-                       APP_VERSION, FORMAT_VERSION)
+                       DEFAULT_STEP, MAX_VOLUME, MAX_CHANNELS, PAL_HZ, FOCUS_EDITOR,
+                       NOTE_OFF, APP_VERSION, FORMAT_VERSION, VQ_RATE_DEFAULT,
+                       VQ_VECTOR_DEFAULT, VQ_SMOOTHNESS_DEFAULT)
 from data_model import Song, Instrument, Pattern, Row
 
 # =============================================================================
@@ -193,9 +194,9 @@ class EditorState:
     
     # VQ settings
     vq_converted: bool = False
-    vq_rate: int = 7917
-    vq_vector_size: int = 2
-    vq_smoothness: int = 0
+    vq_rate: int = VQ_RATE_DEFAULT
+    vq_vector_size: int = VQ_VECTOR_DEFAULT
+    vq_smoothness: int = VQ_SMOOTHNESS_DEFAULT
     vq_enhance: bool = True
     vq_optimize_speed: bool = True  # True=speed (full bytes), False=size (nibble-packed)
     
@@ -431,6 +432,30 @@ def convert_to_wav(source_path: str, dest_path: str) -> Tuple[bool, str]:
         return False, f"Conversion failed: {e}"
 
 
+def next_sample_start_index(dest_dir: str) -> int:
+    """Find the next safe starting index for numbered WAV files.
+    
+    Returns max(existing_numbers) + 1, guaranteeing no collision with
+    any existing file.  After instrument removal, len(instruments) can be
+    lower than the highest numbered file on disk, so using len(instruments)
+    as a start index would overwrite another instrument's WAV file.
+    
+    Returns:
+        An integer N such that N, N+1, N+2, ... are all unused in dest_dir.
+    """
+    if not os.path.isdir(dest_dir):
+        return 0
+    max_idx = -1
+    try:
+        for name in os.listdir(dest_dir):
+            base, ext = os.path.splitext(name)
+            if ext.lower() == '.wav' and base.isdigit():
+                max_idx = max(max_idx, int(base))
+    except OSError:
+        pass
+    return max_idx + 1
+
+
 def import_audio_file(source_path: str, dest_dir: str, 
                       index: int = 0) -> Tuple[Optional[str], Optional[str], str]:
     """Import audio file to working directory, converting if needed.
@@ -556,6 +581,12 @@ def save_project(song: Song, editor_state: EditorState,
         msg = f"Saved: {os.path.basename(path)}"
         if embedded_count:
             msg += f" ({embedded_count} samples)"
+        
+        # Warn about instruments whose sample files are missing on disk
+        missing = sum(1 for inst in song.instruments
+                      if inst.sample_path and not os.path.exists(inst.sample_path))
+        if missing:
+            msg += f" — WARNING: {missing} sample file(s) not found"
         
         return True, msg
         
@@ -780,7 +811,15 @@ def _read_wav(path: str) -> Tuple[int, Optional[np.ndarray]]:
 def import_samples_multi(paths: List[str], dest_dir: str, 
                          start_index: int = 0
                          ) -> List[Tuple[Instrument, bool, str]]:
-    """Import multiple audio files.
+    """Import multiple audio files into fully-initialized Instrument objects.
+    
+    This is the SINGLE source of truth for "source audio → Instrument".
+    Both file-mode and folder-mode import converge here.  Every field
+    that a working Instrument needs is set before returning:
+      - name (from original filename)
+      - sample_path (numbered WAV in dest_dir)
+      - original_sample_path (user's source file)
+      - sample_data / sample_rate (loaded audio)
     
     Args:
         paths: List of source file paths
@@ -794,6 +833,7 @@ def import_samples_multi(paths: List[str], dest_dir: str,
     
     for i, path in enumerate(paths):
         inst = Instrument()
+        inst.original_sample_path = path
         
         # Import and convert to WAV if needed
         dest_path, display_name, import_msg = import_audio_file(path, dest_dir, start_index + i)
@@ -858,15 +898,23 @@ def import_samples_folder(folder: str, dest_dir: str,
 # =============================================================================
 
 def export_binary(song: Song, path: str) -> Tuple[bool, str]:
-    """Export to binary .pvg format for Atari player."""
+    """Export to binary .pvg format for Atari player.
+    
+    Version 4 format:
+      Header: PVG(3) + version(1) + channels(1) + default_speed(1) + system(1)
+              + num_songlines(2) + num_patterns(2) + num_instruments(1)
+      Per songline: patterns[MAX_CHANNELS](MAX_CHANNELS bytes) + speed(1 byte)
+      Per pattern: length(2) + rows(3 bytes each: note, instrument, volume)
+    """
     try:
         if not path.lower().endswith(BINARY_EXT):
             path += BINARY_EXT
         
         with open(path, 'wb') as f:
             f.write(b'PVG')
-            f.write(struct.pack('B', 3))
-            f.write(struct.pack('<B', song.speed))
+            f.write(struct.pack('B', 4))  # Version 4 (added channel count + per-songline speed)
+            f.write(struct.pack('<B', MAX_CHANNELS))
+            f.write(struct.pack('<B', song.songlines[0].speed if song.songlines else DEFAULT_SPEED))
             f.write(struct.pack('<B', song.system))
             f.write(struct.pack('<H', len(song.songlines)))
             f.write(struct.pack('<H', len(song.patterns)))
@@ -875,6 +923,7 @@ def export_binary(song: Song, path: str) -> Tuple[bool, str]:
             for sl in song.songlines:
                 for p in sl.patterns:
                     f.write(struct.pack('B', p))
+                f.write(struct.pack('B', sl.speed))  # Per-songline speed
             
             for ptn in song.patterns:
                 f.write(struct.pack('<H', ptn.length))
@@ -908,9 +957,10 @@ def export_asm(song: Song, out_dir: str) -> Tuple[bool, str]:
             f.write("; Configuration\n")
             f.write(f"VOLUME_CONTROL = {vol_val}  ; 1=enable volume scaling, 0=disable\n\n")
             
-            # Song length
+            # Song length and channels
             num_songlines = len(song.songlines)
-            f.write(f"SONG_LENGTH = {num_songlines}\n\n")
+            f.write(f"SONG_LENGTH = {num_songlines}\n")
+            f.write(f"NUM_CHANNELS = {MAX_CHANNELS}\n\n")
             
             # Speed per songline
             f.write("; Speed per songline\n")
@@ -919,9 +969,9 @@ def export_asm(song: Song, out_dir: str) -> Tuple[bool, str]:
             f.write("\n\n")
             
             # Pattern assignments per channel
-            for ch in range(3):
+            for ch in range(MAX_CHANNELS):
                 f.write(f"SONG_PTN_CH{ch}:\n    .byte ")
-                f.write(",".join(f"${sl.patterns[ch]:02X}" for sl in song.songlines))
+                f.write(",".join(f"${(sl.patterns[ch] if ch < len(sl.patterns) else 0):02X}" for sl in song.songlines))
                 f.write("\n\n")
             
             # Pattern directory

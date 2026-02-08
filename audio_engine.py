@@ -61,8 +61,8 @@ class AudioEngine:
         self.sample_count = 0
         
         # Pattern info
-        self.patterns = [0, 1, 2]
-        self.lengths = [DEFAULT_LENGTH, DEFAULT_LENGTH, DEFAULT_LENGTH]
+        self.patterns = list(range(MAX_CHANNELS))
+        self.lengths = [DEFAULT_LENGTH] * MAX_CHANNELS
         
         # Callbacks (called from main thread via process_callbacks)
         self.on_row: Optional[Callable[[int, int], None]] = None

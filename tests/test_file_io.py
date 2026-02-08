@@ -25,30 +25,8 @@ from constants import (MAX_VOLUME, DEFAULT_SPEED, FORMAT_VERSION, NOTE_OFF,
 from data_model import Song, Instrument, Pattern, Row, Songline
 from file_io import (
     save_project, load_project, EditorState, WorkingDirectory,
-    _safe_filename, load_sample,
+    load_sample,
 )
-
-
-class TestSafeFilename(unittest.TestCase):
-    """Tests for _safe_filename."""
-
-    def test_normal_name(self):
-        self.assertEqual(_safe_filename("kick_drum"), "kick_drum")
-
-    def test_special_characters(self):
-        result = _safe_filename("bass<>drum|2")
-        self.assertNotIn('<', result)
-        self.assertNotIn('>', result)
-        self.assertNotIn('|', result)
-
-    def test_long_name_truncated(self):
-        long_name = "a" * 100
-        result = _safe_filename(long_name)
-        self.assertLessEqual(len(result), 64)
-
-    def test_empty_name(self):
-        result = _safe_filename("")
-        self.assertEqual(result, "sample")
 
 
 class TestEditorState(unittest.TestCase):
@@ -247,8 +225,8 @@ class TestProjectSaveLoad(unittest.TestCase):
         """Multiple songlines with different speeds round-trip."""
         song = Song(title="Multi")
         song.songlines[0].speed = 3
-        song.songlines.append(Songline(patterns=[2, 1, 0], speed=8))
-        song.songlines.append(Songline(patterns=[0, 0, 0], speed=12))
+        song.songlines.append(Songline(patterns=[2, 1, 0, 3], speed=8))
+        song.songlines.append(Songline(patterns=[0, 0, 0, 0], speed=12))
 
         es = EditorState(songline=2)
         path = os.path.join(self.test_dir, "multi.pvq")
@@ -258,7 +236,7 @@ class TestProjectSaveLoad(unittest.TestCase):
 
         self.assertEqual(len(song2.songlines), 3)
         self.assertEqual(song2.songlines[0].speed, 3)
-        self.assertEqual(song2.songlines[1].patterns, [2, 1, 0])
+        self.assertEqual(song2.songlines[1].patterns, [2, 1, 0, 3])
         self.assertEqual(song2.songlines[1].speed, 8)
         self.assertEqual(song2.songlines[2].speed, 12)
         self.assertEqual(es2.songline, 2)

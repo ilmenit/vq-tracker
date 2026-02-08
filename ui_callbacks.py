@@ -91,14 +91,15 @@ def show_song_pattern_popup(sl_idx: int, ch: int, pos: tuple):
         
         # Update the clicked cell
         if value == "+":
+            ops.save_undo("Add pattern")
             idx = state.song.add_pattern()
             if idx >= 0:
                 state.song.songlines[sl_idx].patterns[ch] = idx
                 state.selected_pattern = idx
-                ops.save_undo("Add pattern")
         else:
             try:
                 idx = int(value, 16) if state.hex_mode else int(value)
+                ops.save_undo("Change pattern")
                 state.song.songlines[sl_idx].patterns[ch] = idx
                 state.selected_pattern = idx
                 state.song.modified = True
@@ -166,14 +167,14 @@ def show_speed_popup(sl_idx: int, pos: tuple):
         try:
             spd = int(value, 16) if state.hex_mode else int(value)
             spd = max(1, min(255, spd))
+            ops.save_undo("Change speed")
             state.song.songlines[sl_idx].speed = spd
             state.song.modified = True
-            ops.save_undo("Change speed")
         except: pass
         
         # Update cursor position
         state.song_cursor_row = sl_idx
-        state.song_cursor_col = 3  # SPD column
+        state.song_cursor_col = MAX_CHANNELS  # SPD column
         state.songline = sl_idx
         
         dpg.delete_item("popup_spd")
@@ -185,7 +186,7 @@ def show_speed_popup(sl_idx: int, pos: tuple):
         state.set_input_active(False)
         # Still move cursor to clicked cell
         state.song_cursor_row = sl_idx
-        state.song_cursor_col = 3  # SPD column
+        state.song_cursor_col = MAX_CHANNELS  # SPD column
         state.songline = sl_idx
         R.refresh_song_editor()
         R.refresh_editor()
@@ -404,11 +405,6 @@ def on_step_change(sender, value):
     G.save_config()
 
 
-def on_speed_change(sender, value):
-    state.song.speed = max(1, min(255, value))
-    state.song.modified = True
-
-
 def on_ptn_len_change(sender, value):
     """Handle pattern length change - supports hex and decimal input."""
     try:
@@ -439,10 +435,10 @@ def on_ptn_len_change(sender, value):
 
 def on_pattern_select(sender, value):
     if value == "+":
+        ops.save_undo("Add pattern")
         idx = state.song.add_pattern()
         if idx >= 0:
             state.selected_pattern = idx
-            ops.save_undo("Add pattern")
             R.refresh_all_pattern_combos()
             R.refresh_pattern_info()
             G.show_status(f"Added pattern {G.fmt(idx)}")
@@ -457,15 +453,16 @@ def on_pattern_select(sender, value):
 def on_songline_pattern_change(sender, value, user_data):
     sl_idx, ch = user_data
     if value == "+":
+        ops.save_undo("Add pattern")
         idx = state.song.add_pattern()
         if idx >= 0:
             state.song.songlines[sl_idx].patterns[ch] = idx
             state.selected_pattern = idx
-            ops.save_undo("Add pattern")
             R.refresh_all()
     else:
         try:
             idx = int(value, 16) if state.hex_mode else int(value)
+            ops.save_undo("Change pattern")
             state.song.songlines[sl_idx].patterns[ch] = idx
             state.selected_pattern = idx
             state.song.modified = True
@@ -477,15 +474,16 @@ def on_songline_pattern_change(sender, value, user_data):
 def on_editor_pattern_change(sender, value, user_data):
     ch = user_data
     if value == "+":
+        ops.save_undo("Add pattern")
         idx = state.song.add_pattern()
         if idx >= 0:
             state.song.songlines[state.songline].patterns[ch] = idx
             state.selected_pattern = idx
-            ops.save_undo("Add pattern")
             R.refresh_all()
     else:
         try:
             idx = int(value, 16) if state.hex_mode else int(value)
+            ops.save_undo("Change pattern")
             state.song.songlines[state.songline].patterns[ch] = idx
             state.selected_pattern = idx
             state.song.modified = True
@@ -796,27 +794,43 @@ def on_stop_click(sender, app_data):
 # INSTRUMENT MANAGEMENT
 # =============================================================================
 
+def _remap_instrument_indices(idx_a: int, idx_b: int):
+    """Swap all pattern row instrument references between idx_a and idx_b."""
+    for pattern in state.song.patterns:
+        for row in pattern.rows:
+            if row.instrument == idx_a:
+                row.instrument = idx_b
+            elif row.instrument == idx_b:
+                row.instrument = idx_a
+
+
 def on_move_inst_up(sender, app_data):
     if state.instrument > 0 and state.instrument < len(state.song.instruments):
+        ops.save_undo("Move instrument up")
         idx = state.instrument
         state.song.instruments[idx], state.song.instruments[idx-1] = \
             state.song.instruments[idx-1], state.song.instruments[idx]
+        _remap_instrument_indices(idx, idx - 1)
         state.instrument -= 1
         state.song.modified = True
         state.vq.invalidate()  # Invalidate VQ conversion
         R.refresh_instruments()
+        R.refresh_editor()
         G.show_status("Moved instrument up")
 
 
 def on_move_inst_down(sender, app_data):
     if state.instrument < len(state.song.instruments) - 1:
+        ops.save_undo("Move instrument down")
         idx = state.instrument
         state.song.instruments[idx], state.song.instruments[idx+1] = \
             state.song.instruments[idx+1], state.song.instruments[idx]
+        _remap_instrument_indices(idx, idx + 1)
         state.instrument += 1
         state.song.modified = True
         state.vq.invalidate()  # Invalidate VQ conversion
         R.refresh_instruments()
+        R.refresh_editor()
         G.show_status("Moved instrument down")
 
 
@@ -826,13 +840,13 @@ def on_move_inst_down(sender, app_data):
 
 def on_move_songline_up(sender, app_data):
     if state.song_cursor_row > 0:
+        ops.save_undo("Move songline up")
         idx = state.song_cursor_row
         state.song.songlines[idx], state.song.songlines[idx-1] = \
             state.song.songlines[idx-1], state.song.songlines[idx]
         state.song_cursor_row -= 1
         state.songline = state.song_cursor_row
         state.song.modified = True
-        ops.save_undo("Move songline up")
         R.refresh_song_editor()
         R.refresh_editor()
         G.show_status("Moved songline up")
@@ -840,13 +854,13 @@ def on_move_songline_up(sender, app_data):
 
 def on_move_songline_down(sender, app_data):
     if state.song_cursor_row < len(state.song.songlines) - 1:
+        ops.save_undo("Move songline down")
         idx = state.song_cursor_row
         state.song.songlines[idx], state.song.songlines[idx+1] = \
             state.song.songlines[idx+1], state.song.songlines[idx]
         state.song_cursor_row += 1
         state.songline = state.song_cursor_row
         state.song.modified = True
-        ops.save_undo("Move songline down")
         R.refresh_song_editor()
         R.refresh_editor()
         G.show_status("Moved songline down")

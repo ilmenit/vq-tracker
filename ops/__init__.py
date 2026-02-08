@@ -47,7 +47,7 @@ from ops.playback import (
 )
 
 from ops.instrument_ops import (
-    add_sample, add_folder, remove_instrument,
+    add_sample, add_folder, replace_instrument, remove_instrument,
     reset_all_instruments, rename_instrument, select_instrument,
 )
 

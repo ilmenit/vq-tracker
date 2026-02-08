@@ -2,7 +2,8 @@
 import dearpygui.dearpygui as dpg
 from constants import (COL_BG, COL_BG2, COL_BG3, COL_TEXT, COL_DIM, COL_MUTED,
                        COL_ACCENT, COL_GREEN, COL_RED, COL_YELLOW, COL_CYAN,
-                       COL_CURSOR_BG, COL_PLAY_BG, COL_REPEAT_BG, COL_BORDER, COL_FOCUS)
+                       COL_CURSOR_BG, COL_PLAY_BG, COL_REPEAT_BG, COL_BORDER, COL_FOCUS,
+                       COL_CH)
 
 def create_themes():
     """Create all UI themes."""
@@ -99,6 +100,23 @@ def create_themes():
             dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, COL_BG)  # No hover change
             dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, COL_BG)  # No active change
             dpg.add_theme_color(dpg.mvThemeCol_Text, COL_MUTED)  # Dimmed text
+    
+    # Per-channel colored header buttons (song panel column labels)
+    for ch_idx, ch_color in enumerate(COL_CH):
+        with dpg.theme(tag=f"theme_header_ch{ch_idx}"):
+            with dpg.theme_component(dpg.mvButton):
+                dpg.add_theme_color(dpg.mvThemeCol_Button, COL_BG)
+                dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, COL_BG)
+                dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, COL_BG)
+                dpg.add_theme_color(dpg.mvThemeCol_Text, ch_color)
+    
+    # SPD header (yellow-ish label)
+    with dpg.theme(tag="theme_header_spd"):
+        with dpg.theme_component(dpg.mvButton):
+            dpg.add_theme_color(dpg.mvThemeCol_Button, COL_BG)
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, COL_BG)
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, COL_BG)
+            dpg.add_theme_color(dpg.mvThemeCol_Text, (180, 180, 100))
     
     # === PANEL THEMES ===
     

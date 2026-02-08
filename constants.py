@@ -1,7 +1,7 @@
 """POKEY VQ Tracker - Constants"""
 
 # === LIMITS ===
-MAX_CHANNELS = 3
+MAX_CHANNELS = 4
 MAX_OCTAVES = 3  # 3 octaves (C-1 to B-3, indices 0-35)
 MAX_NOTES = MAX_OCTAVES * 12  # 36 notes
 NOTE_OFF = 255  # Special value for note-off (silence/stop)
@@ -28,7 +28,7 @@ VQ_RATES = [
     15834, 12667, 10556, 9048, 7917, 7037, 6333, 5757,
     5278, 4872, 4524, 4222, 3958, 3725, 3518, 3333
 ]
-VQ_RATE_DEFAULT = 5278
+VQ_RATE_DEFAULT = 4524
 VQ_VECTOR_SIZES = [2, 4, 8, 16]  # Must be powers of 2 for ASM optimization
 VQ_VECTOR_DEFAULT = 8
 VQ_SMOOTHNESS_VALUES = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
@@ -101,7 +101,7 @@ COL_PLAY_BG = (30, 70, 40)
 COL_REPEAT_BG = (45, 40, 55)
 COL_BORDER = (50, 55, 70)
 COL_FOCUS = (100, 180, 255)  # Bright blue for focused panel border
-COL_CH = [(255, 100, 100), (100, 255, 120), (100, 160, 255)]
+COL_CH = [(255, 100, 100), (100, 255, 120), (100, 160, 255), (240, 200, 80)]
 COL_INACTIVE = (60, 60, 70)  # Color for inactive/muted channels
 
 # === WINDOW ===

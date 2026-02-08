@@ -8,6 +8,7 @@ from state import state
 from ui_dialogs import show_about, show_shortcuts
 import ops
 import ui_globals as G
+import key_config
 import ui_callbacks as C
 
 
@@ -148,32 +149,32 @@ def build_top_row():
                     dpg.add_text("Play Song", color=(255, 255, 150))
                     dpg.add_separator()
                     dpg.add_text("Play from start of song.")
-                    dpg.add_text("Keyboard: F6")
+                    dpg.add_text(f"Keyboard: {key_config.get_combo_str('play_song')}")
                 dpg.add_button(label="From Here", width=70, callback=C.on_play_song_here)
                 with dpg.tooltip(dpg.last_item()):
                     dpg.add_text("Play From Here", color=(255, 255, 150))
                     dpg.add_separator()
                     dpg.add_text("Play from current songline.")
-                    dpg.add_text("Keyboard: F7")
+                    dpg.add_text(f"Keyboard: {key_config.get_combo_str('play_from_cursor')}")
                 dpg.add_button(label="Stop", width=40, callback=C.on_stop_click)
                 with dpg.tooltip(dpg.last_item()):
                     dpg.add_text("Stop Playback", color=(255, 255, 150))
                     dpg.add_separator()
                     dpg.add_text("Stop all audio playback.")
-                    dpg.add_text("Keyboard: F8 or Escape")
+                    dpg.add_text(f"Keyboard: {key_config.get_combo_str('stop')} or Escape")
             
             dpg.add_spacer(height=2)
             with dpg.group(horizontal=True):
-                dpg.add_text("Row", color=(100,100,110))
-                dpg.add_spacer(width=22)
-                dpg.add_text("C1", color=COL_CH[0])
-                dpg.add_spacer(width=32)
-                dpg.add_text("C2", color=COL_CH[1])
-                dpg.add_spacer(width=32)
-                dpg.add_text("C3", color=COL_CH[2])
-                dpg.add_spacer(width=15)
-                spd_label = dpg.add_text("SPD", color=(180, 180, 100))
-                with dpg.tooltip(spd_label):
+                hdr = dpg.add_button(label="Row", width=35, height=18, enabled=False)
+                dpg.bind_item_theme(hdr, "theme_header_button")
+                dpg.add_spacer(width=3)
+                for ch in range(MAX_CHANNELS):
+                    hdr = dpg.add_button(label=f"C{ch+1}", width=40, height=18, enabled=False)
+                    dpg.bind_item_theme(hdr, f"theme_header_ch{ch}")
+                    dpg.add_spacer(width=3)
+                hdr = dpg.add_button(label="SPD", width=30, height=18, enabled=False)
+                dpg.bind_item_theme(hdr, "theme_header_spd")
+                with dpg.tooltip(hdr):
                     dpg.add_text("Speed", color=(255, 255, 150))
                     dpg.add_separator()
                     dpg.add_text("VBLANKs per row (1-255).")
@@ -613,15 +614,15 @@ def build_bottom_row():
                 with dpg.tooltip(dpg.last_item()):
                     dpg.add_text("Play Pattern", color=(255, 255, 150))
                     dpg.add_separator()
-                    dpg.add_text("Start playback from cursor position.")
-                    dpg.add_text("Keyboard: Space")
+                    dpg.add_text("Play current pattern from start.")
+                    dpg.add_text(f"Keyboard: {key_config.get_combo_str('play_pattern')}")
                 dpg.add_spacer(width=10)
                 dpg.add_button(label="Stop", width=45, callback=C.on_stop_click)
                 with dpg.tooltip(dpg.last_item()):
                     dpg.add_text("Stop Playback", color=(255, 255, 150))
                     dpg.add_separator()
                     dpg.add_text("Stop all audio playback.")
-                    dpg.add_text("Keyboard: F8 or Escape")
+                    dpg.add_text(f"Keyboard: {key_config.get_combo_str('stop')} or Escape")
             dpg.add_spacer(height=2)
             rebuild_editor_grid()
         
@@ -648,6 +649,13 @@ def build_bottom_row():
                     dpg.add_text("Select folders containing audio files.")
                     dpg.add_text("All samples inside will be imported.")
                     dpg.add_text("Great for sample packs!")
+                dpg.add_button(label="Repl", width=38, callback=ops.replace_instrument)
+                with dpg.tooltip(dpg.last_item()):
+                    dpg.add_text("Replace Sample", color=(255, 255, 150))
+                    dpg.add_separator()
+                    dpg.add_text("Replace selected instrument's audio")
+                    dpg.add_text("with a different file.")
+                    dpg.add_text("Keeps position and pattern data.")
                 dpg.add_button(label="Rename", width=55, callback=ops.rename_instrument)
                 with dpg.tooltip(dpg.last_item()):
                     dpg.add_text("Rename Instrument", color=(255, 255, 150))
@@ -697,10 +705,10 @@ def build_bottom_row():
                     dpg.add_text("Lower = less CPU, reduced frequency range.")
                     dpg.add_spacer(height=3)
                     dpg.add_text("Max rate depends on Optimize mode:", color=(200, 200, 255))
-                    dpg.add_text("  Speed mode: up to 7917 Hz (3 ch)")
-                    dpg.add_text("  Size mode:  up to 5278 Hz (3 ch)")
+                    dpg.add_text("  Speed mode: up to 6011 Hz (4 ch)")
+                    dpg.add_text("  Size mode:  up to 4729 Hz (4 ch)")
                     dpg.add_spacer(height=3)
-                    dpg.add_text("Default: 5278 Hz (safe for both modes)", color=(150, 200, 150))
+                    dpg.add_text("Default: 4524 Hz (safe for both modes)", color=(150, 200, 150))
                 
                 dpg.add_spacer(width=8)
                 dpg.add_text("Vec:")
@@ -764,18 +772,18 @@ def build_bottom_row():
                     dpg.add_spacer(height=5)
                     dpg.add_text("SPEED (recommended):", color=(100, 255, 100))
                     dpg.add_text("  + ~58 cycles/channel (fast!)")
-                    dpg.add_text("  + Enables 7917 Hz sample rate")
+                    dpg.add_text("  + Enables 6011 Hz sample rate")
                     dpg.add_text("  + Smoother playback")
                     dpg.add_text("  - 2x codebook memory (4KB)")
                     dpg.add_spacer(height=5)
                     dpg.add_text("SIZE:", color=(255, 200, 100))
                     dpg.add_text("  + Compact codebook (2KB)")
                     dpg.add_text("  - ~83 cycles/channel (slower)")
-                    dpg.add_text("  - Max 5278 Hz for 3 channels")
+                    dpg.add_text("  - Max 4729 Hz for 4 channels")
                     dpg.add_spacer(height=5)
-                    dpg.add_text("Max Rate with 3 Channels:", color=(200, 200, 255))
-                    dpg.add_text("  Speed mode: 7917 Hz")
-                    dpg.add_text("  Size mode:  5278 Hz")
+                    dpg.add_text("Max Rate with 4 Channels:", color=(200, 200, 255))
+                    dpg.add_text("  Speed mode: 6011 Hz")
+                    dpg.add_text("  Size mode:  4729 Hz")
                     dpg.add_spacer(height=3)
                     dpg.add_text("Recommended: Speed", color=(150, 200, 150))
             

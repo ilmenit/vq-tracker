@@ -1,0 +1,40 @@
+{
+    "_comment": "POKEY VQ Tracker - Keyboard Configuration",
+    "_format": "Action names mapped to key combos. Modifiers: Ctrl+, Shift+, Ctrl+Shift+",
+    "_note": "Delete this file to reset to defaults. See _valid_keys for all key names.",
+    "_valid_keys": "F1-F12, A-Z, 0-9, Space, Enter, Escape, Tab, Delete, Backspace, Insert, Home, End, PageUp, PageDown, Up, Down, Left, Right, Minus, OpenBracket, CloseBracket, Numpad0-9, NumpadEnter, NumpadAdd, NumpadSubtract, NumpadMultiply",
+    "bindings": {
+        "_comment_file": "--- File Operations ---",
+        "new_project": "Ctrl+N",
+        "open_project": "Ctrl+O",
+        "save_project": "Ctrl+S",
+        "save_project_as": "Ctrl+Shift+S",
+        "undo": "Ctrl+Z",
+        "redo": "Ctrl+Y",
+        "copy": "Ctrl+C",
+        "cut": "Ctrl+X",
+        "paste": "Ctrl+V",
+
+        "_comment_nav": "--- Navigation ---",
+        "jump_first_songline": "Ctrl+Home",
+        "jump_last_songline": "Ctrl+End",
+        "step_up": "Ctrl+Shift+Up",
+        "step_down": "Ctrl+Shift+Down",
+
+        "_comment_octave": "--- Octave Selection ---",
+        "octave_1": "F1",
+        "octave_2": "F2",
+        "octave_3": "F3",
+
+        "_comment_playback": "--- Playback (ScreamTracker layout) ---",
+        "play_song": "F5",
+        "play_pattern": "F6",
+        "play_from_cursor": "F7",
+        "stop": "F8",
+        "play_stop_toggle": "Space",
+        "preview_row": "Enter",
+
+        "_comment_other": "--- Other ---",
+        "show_help": "F12"
+    }
+}

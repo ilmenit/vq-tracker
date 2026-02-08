@@ -30,7 +30,8 @@ Get the latest release from the [Releases](https://github.com/ilmenit/vq-tracker
 4. **Analyze** â€” Check IRQ timing feasibility
 5. **Build** â€” Export to Atari executable (.XEX)
 
-Press **F4** in the tracker to see all keyboard shortcuts.
+Press **F12** in the tracker to see all keyboard shortcuts.
+Shortcuts are configurable via **keyboard.json** (auto-created on first run).
 
 ## Keyboard Controls
 
@@ -55,10 +56,11 @@ Press **F4** in the tracker to see all keyboard shortcuts.
 ### Playback
 | Keys | Function |
 |------|----------|
-| Space | Play / Stop |
+| Space | Play / Stop toggle |
 | Enter | Preview current row |
-| F5 | Play pattern |
-| F6 | Play song from start |
+| F5 | Play song from start |
+| F6 | Play pattern |
+| F7 | Play from cursor |
 | F8 | Stop |
 
 ## Timing & Performance

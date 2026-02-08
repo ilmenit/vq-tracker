@@ -107,7 +107,7 @@ class PokeyVQBuilder:
              self.player_asm_name = "tracker_player.asm"
              if self.args.channels != 1:
                   print("Error: 'vq_multi_channel' player requires Mono input (--channels 1).")
-                  print("       The player uses 3 hardware channels for polyphony, but sources must be mono.")
+                  print("       The player uses 4 hardware channels for polyphony, but sources must be mono.")
                   sys.exit(1)
 
         if self.is_multi_sample:
@@ -1006,6 +1006,8 @@ class PokeyVQBuilder:
             f.write("AUDF1_VAL = PLAY_RATE\n")
             f.write("AUDC1_MASK = $10 ; Vol Only\n")
             f.write("AUDC2_MASK = $10 ; Vol Only\n")
+            f.write("AUDC3_MASK = $10 ; Vol Only\n")
+            f.write("AUDC4_MASK = $10 ; Vol Only\n")
             f.write("IRQ_MASK = 1   ; Timer 1\n")
             
             if self.args.algo == 'raw':

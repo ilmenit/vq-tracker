@@ -36,7 +36,7 @@ Critical factors:
 
 from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Optional
-from constants import NOTE_OFF, MAX_NOTES
+from constants import NOTE_OFF, MAX_NOTES, MAX_CHANNELS
 
 # CPU and timing constants
 PAL_CPU_CLOCK = 1773447
@@ -203,9 +203,9 @@ class AnalysisResult:
     @property
     def volume_safe(self) -> bool:
         """Check if sample rate is low enough for volume control."""
-        # Volume control needs ~39 extra cycles for 3 channels
-        # Safe threshold is around 5757 Hz or lower
-        return self.sample_rate <= 5757
+        # Volume control needs extra cycles for all channels
+        # Safe threshold is around 5231 Hz for 4 channels
+        return self.sample_rate <= 5231
 
 
 def get_pitch_multiplier(note: int) -> float:
@@ -301,10 +301,10 @@ def calculate_channel_cycles(pitch_multiplier: float, vector_size: int,
 def analyze_row(notes: List[int], vector_size: int, available_cycles: int,
                 volume_control: bool = False, optimize_speed: bool = True,
                 worst_case: bool = True) -> RowAnalysis:
-    """Analyze a single row (3 channels).
+    """Analyze a single row (all channels).
     
     Args:
-        notes: List of 3 note values (0 = inactive, 1-36 = note, 255 = note-off)
+        notes: List of note values per channel (0 = inactive, 1-36 = note, 255 = note-off)
         vector_size: VQ vector size (MIN_VECTOR)
         available_cycles: Cycles available after overhead
         volume_control: Whether volume control is enabled
@@ -416,7 +416,7 @@ def analyze_song(song, sample_rate: int, vector_size: int,
         max_len = max((p.length if p else 0) for p in patterns)
         
         for row_idx in range(max_len):
-            # Get notes for this row on all 3 channels
+            # Get notes for this row on all channels
             notes = []
             for ch, ptn in enumerate(patterns):
                 if ptn and row_idx < ptn.length:
@@ -501,14 +501,14 @@ def format_analysis_report(result: AnalysisResult) -> str:
     
     # Explain worst case
     lines.append("WORST CASE: All channels crossing boundary simultaneously")
-    worst_3ch = 3 * ch_with_cross
+    worst_all_ch = MAX_CHANNELS * ch_with_cross
     if result.volume_control:
-        worst_3ch += 3 * VOLUME_CONTROL_COST
-    lines.append(f"  3 active channels with boundary: {worst_3ch} cycles")
-    if worst_3ch > result.available_cycles:
-        lines.append(f"  >>> EXCEEDS BUDGET by {worst_3ch - result.available_cycles} cycles! <<<")
+        worst_all_ch += MAX_CHANNELS * VOLUME_CONTROL_COST
+    lines.append(f"  All channels with boundary: {worst_all_ch} cycles")
+    if worst_all_ch > result.available_cycles:
+        lines.append(f"  >>> EXCEEDS BUDGET by {worst_all_ch - result.available_cycles} cycles! <<<")
     else:
-        lines.append(f"  Headroom: {result.available_cycles - worst_3ch} cycles")
+        lines.append(f"  Headroom: {result.available_cycles - worst_all_ch} cycles")
     lines.append("")
     
     lines.append("NOTE: Boundary crossing happens every few IRQs even at")
@@ -518,7 +518,7 @@ def format_analysis_report(result: AnalysisResult) -> str:
     # Volume control warning
     if result.volume_control and not result.volume_safe:
         lines.append("WARNING: Volume control enabled but sample rate too high!")
-        lines.append(f"   Recommended: <=5757 Hz (current: {result.sample_rate} Hz)")
+        lines.append(f"   Recommended: <=5231 Hz (current: {result.sample_rate} Hz)")
         lines.append("")
     
     # Summary
@@ -582,11 +582,11 @@ def format_analysis_report(result: AnalysisResult) -> str:
     lines.append("RECOMMENDATIONS")
     lines.append("-" * 60)
     
-    # Calculate worst-case 3-channel crossing
-    worst_3ch = 3 * ch_with_cross
+    # Calculate worst-case all-channel crossing
+    worst_all_ch = MAX_CHANNELS * ch_with_cross
     if result.volume_control:
-        worst_3ch += 3 * VOLUME_CONTROL_COST
-    worst_exceeds = worst_3ch > result.available_cycles
+        worst_all_ch += MAX_CHANNELS * VOLUME_CONTROL_COST
+    worst_exceeds = worst_all_ch > result.available_cycles
     
     if result.is_safe and not worst_exceeds:
         lines.append("[OK] Song should play correctly on Atari hardware.")
@@ -595,9 +595,9 @@ def format_analysis_report(result: AnalysisResult) -> str:
     elif result.is_safe and worst_exceeds:
         lines.append("[WARNING] Song MAY have occasional audio glitches!")
         lines.append("")
-        lines.append("While most IRQs fit within budget, when all 3 channels")
+        lines.append("While most IRQs fit within budget, when all channels")
         lines.append("cross boundaries simultaneously (every few IRQs), the")
-        lines.append(f"cycle count ({worst_3ch}) exceeds budget ({result.available_cycles}).")
+        lines.append(f"cycle count ({worst_all_ch}) exceeds budget ({result.available_cycles}).")
         lines.append("")
         lines.append("This causes periodic missed samples = audible distortion.")
         lines.append("")
@@ -607,14 +607,14 @@ def format_analysis_report(result: AnalysisResult) -> str:
     
     # If worst case exceeds, give specific advice
     if worst_exceeds:
-        deficit = worst_3ch - result.available_cycles
-        lines.append(f"You need {deficit} more cycles for 3-channel worst case.")
+        deficit = worst_all_ch - result.available_cycles
+        lines.append(f"You need {deficit} more cycles for {MAX_CHANNELS}-channel worst case.")
         lines.append("")
         
         # Recommend disabling Screen if not already disabled
         if not result.blank_screen:
             blank_available = result.cycles_per_irq - IRQ_OVERHEAD
-            if worst_3ch <= blank_available:
+            if worst_all_ch <= blank_available:
                 lines.append("* Disable Screen (uncheck Screen checkbox)")
                 lines.append(f"  (gains {blank_available - result.available_cycles} cycles - WOULD FIT!)")
                 lines.append("")
@@ -623,7 +623,7 @@ def format_analysis_report(result: AnalysisResult) -> str:
                 lines.append("")
         
         # Calculate what sample rate would work
-        needed_cycles = worst_3ch + IRQ_OVERHEAD
+        needed_cycles = worst_all_ch + IRQ_OVERHEAD
         if not result.blank_screen:
             # Account for ANTIC stealing in rate calculation
             needed_cycles = int(needed_cycles * 100 / (100 - ANTIC_DISPLAY_PERCENT))
@@ -633,9 +633,9 @@ def format_analysis_report(result: AnalysisResult) -> str:
         lines.append("")
         
         if result.volume_control:
-            saved = 3 * VOLUME_CONTROL_COST
+            saved = MAX_CHANNELS * VOLUME_CONTROL_COST
             lines.append(f"* OR disable Vol to save {saved} cycles")
-            new_worst = worst_3ch - saved
+            new_worst = worst_all_ch - saved
             if new_worst <= result.available_cycles:
                 lines.append(f"  (new worst case: {new_worst} cycles - WOULD FIT!)")
             lines.append("")
@@ -644,11 +644,11 @@ def format_analysis_report(result: AnalysisResult) -> str:
         lines.append("  to reduce boundary crossing frequency")
         lines.append("")
         
-        lines.append("* OR limit to 2 simultaneous channels")
-        two_ch_worst = 2 * ch_with_cross + CHANNEL_INACTIVE
+        lines.append(f"* OR limit to 2 simultaneous channels")
+        two_ch_worst = 2 * ch_with_cross + (MAX_CHANNELS - 2) * CHANNEL_INACTIVE
         if result.volume_control:
             two_ch_worst += 2 * VOLUME_CONTROL_COST
-        lines.append(f"  (2 active + 1 inactive = {two_ch_worst} cycles)")
+        lines.append(f"  (2 active + {MAX_CHANNELS - 2} inactive = {two_ch_worst} cycles)")
     else:
         if not result.is_safe:
             # Original recommendations for non-worst-case failures
@@ -667,7 +667,7 @@ def format_analysis_report(result: AnalysisResult) -> str:
             lines.append("")
             
             if result.volume_control:
-                total_vol = VOLUME_CONTROL_COST * 3
+                total_vol = VOLUME_CONTROL_COST * MAX_CHANNELS
                 lines.append(f"* Disable volume control to save ~{total_vol} cycles total")
                 lines.append(f"  ({VOLUME_CONTROL_COST} cycles per active channel)")
     

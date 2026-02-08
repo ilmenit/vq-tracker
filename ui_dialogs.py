@@ -277,7 +277,7 @@ def show_about():
         dpg.add_text("Atari XL/XE 8-bit computers", color=COL_DIM)
         dpg.add_spacer(height=10)
         dpg.add_text("Features:", color=COL_DIM)
-        dpg.add_text("  - 3 channel polyphonic playback", color=COL_DIM)
+        dpg.add_text("  - 4 channel polyphonic playback", color=COL_DIM)
         dpg.add_text("  - WAV sample import", color=COL_DIM)
         dpg.add_text("  - Export to ASM/binary", color=COL_DIM)
         dpg.add_spacer(height=15)
@@ -287,23 +287,36 @@ def show_about():
 
 
 def show_shortcuts():
-    """Show keyboard shortcuts dialog (no unicode)."""
+    """Show keyboard shortcuts dialog with dynamically-resolved key bindings."""
+    import key_config
+
     if dpg.does_item_exist("shortcuts_dialog"):
         dpg.delete_item("shortcuts_dialog")
-    
+
     state.set_input_active(True)
-    
+
     def on_close():
         state.set_input_active(False)
         dpg.delete_item("shortcuts_dialog")
-    
-    # Calculate center position
+
+    # Helper: format "  Key              Description" with aligned columns
+    def _kb(action_or_key, desc):
+        """Return formatted shortcut line.
+        If action_or_key is a known config action, look up its current binding.
+        Otherwise use the literal string (for hardcoded keys).
+        """
+        if action_or_key in key_config.DEFAULT_BINDINGS:
+            k = key_config.get_combo_str(action_or_key)
+        else:
+            k = action_or_key
+        return f"  {k:<19s}{desc}"
+
     vp_w = dpg.get_viewport_width()
     vp_h = dpg.get_viewport_height()
-    w, h = 480, 700
+    w, h = 500, 740
     btn_w = 90
     left_margin = (w - btn_w) // 2 - 8
-    
+
     with dpg.window(
         tag="shortcuts_dialog",
         label="Keyboard Shortcuts",
@@ -314,19 +327,20 @@ def show_shortcuts():
         no_resize=True,
         no_collapse=True
     ):
-        # Navigation
+        # Navigation (hardcoded)
         dpg.add_text("NAVIGATION", color=COL_ACCENT)
         dpg.add_text("  Arrow Keys       Move cursor")
         dpg.add_text("  Shift+Up/Down    Extend selection")
         dpg.add_text("  Ctrl+Up/Down     Jump by Step rows")
-        dpg.add_text("  Ctrl+Shift+Up    Increase Edit Step")
-        dpg.add_text("  Ctrl+Shift+Down  Decrease Edit Step")
+        dpg.add_text(_kb("step_up",   "Increase Edit Step"))
+        dpg.add_text(_kb("step_down", "Decrease Edit Step"))
         dpg.add_text("  Tab              Next channel")
         dpg.add_text("  Shift+Tab        Previous channel")
         dpg.add_text("  Page Up/Down     Jump 16 rows")
         dpg.add_text("  Home/End         First/last row")
-        dpg.add_text("  Ctrl+Home/End    First/last songline")
-        
+        dpg.add_text(_kb("jump_first_songline", "First songline"))
+        dpg.add_text(_kb("jump_last_songline",  "Last songline"))
+
         dpg.add_spacer(height=8)
         dpg.add_text("EDITING", color=COL_ACCENT)
         dpg.add_text("  Z-M, Q-P         Piano keys (2 octaves)")
@@ -340,33 +354,35 @@ def show_shortcuts():
         dpg.add_text("  = / +            Octave up")
         dpg.add_text("  -                Octave down")
         dpg.add_text("  [ / ]            Prev/next instrument")
-        
+
         dpg.add_spacer(height=8)
         dpg.add_text("OCTAVE & PLAYBACK", color=COL_ACCENT)
-        dpg.add_text("  F1-F4            Select Octave 1/2/3/4")
-        dpg.add_text("  F5               Play pattern from start")
-        dpg.add_text("  F6               Play song from start")
-        dpg.add_text("  F7               Play from cursor position")
-        dpg.add_text("  F8               Stop")
-        dpg.add_text("  F12              Show this help")
-        dpg.add_text("  Space            Play/stop toggle")
-        dpg.add_text("  Enter            Preview current row")
-        
+        dpg.add_text(_kb("octave_1",         "Octave 1"))
+        dpg.add_text(_kb("octave_2",         "Octave 2"))
+        dpg.add_text(_kb("octave_3",         "Octave 3 (max)"))
+        dpg.add_text(_kb("play_song",        "Play song from start"))
+        dpg.add_text(_kb("play_pattern",     "Play pattern from start"))
+        dpg.add_text(_kb("play_from_cursor", "Play from cursor"))
+        dpg.add_text(_kb("stop",             "Stop"))
+        dpg.add_text(_kb("show_help",        "Show this help"))
+        dpg.add_text(_kb("play_stop_toggle", "Play/stop toggle"))
+        dpg.add_text(_kb("preview_row",      "Preview current row"))
+
         dpg.add_spacer(height=8)
         dpg.add_text("CLIPBOARD", color=COL_ACCENT)
-        dpg.add_text("  Ctrl+C           Copy cells")
-        dpg.add_text("  Ctrl+X           Cut cells")
-        dpg.add_text("  Ctrl+V           Paste cells")
-        
+        dpg.add_text(_kb("copy",  "Copy cells"))
+        dpg.add_text(_kb("cut",   "Cut cells"))
+        dpg.add_text(_kb("paste", "Paste cells"))
+
         dpg.add_spacer(height=8)
         dpg.add_text("FILE", color=COL_ACCENT)
-        dpg.add_text("  Ctrl+N           New project")
-        dpg.add_text("  Ctrl+O           Open project")
-        dpg.add_text("  Ctrl+S           Save project")
-        dpg.add_text("  Ctrl+Shift+S     Save as")
-        dpg.add_text("  Ctrl+Z / Y       Undo / Redo")
+        dpg.add_text(_kb("new_project",     "New project"))
+        dpg.add_text(_kb("open_project",    "Open project"))
+        dpg.add_text(_kb("save_project",    "Save project"))
+        dpg.add_text(_kb("save_project_as", "Save as"))
+        dpg.add_text(_kb("undo", "Undo") + " / " + key_config.get_combo_str("redo") + " Redo")
         dpg.add_text("  Escape           Stop / Close / Clear")
-        
+
         dpg.add_spacer(height=8)
         dpg.add_text("WORKFLOW", color=COL_ACCENT)
         dpg.add_text("  1. Load samples (Add/Folder)")
@@ -374,8 +390,12 @@ def show_shortcuts():
         dpg.add_text("  3. Write your song (patterns/notes)")
         dpg.add_text("  4. ANALYZE timing (check cycles)")
         dpg.add_text("  5. BUILD executable (.XEX)")
-        
-        dpg.add_spacer(height=15)
+
+        # Config file note
+        dpg.add_spacer(height=4)
+        dpg.add_text("  Shortcuts editable in keyboard.json", color=COL_DIM)
+
+        dpg.add_spacer(height=12)
         with dpg.group(horizontal=True):
             dpg.add_spacer(width=left_margin)
             dpg.add_button(label="Close", width=btn_w, callback=on_close)

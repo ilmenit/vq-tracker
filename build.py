@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 
 from data_model import Song, Pattern, Row
 from state import state
-from constants import MAX_INSTRUMENTS, MAX_VOLUME, MAX_NOTES
+from constants import MAX_INSTRUMENTS, MAX_VOLUME, MAX_NOTES, MAX_CHANNELS
 import runtime  # For path detection in bundled mode
 
 logger = logging.getLogger(__name__)
@@ -300,6 +300,8 @@ def export_song_data(song: Song, output_path: str, output_func=None) -> Tuple[bo
         key_ctrl_val = 1 if song.keyboard_control else 0
         cfg_lines.append(f"KEY_CONTROL = {key_ctrl_val}  ; 1=enable stop/restart keys, 0=play-once (saves cycles)")
         cfg_lines.append("")
+        cfg_lines.append(f"NUM_CHANNELS = {MAX_CHANNELS}  ; Number of polyphonic channels (AUDC1-AUDC4)")
+        cfg_lines.append("")
         
         with open(cfg_path, 'w') as f:
             f.write('\n'.join(cfg_lines))
@@ -334,7 +336,7 @@ def export_song_data(song: Song, output_path: str, output_func=None) -> Tuple[bo
         lines.append("")
         
         # Patterns per channel
-        for ch in range(3):
+        for ch in range(MAX_CHANNELS):
             ptns = [str(sl.patterns[ch] if ch < len(sl.patterns) else 0) for sl in song.songlines]
             lines.append(f"SONG_PTN_CH{ch}:")
             lines.append(f"    .byte {','.join(ptns)}")

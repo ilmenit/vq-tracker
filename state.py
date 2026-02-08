@@ -181,12 +181,12 @@ class AppState:
         # Pattern Editor cursor position
         self.songline = 0      # Current songline being edited
         self.row = 0           # Row in pattern
-        self.channel = 0       # Channel 0-2
+        self.channel = 0       # Channel 0-(MAX_CHANNELS-1)
         self.column = 0        # 0=note, 1=inst, 2=vol
         
         # Song Editor cursor position
         self.song_cursor_row = 0     # Row in song editor (which songline)
-        self.song_cursor_col = 0     # Column: 0=C1, 1=C2, 2=C3
+        self.song_cursor_col = 0     # Column: 0=C1, 1=C2, 2=C3, 3=C4
         
         # Input settings (brush)
         self.octave = DEFAULT_OCTAVE
@@ -212,7 +212,7 @@ class AppState:
         """Get pattern indices for current songline."""
         if self.songline < len(self.song.songlines):
             return self.song.songlines[self.songline].patterns
-        return [0, 0, 0]
+        return [0] * MAX_CHANNELS
     
     def current_pattern(self) -> Pattern:
         """Get pattern for current channel."""

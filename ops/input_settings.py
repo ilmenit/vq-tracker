@@ -8,7 +8,7 @@ from ops.base import ui, fmt
 
 
 def set_octave(val: int):
-    """Set octave (1-4)."""
+    """Set octave (1-3)."""
     state.octave = max(1, min(MAX_OCTAVES, val))
     ui.update_controls()
 

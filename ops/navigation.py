@@ -3,6 +3,7 @@
 Cursor movement, jumping, channel switching.
 """
 from state import state
+from constants import MAX_CHANNELS
 from ops.base import ui
 
 
@@ -35,7 +36,7 @@ def move_cursor(drow: int, dcol: int, extend_selection: bool = False):
         else:
             new_col = 0
     elif new_col > max_col:
-        if state.channel < 2:
+        if state.channel < MAX_CHANNELS - 1:
             state.channel += 1
             new_col = 0
         else:
@@ -101,7 +102,7 @@ def next_channel():
     """Move to next channel."""
     state.clear_pending()
     state.selection.clear()
-    if state.channel < 2:
+    if state.channel < MAX_CHANNELS - 1:
         state.channel += 1
         state.column = 0
         ui.refresh_editor()
@@ -182,6 +183,7 @@ def jump_first_songline():
     state.clear_pending()
     state.selection.clear()
     state.songline = 0
+    state.song_cursor_row = 0
     state.row = 0
     ui.refresh_all()
 
@@ -190,6 +192,8 @@ def jump_last_songline():
     """Jump to last songline."""
     state.clear_pending()
     state.selection.clear()
-    state.songline = len(state.song.songlines) - 1
+    last = len(state.song.songlines) - 1
+    state.songline = last
+    state.song_cursor_row = last
     state.row = 0
     ui.refresh_all()
