@@ -4,8 +4,8 @@
 ; Updates the on-screen display with current playback position.
 ;
 ; Called once per frame (during VBLANK) to show real-time position.
-; When BLANK_SCREEN = 1, display is blanked during playback (DMACTL=0)
-; but this routine still updates the text so it's current when stopped.
+; When BLANK_SCREEN = 1, this routine is skipped during playback
+; (screen is off, no point updating text that can't be seen).
 ;
 ; Display Format:
 ;   "VQ TRACKER - [SPACE] play/stop [R] reset"

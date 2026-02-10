@@ -6,6 +6,7 @@ import os
 import logging
 
 import file_io
+import native_dialog
 from constants import MAX_VOLUME
 from state import state
 from file_io import (
@@ -15,6 +16,19 @@ from file_io import (
 from ops.base import ui, save_undo, fmt
 
 logger = logging.getLogger("tracker.ops.file")
+
+
+# =============================================================================
+# HELPERS
+# =============================================================================
+
+def _project_start_dir() -> str:
+    """Return a sensible starting directory for project file dialogs."""
+    if state.song.file_path:
+        d = os.path.dirname(state.song.file_path)
+        if os.path.isdir(d):
+            return d
+    return os.path.expanduser("~")
 
 
 # =============================================================================
@@ -47,8 +61,15 @@ def _do_new():
 
 
 def open_song(*args):
-    """Open project file."""
-    ui.show_file_dialog("Open Project", [".pvq", ".json"], _load_file)
+    """Open project file via native OS dialog."""
+    paths = native_dialog.open_files(
+        title="Open Project",
+        start_dir=_project_start_dir(),
+        filters={"Project Files": "pvq,json"},
+        allow_multi=False,
+    )
+    if paths:
+        _load_file(paths[0])
 
 
 def _load_file(path: str):
@@ -151,8 +172,15 @@ def save_song(*args):
 
 
 def save_song_as(*args):
-    """Save project as new file."""
-    ui.show_file_dialog("Save Project", [".pvq"], _save_file, save_mode=True)
+    """Save project as new file via native OS dialog."""
+    path = native_dialog.save_file(
+        title="Save Project",
+        start_dir=_project_start_dir(),
+        filters={"Project Files": "pvq"},
+        default_name=os.path.basename(state.song.file_path) if state.song.file_path else "untitled.pvq",
+    )
+    if path:
+        _save_file(path)
 
 
 def _save_file(path: str):
@@ -205,8 +233,14 @@ def _build_editor_state() -> EditorState:
 # =============================================================================
 
 def export_binary_file(*args):
-    """Export to binary .pvg format."""
-    ui.show_file_dialog("Export Binary", [".pvg"], _do_export_binary, save_mode=True)
+    """Export to binary .pvg format via native OS dialog."""
+    path = native_dialog.save_file(
+        title="Export Binary",
+        start_dir=_project_start_dir(),
+        filters={"Binary Files": "pvg"},
+    )
+    if path:
+        _do_export_binary(path)
 
 
 def _do_export_binary(path: str):
@@ -220,8 +254,13 @@ def _do_export_binary(path: str):
 
 
 def export_asm_files(*args):
-    """Export to ASM files."""
-    ui.show_file_dialog("Export ASM", [], _do_export_asm, dir_mode=True)
+    """Export to ASM files via native OS dialog."""
+    folder = native_dialog.pick_folder(
+        title="Export ASM - Select Output Folder",
+        start_dir=_project_start_dir(),
+    )
+    if folder:
+        _do_export_asm(folder)
 
 
 def _do_export_asm(path: str):
@@ -235,8 +274,15 @@ def _do_export_asm(path: str):
 
 
 def import_vq_converter(*args):
-    """Import vq_converter output (conversion_info.json)."""
-    ui.show_file_dialog("Import vq_converter", [".json"], _do_import_vq_converter)
+    """Import vq_converter output (conversion_info.json) via native OS dialog."""
+    paths = native_dialog.open_files(
+        title="Import vq_converter",
+        start_dir=_project_start_dir(),
+        filters={"JSON Files": "json"},
+        allow_multi=False,
+    )
+    if paths:
+        _do_import_vq_converter(paths[0])
 
 
 def _do_import_vq_converter(path: str):

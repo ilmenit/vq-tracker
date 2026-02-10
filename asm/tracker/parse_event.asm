@@ -28,7 +28,7 @@
 ;
 ; REGISTER CONTRACT:
 ; ==================
-; Input:  X = Channel index (0-2), must be valid
+; Input:  X = Channel index (0-3), must be valid
 ;         seq_evt_ptr[X] = pointer to current event (row byte)
 ; Output: evt_note[X] = note value (0=off, 1-36=note)
 ;         evt_inst[X] = instrument index (0-127)
@@ -49,7 +49,7 @@ parse_event:
     stx parse_channel           ; Save channel index (X may be clobbered)
     
     ; Setup pointer to current event
-    ; Entry: X = channel (0-2)
+    ; Entry: X = channel (0-3)
     lda seq_evt_ptr_lo,x
     sta trk_ptr
     lda seq_evt_ptr_hi,x

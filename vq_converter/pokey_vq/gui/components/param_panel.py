@@ -209,42 +209,24 @@ class ParamPanel:
              dpg.set_value(self.combo_rate, lbl)
 
     def _on_save_clicked(self):
-        with dpg.file_dialog(
-            directory_selector=False, 
-            show=True, 
-            callback=self._on_file_dialog_ok, 
-            user_data="save",
-            width=700,
-            height=400,
-            default_filename="pokey_vq_cfg.json"
-        ):
-            dpg.add_file_extension(".json", color=(150, 255, 150, 255))
-            dpg.add_file_extension(".*")
+        import native_dialog
+        path = native_dialog.save_file(
+            title="Save Configuration",
+            filters={"JSON Files": "json"},
+            default_name="pokey_vq_cfg.json",
+        )
+        if path:
+            self.state.save_configuration(path)
 
     def _on_load_clicked(self):
-        with dpg.file_dialog(
-            directory_selector=False, 
-            show=True, 
-            callback=self._on_file_dialog_ok, 
-            user_data="load",
-            width=700,
-            height=400
-        ):
-            dpg.add_file_extension(".json", color=(150, 255, 150, 255))
-            dpg.add_file_extension(".*")
-
-    def _on_file_dialog_ok(self, sender, app_data, user_data):
-        # app_data varies by DPG version but usually contains 'file_path_name' or 'file_path_name' in dict
-        # In recent DPG: app_data = {'file_path_name': ..., 'file_name': ...}
-        
-        filepath = app_data.get('file_path_name')
-        if not filepath:
-            return
-            
-        if user_data == "save":
-            self.state.save_configuration(filepath)
-        elif user_data == "load":
-            self.state.load_configuration(filepath)
+        import native_dialog
+        paths = native_dialog.open_files(
+            title="Load Configuration",
+            filters={"JSON Files": "json"},
+            allow_multi=False,
+        )
+        if paths:
+            self.state.load_configuration(paths[0])
 
     def _on_reset_clicked(self):
         # Confirmation Modal

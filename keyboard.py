@@ -199,8 +199,8 @@ def handle_key(sender, key):
     elif key == dpg.mvKey_Right: ops.move_cursor(0,  1)
     elif key == dpg.mvKey_Tab:
         ops.prev_channel() if shift else ops.next_channel()
-    elif key == dpg.mvKey_Prior: ops.jump_rows(-16)
-    elif key == dpg.mvKey_Next:  ops.jump_rows( 16)
+    elif key == dpg.mvKey_Prior: ops.jump_rows(-G.visible_rows)
+    elif key == dpg.mvKey_Next:  ops.jump_rows( G.visible_rows)
     elif key == dpg.mvKey_Home:  ops.jump_start()
     elif key == dpg.mvKey_End:   ops.jump_end()
 
@@ -325,6 +325,16 @@ def _handle_song_key(key):
     elif key == dpg.mvKey_End:
         clear_song_pending()
         state.song_cursor_row = total_songlines - 1
+        state.songline = state.song_cursor_row
+        ops.refresh_song_editor(); ops.refresh_editor()
+    elif key == dpg.mvKey_Prior:
+        clear_song_pending()
+        state.song_cursor_row = max(0, state.song_cursor_row - G.SONG_VISIBLE_ROWS)
+        state.songline = state.song_cursor_row
+        ops.refresh_song_editor(); ops.refresh_editor()
+    elif key == dpg.mvKey_Next:
+        clear_song_pending()
+        state.song_cursor_row = min(total_songlines - 1, state.song_cursor_row + G.SONG_VISIBLE_ROWS)
         state.songline = state.song_cursor_row
         ops.refresh_song_editor(); ops.refresh_editor()
     elif key == dpg.mvKey_Delete:

@@ -88,7 +88,7 @@ def __getattr__(name):
         'refresh_songlist', 'refresh_instruments', 'refresh_pattern_combo',
         'refresh_all_pattern_combos', 'refresh_all_instrument_combos',
         'update_controls', 'show_status', 'update_title', 'show_error',
-        'rebuild_recent_menu', 'show_confirm', 'show_file_dialog',
+        'rebuild_recent_menu', 'show_confirm',
         'show_rename_dialog',
     }
     if name in _callback_names:

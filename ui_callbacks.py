@@ -57,6 +57,24 @@ def select_songline_click(sender, app_data, user_data):
         R.refresh_editor()
 
 
+def song_header_click(sender, app_data, user_data):
+    """Click on column header (C1-C4, SPD) in song editor → move cursor to that column."""
+    col = user_data  # 0-3 for channels, MAX_CHANNELS for SPD
+    G.set_focus(FOCUS_SONG)
+    state.song_cursor_col = col
+    R.refresh_song_editor()
+
+
+def editor_header_click(sender, app_data, user_data):
+    """Click on column header (Note/Ins/Vol) in pattern editor → move cursor to that channel+column."""
+    channel, column = user_data
+    G.set_focus(FOCUS_EDITOR)
+    state.channel = channel
+    state.column = column
+    state.selection.clear()
+    R.refresh_editor()
+
+
 def song_cell_click(sender, app_data, user_data):
     """Click on pattern cell in song editor."""
     vis_row, ch = user_data
@@ -589,131 +607,6 @@ def on_keyboard_control_toggle(sender, value):
         G.show_status("Keyboard control disabled (saves cycles, play-once mode)")
 
 
-def on_analyze_click():
-    """Show timing analysis dialog."""
-    show_analyze_dialog()
-
-
-def show_analyze_dialog():
-    """Display the timing analysis window."""
-    try:
-        from analyze import analyze_song, format_analysis_report
-        
-        # Check if we have VQ settings
-        if not state.vq.converted:
-            # Show a popup instead of just status bar message
-            if dpg.does_item_exist("analyze_error_popup"):
-                dpg.delete_item("analyze_error_popup")
-            
-            vp_w = dpg.get_viewport_width()
-            vp_h = dpg.get_viewport_height()
-            w, h = 350, 120
-            
-            with dpg.window(
-                tag="analyze_error_popup",
-                label="Cannot Analyze",
-                modal=True,
-                width=w, height=h,
-                pos=[(vp_w - w) // 2, (vp_h - h) // 2],
-                no_resize=True, no_collapse=True,
-                on_close=lambda: dpg.delete_item("analyze_error_popup")
-            ):
-                dpg.add_text("Run CONVERT first!", color=(255, 200, 100))
-                dpg.add_spacer(height=5)
-                dpg.add_text("ANALYZE requires VQ settings from conversion.")
-                dpg.add_text("Click CONVERT to generate VQ data.")
-                dpg.add_spacer(height=10)
-                with dpg.group(horizontal=True):
-                    dpg.add_spacer(width=(w - 80) // 2)
-                    dpg.add_button(label="OK", width=80,
-                                  callback=lambda: dpg.delete_item("analyze_error_popup"))
-            return
-        
-        # Get VQ settings
-        rate = state.vq.settings.rate
-        vector_size = state.vq.settings.vector_size
-        optimize_speed = state.vq.settings.optimize_speed
-        
-        # Run analysis
-        result = analyze_song(state.song, rate, vector_size, optimize_speed)
-        report = format_analysis_report(result)
-        
-        # Close existing dialog if any
-        if dpg.does_item_exist("analyze_dialog"):
-            dpg.delete_item("analyze_dialog")
-        
-        # Create dialog window
-        vp_w = dpg.get_viewport_width()
-        vp_h = dpg.get_viewport_height()
-        w, h = 600, 500
-        
-        with dpg.window(
-            tag="analyze_dialog",
-            label="Timing Analysis",
-            modal=True,
-            width=w,
-            height=h,
-            pos=[(vp_w - w) // 2, (vp_h - h) // 2],
-            no_resize=False,
-            no_collapse=True,
-            on_close=lambda: dpg.delete_item("analyze_dialog")
-        ):
-            # Status header
-            if result.is_safe:
-                dpg.add_text("âœ“ PASS - No timing issues detected", color=(100, 255, 100))
-            else:
-                pct = (result.over_budget_count / result.total_rows * 100) if result.total_rows > 0 else 0
-                dpg.add_text(f"âœ— FAIL - {result.over_budget_count} rows overflow ({pct:.1f}%)", 
-                            color=(255, 100, 100))
-            
-            # Volume control warning
-            if state.song.volume_control and not result.volume_safe:
-                dpg.add_text(f"âš  Volume control requires rate â‰¤5757 Hz (current: {rate})", 
-                            color=(255, 200, 100))
-            
-            dpg.add_separator()
-            
-            # Summary info
-            with dpg.group(horizontal=True):
-                dpg.add_text(f"Rate: {rate} Hz")
-                dpg.add_spacer(width=20)
-                dpg.add_text(f"Vector: {vector_size}")
-                dpg.add_spacer(width=20)
-                dpg.add_text(f"Budget: {result.available_cycles} cycles")
-            
-            dpg.add_spacer(height=5)
-            
-            # Log area with scrolling
-            with dpg.child_window(tag="analyze_log_scroll", height=-40, border=True):
-                dpg.add_input_text(
-                    tag="analyze_log",
-                    default_value=report,
-                    multiline=True,
-                    readonly=True,
-                    width=-1,
-                    height=-1,
-                    tab_input=False
-                )
-            
-            # Close button
-            dpg.add_spacer(height=5)
-            with dpg.group(horizontal=True):
-                dpg.add_spacer(width=(w - 100) // 2)
-                dpg.add_button(label="Close", width=100, 
-                              callback=lambda: dpg.delete_item("analyze_dialog"))
-        
-        # Auto-scroll to bottom after dialog is created
-        # Use split_frame to ensure layout is computed before scrolling
-        dpg.split_frame()
-        if dpg.does_item_exist("analyze_log_scroll"):
-            dpg.set_y_scroll("analyze_log_scroll", dpg.get_y_scroll_max("analyze_log_scroll"))
-    
-    except Exception as e:
-        import traceback
-        error_msg = f"ANALYZE error: {e}\n{traceback.format_exc()}"
-        print(error_msg)
-        G.show_status(f"ANALYZE error: {e}")
-
 
 def on_input_inst_change(sender, value):
     try:
@@ -1112,7 +1005,7 @@ def calculate_visible_rows() -> int:
         vp_height = dpg.get_viewport_height()
         fixed_height = G.TOP_PANEL_HEIGHT + G.INPUT_ROW_HEIGHT + G.EDITOR_HEADER_HEIGHT + 60
         available = vp_height - fixed_height
-        rows = available // ROW_HEIGHT - 2
+        rows = available // ROW_HEIGHT - 4
         rows = max(1, min(G.MAX_VISIBLE_ROWS, rows))
         return rows
     except:
@@ -1342,21 +1235,7 @@ def update_build_button_state():
             dpg.set_value("build_status_label", "Run CONVERT first")
             dpg.configure_item("build_status_label", color=(150, 150, 150))
     
-    # Also update ANALYZE button state
-    update_analyze_button_state()
 
-
-def update_analyze_button_state():
-    """Update ANALYZE button to green when CONVERT is done."""
-    if not dpg.does_item_exist("analyze_btn"):
-        return
-    
-    if state.vq.converted:
-        # Converted - green button (ready to analyze)
-        dpg.bind_item_theme("analyze_btn", "theme_btn_green")
-    else:
-        # Not converted - normal/disabled
-        dpg.bind_item_theme("analyze_btn", "theme_btn_disabled")
 
 
 def on_vq_convert_click(sender, app_data):

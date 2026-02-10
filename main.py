@@ -87,7 +87,6 @@ def _setup_ffmpeg_for_pydub():
             os.environ["PATH"] = candidate + os.pathsep + os.environ.get("PATH", "")
             logger.debug(f"Added to PATH for ffmpeg: {candidate}")
             return
-            return
 
 def log_startup_info():
     """Log system and environment information for debugging."""
@@ -332,7 +331,7 @@ logger.debug("All modules loaded successfully")
 # =============================================================================
 def setup_ops_callbacks():
     """Wire up ops module to UI refresh functions using UICallbacks."""
-    from ui_dialogs import show_error, show_file_dialog, show_rename_dialog
+    from ui_dialogs import show_error, show_rename_dialog
     from ui_callbacks_interface import UICallbacks
     
     callbacks = UICallbacks(
@@ -349,7 +348,6 @@ def setup_ops_callbacks():
         update_title=G.update_title,
         show_error=show_error,
         show_confirm=B.show_confirm_centered,
-        show_file_dialog=show_file_dialog,
         show_rename_dialog=show_rename_dialog,
         rebuild_recent_menu=B.rebuild_recent_menu,
     )
@@ -496,7 +494,7 @@ def main():
     logger.debug("Creating DearPyGui context...")
     dpg.create_context()
     dpg.create_viewport(title=APP_NAME, width=WIN_WIDTH, height=WIN_HEIGHT, 
-                        min_width=800, min_height=500)
+                        min_width=800, min_height=500, disable_close=True)
     
     # Create themes
     create_themes()
@@ -517,10 +515,6 @@ def main():
     B.build_ui()
     B.rebuild_recent_menu()
     
-    # Initialize custom file browser (must be after DPG context created)
-    from ui_browser import get_file_browser
-    get_file_browser()  # Creates the browser window
-    
     # Setup operations callbacks
     setup_ops_callbacks()
     
@@ -539,6 +533,9 @@ def main():
     
     # Viewport resize handler
     dpg.set_viewport_resize_callback(C.on_viewport_resize)
+    
+    # Close confirmation handler (X button, Alt+F4)
+    dpg.set_exit_callback(B.on_close_request)
     
     # Setup and show
     dpg.setup_dearpygui()
@@ -585,6 +582,11 @@ def main():
         state.audio.stop()
         state.vq.cleanup()  # Clean up VQ temp directory
         instance_lock.release()  # Release instance lock
+        try:
+            import native_dialog
+            native_dialog.cleanup()
+        except Exception:
+            pass
         dpg.destroy_context()
         logger.info("Tracker closed normally")
 

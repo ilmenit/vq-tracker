@@ -1,29 +1,20 @@
 ; ==========================================================================
-; TRACKER API - Note Trigger Module
+; TRACKER API - Note Trigger Module (4-channel)
 ; ==========================================================================
-; Handles "Note On" events for the 3-channel polyphonic tracker.
-;
 ; Entry Point:
 ;   Tracker_PlayNote - Start playing a note on a channel
-;
-; Responsibilities:
-;   1. Select target hardware channel (0, 1, or 2)
-;   2. Initialize pitch variables (8.8 fixed-point step from note index)
-;   3. Set up sample stream pointers from SAMPLE_DIR
-;   4. Pre-load VQ cache for immediate playback
 ;
 ; Register Usage:
 ;   A = Sample Index (0 to SAMPLE_COUNT-1)
 ;   X = Note Index (0-35: C-1=0, C-2=12, C-3=24)
-;   Y = Channel Index (0-2)
-;
+;   Y = Channel Index (0-3)
 ; ==========================================================================
 
 Tracker_PlayNote:
     ; Bounds check sample index
     cmp #SAMPLE_COUNT
     bcc @sample_ok
-    rts                         ; Invalid sample, abort
+    rts
 @sample_ok:
 
     ; Dispatch to channel handler
@@ -31,35 +22,48 @@ Tracker_PlayNote:
     beq @set_ch0
     cpy #1
     beq @set_ch1
-    jmp @set_ch2
+    cpy #2
+    beq @set_ch2
+    jmp @set_ch3
 
 ; =========================================================================
 ; CHANNEL 0 SETUP
 ; =========================================================================
 @set_ch0:
-    pha                         ; Save sample index
+    pha
     
-    ; Deactivate during setup (prevent IRQ race)
     lda #0
     sta trk0_active
-    
-    ; Store note for debug/display
     stx trk0_note
     
-    ; Setup pitch step from note index (8.8 fixed point)
     lda NOTE_PITCH_LO,x
     sta trk0_pitch_step
     lda NOTE_PITCH_HI,x
     sta trk0_pitch_step+1
     
-    ; Reset pitch accumulator
+.if VOLUME_CONTROL = 1
+    lda #$10
+    sta ch0_dispatch
+.else
+    lda trk0_pitch_step+1
+    cmp #$01
+    bne @ch0_api_pitch
+    lda trk0_pitch_step
+    bne @ch0_api_pitch
+    lda #$30
+    bne @ch0_api_set_dispatch
+@ch0_api_pitch:
+    lda #$10
+@ch0_api_set_dispatch:
+    sta ch0_dispatch
+.endif
+    
     lda #0
     sta trk0_pitch_frac
     sta trk0_pitch_int
-    sta trk0_vector_offset      ; Start at sample 0 within vector
+    sta trk0_vector_offset
     
-    ; Setup sample stream pointers
-    pla                         ; Restore sample index
+    pla
     tax
     
     lda SAMPLE_START_LO,x
@@ -71,14 +75,13 @@ Tracker_PlayNote:
     lda SAMPLE_END_HI,x
     sta trk0_stream_end+1
     
-    ; Pre-load VQ cache (first codebook entry)
     lda trk0_stream_ptr
     sta trk_ptr
     lda trk0_stream_ptr+1
     sta trk_ptr+1
     
     ldy #0
-    lda (trk_ptr),y             ; Get first VQ index
+    lda (trk_ptr),y
     tay
     
     lda VQ_LO,y
@@ -86,7 +89,6 @@ Tracker_PlayNote:
     lda VQ_HI,y
     sta trk0_sample_ptr+1
     
-    ; Activate channel
     lda #$FF
     sta trk0_active
     rts
@@ -105,6 +107,23 @@ Tracker_PlayNote:
     sta trk1_pitch_step
     lda NOTE_PITCH_HI,x
     sta trk1_pitch_step+1
+    
+.if VOLUME_CONTROL = 1
+    lda #$10
+    sta ch1_dispatch
+.else
+    lda trk1_pitch_step+1
+    cmp #$01
+    bne @ch1_api_pitch
+    lda trk1_pitch_step
+    bne @ch1_api_pitch
+    lda #$30
+    bne @ch1_api_set_dispatch
+@ch1_api_pitch:
+    lda #$10
+@ch1_api_set_dispatch:
+    sta ch1_dispatch
+.endif
     
     lda #0
     sta trk1_pitch_frac
@@ -156,6 +175,23 @@ Tracker_PlayNote:
     lda NOTE_PITCH_HI,x
     sta trk2_pitch_step+1
     
+.if VOLUME_CONTROL = 1
+    lda #$10
+    sta ch2_dispatch
+.else
+    lda trk2_pitch_step+1
+    cmp #$01
+    bne @ch2_api_pitch
+    lda trk2_pitch_step
+    bne @ch2_api_pitch
+    lda #$30
+    bne @ch2_api_set_dispatch
+@ch2_api_pitch:
+    lda #$10
+@ch2_api_set_dispatch:
+    sta ch2_dispatch
+.endif
+    
     lda #0
     sta trk2_pitch_frac
     sta trk2_pitch_int
@@ -189,4 +225,71 @@ Tracker_PlayNote:
     
     lda #$FF
     sta trk2_active
+    rts
+
+; =========================================================================
+; CHANNEL 3 SETUP
+; =========================================================================
+@set_ch3:
+    pha
+    
+    lda #0
+    sta trk3_active
+    stx trk3_note
+    
+    lda NOTE_PITCH_LO,x
+    sta trk3_pitch_step
+    lda NOTE_PITCH_HI,x
+    sta trk3_pitch_step+1
+    
+.if VOLUME_CONTROL = 1
+    lda #$10
+    sta ch3_dispatch
+.else
+    lda trk3_pitch_step+1
+    cmp #$01
+    bne @ch3_api_pitch
+    lda trk3_pitch_step
+    bne @ch3_api_pitch
+    lda #$30
+    bne @ch3_api_set_dispatch
+@ch3_api_pitch:
+    lda #$10
+@ch3_api_set_dispatch:
+    sta ch3_dispatch
+.endif
+    
+    lda #0
+    sta trk3_pitch_frac
+    sta trk3_pitch_int
+    sta trk3_vector_offset
+    
+    pla
+    tax
+    
+    lda SAMPLE_START_LO,x
+    sta trk3_stream_ptr
+    lda SAMPLE_START_HI,x
+    sta trk3_stream_ptr+1
+    lda SAMPLE_END_LO,x
+    sta trk3_stream_end
+    lda SAMPLE_END_HI,x
+    sta trk3_stream_end+1
+    
+    lda trk3_stream_ptr
+    sta trk_ptr
+    lda trk3_stream_ptr+1
+    sta trk_ptr+1
+    
+    ldy #0
+    lda (trk_ptr),y
+    tay
+    
+    lda VQ_LO,y
+    sta trk3_sample_ptr
+    lda VQ_HI,y
+    sta trk3_sample_ptr+1
+    
+    lda #$FF
+    sta trk3_active
     rts

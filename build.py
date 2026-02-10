@@ -291,8 +291,8 @@ def export_song_data(song: Song, output_path: str, output_func=None) -> Tuple[bo
         opt_speed_val = 1 if state.vq.settings.optimize_speed else 0
         cfg_lines.append(f"OPTIMIZE_SPEED = {opt_speed_val}  ; 1=full bytes (fast), 0=nibble-packed (compact)")
         cfg_lines.append("")
-        # Screen control: screen_control=True means show display, so BLANK_SCREEN=0
-        # screen_control=False (default) means blank display, so BLANK_SCREEN=1
+        # Screen control: screen_control=True (default) means show display, so BLANK_SCREEN=0
+        # screen_control=False means blank display, so BLANK_SCREEN=1
         blank_val = 0 if song.screen_control else 1
         cfg_lines.append(f"BLANK_SCREEN = {blank_val}  ; 1=no display (~15% more CPU), 0=normal display")
         cfg_lines.append("")

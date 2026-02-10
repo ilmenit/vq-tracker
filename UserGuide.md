@@ -24,7 +24,6 @@ The CPU must output audio samples at rates of 4,000â€“8,000 Hz (or higher f
 
 When all three channels cross a vector boundary simultaneously (worst case), the IRQ handler must fetch new codebook pointers for each channel. This is where careful optimization becomes critical.
 
-Additionally, when the display is enabled, ANTIC steals approximately 9-15% of CPU cycles for memory refresh, display list fetching, and screen data access. The analyzer accounts for this when estimating timing margins.
 
 **Our key constraint:** Everything runs from the base 64KB RAM. No extended memory, no cartridge ROM, no bank switching. This keeps the player compatible with all Atari XL/XE machines but limits total sample storage to what fits alongside the player code, song data, and codebook.
 
@@ -135,24 +134,7 @@ The pattern editor works like a classic tracker:
 - **Songlines** define which pattern plays on each of the 3 channels
 - Patterns can be reused across songlines and channels
 
-### 4. Analyze
-
-Click **ANALYZE** to estimate CPU usage.
-
-The analyzer calculates cycle budgets based on your current settings:
-- Available cycles per IRQ at your sample rate
-- Typical case (no boundary crossings)
-- Worst case (all 3 channels cross boundaries simultaneously)
-- Safety margin percentage
-
-**Understanding the Results:**
-- **Green/Safe**: Plenty of headroom, should work reliably
-- **Yellow/Tight**: May work but could have occasional glitches
-- **Red/Over**: Will definitely glitch â€” reduce settings
-
-*Important: The analyzer provides estimates based on theoretical cycle counts. Actual behavior may vary slightly. Future versions will include cycle-accurate emulation for precise verification.*
-
-### 5. Build & Run
+### 4. Build & Run
 
 Click **BUILD & RUN** to:
 
@@ -341,7 +323,6 @@ Each cell shows:
 | Button | Action |
 |--------|--------|
 | **CONVERT** | Run VQ compression on all samples |
-| **ANALYZE** | Estimate CPU usage with current settings |
 | **BUILD & RUN** | Compile and launch in Altirra |
 
 **Checkbox:**
@@ -567,7 +548,6 @@ The 20 most recent autosaves are kept.
 - Increase **Vec** (try 8 or 16)
 - Disable **Screen** option
 - Disable **Vol** if not needed
-- Check ANALYZE results â€” are you over budget?
 
 **No sound at all**
 - Is Altirra audio enabled?
@@ -617,7 +597,6 @@ This is **Beta 1** â€” an experimental first release. The foundation is wor
 ### Planned Features
 
 **Cycle-Accurate Emulation**
-Currently, ANALYZE provides estimates. A future version will include actual 6502 emulation in the tracker itself, showing exact cycle counts per frame and highlighting problem areas in real-time as you compose.
 
 **Extended Memory Support**
 The current player uses only base 64KB RAM. Adding support for extended memory (130XE banks, cartridge ROM) would dramatically increase available sample storage while keeping the playback engine in main RAM.
@@ -702,7 +681,6 @@ $C000-$FFFF  OS ROM / hardware
 - 3-channel polyphonic playback with pitch control
 - VQ compression with adjustable parameters
 - Pattern-based song editor
-- CPU budget analyzer
 - One-click build and run
 
 ---

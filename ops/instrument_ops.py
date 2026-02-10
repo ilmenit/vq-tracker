@@ -19,20 +19,45 @@ from ops.base import ui, save_undo, fmt, get_samples_dir
 logger = logging.getLogger("tracker.ops.instruments")
 
 
+from typing import Optional
+
+
+def _audio_filters() -> dict:
+    """Build filter dict for native file dialog from supported extensions."""
+    exts = get_supported_extensions()
+    # "wav,mp3,ogg,flac,aiff,aif,m4a,wma" (without dots)
+    spec = ",".join(e.lstrip(".") for e in sorted(exts))
+    return {"Audio Files": spec}
+
+
 # =========================================================================
 # PUBLIC ENTRY POINTS (called from menus / keyboard shortcuts)
 # =========================================================================
 
 def add_sample(*args):
-    """Load sample file(s) - multi-select with audio preview."""
-    from ui_browser import show_sample_browser
-    show_sample_browser('file', _on_files_selected)
+    """Load sample file(s) - native multi-select file dialog."""
+    import native_dialog
+    paths = native_dialog.open_files(
+        title="Add Sample Files",
+        start_dir=_last_browse_dir(),
+        filters=_audio_filters(),
+        allow_multi=True,
+    )
+    if paths:
+        _remember_browse_dir(paths[0])
+        _on_files_selected(paths)
 
 
 def add_folder(*args):
-    """Load all samples from selected folder(s)."""
-    from ui_browser import show_sample_browser
-    show_sample_browser('folder', _on_folders_selected)
+    """Load all samples from selected folder."""
+    import native_dialog
+    folder = native_dialog.pick_folder(
+        title="Add Samples from Folder",
+        start_dir=_last_browse_dir(),
+    )
+    if folder:
+        _remember_browse_dir(folder)
+        _on_folders_selected([folder])
 
 
 def replace_instrument(*args):
@@ -43,22 +68,47 @@ def replace_instrument(*args):
         return
 
     inst = state.song.instruments[state.instrument]
-    from ui_browser import show_sample_browser
 
-    # Open browser in single-select file mode, starting from the
-    # directory of the instrument's original source file (if known)
-    start_dir = None
+    # Start from the directory of the instrument's original source file
+    start_dir = _last_browse_dir()
     if inst.original_sample_path:
         parent = os.path.dirname(inst.original_sample_path)
         if os.path.isdir(parent):
             start_dir = parent
 
-    show_sample_browser(
-        'file', _on_replace_file_selected,
-        start_path=start_dir,
-        ok_label="\u2713 Replace",
+    import native_dialog
+    paths = native_dialog.open_files(
+        title=f"Replace Instrument: {inst.name}",
+        start_dir=start_dir,
+        filters=_audio_filters(),
         allow_multi=False,
-        title=f"Replace Instrument: {inst.name}")
+    )
+    if paths:
+        _remember_browse_dir(paths[0])
+        _on_replace_file_selected(paths)
+
+
+# =========================================================================
+# BROWSE DIRECTORY MEMORY (persists across dialogs within session)
+# =========================================================================
+_browse_dir = None
+
+
+def _last_browse_dir() -> Optional[str]:
+    """Return the last directory the user browsed to."""
+    global _browse_dir
+    if _browse_dir and os.path.isdir(_browse_dir):
+        return _browse_dir
+    return os.path.expanduser("~")
+
+
+def _remember_browse_dir(path: str):
+    """Remember the directory of a selected file/folder."""
+    global _browse_dir
+    if os.path.isdir(path):
+        _browse_dir = path
+    else:
+        _browse_dir = os.path.dirname(path)
 
 
 # =========================================================================

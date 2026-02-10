@@ -102,12 +102,28 @@ def create_themes():
             dpg.add_theme_color(dpg.mvThemeCol_Text, COL_MUTED)  # Dimmed text
     
     # Per-channel colored header buttons (song panel column labels)
+    # Also used for pattern editor Note/Ins/Vol column headers
     for ch_idx, ch_color in enumerate(COL_CH):
         with dpg.theme(tag=f"theme_header_ch{ch_idx}"):
             with dpg.theme_component(dpg.mvButton):
                 dpg.add_theme_color(dpg.mvThemeCol_Button, COL_BG)
                 dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, COL_BG)
                 dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, COL_BG)
+                dpg.add_theme_color(dpg.mvThemeCol_Text, ch_color)
+                dpg.add_theme_color(dpg.mvThemeCol_TextDisabled, ch_color)
+        
+        # Song data cell with channel-tinted text (non-cursor, non-playing state)
+        # Uses dimmer version of channel color so cursor/playing highlights stand out
+        dim_ch = (ch_color[0] * 2 // 3, ch_color[1] * 2 // 3, ch_color[2] * 2 // 3)
+        with dpg.theme(tag=f"theme_song_cell_ch{ch_idx}"):
+            with dpg.theme_component(dpg.mvButton):
+                dpg.add_theme_color(dpg.mvThemeCol_Button, COL_BG2)
+                dpg.add_theme_color(dpg.mvThemeCol_Text, dim_ch)
+        
+        # Song data cell on cursor row but not the focused cell
+        with dpg.theme(tag=f"theme_song_cell_ch{ch_idx}_row"):
+            with dpg.theme_component(dpg.mvButton):
+                dpg.add_theme_color(dpg.mvThemeCol_Button, (30, 38, 55))
                 dpg.add_theme_color(dpg.mvThemeCol_Text, ch_color)
     
     # SPD header (yellow-ish label)
@@ -131,6 +147,13 @@ def create_themes():
         with dpg.theme_component(dpg.mvChildWindow):
             dpg.add_theme_color(dpg.mvThemeCol_Border, COL_BORDER)
             dpg.add_theme_style(dpg.mvStyleVar_ChildBorderSize, 1)
+    
+    # Zero-padding container (for aligning channel headers with data columns)
+    with dpg.theme(tag="theme_container_nopad"):
+        with dpg.theme_component(dpg.mvChildWindow):
+            dpg.add_theme_style(dpg.mvStyleVar_WindowPadding, 0, 0)
+            dpg.add_theme_style(dpg.mvStyleVar_ChildBorderSize, 0)
+            dpg.add_theme_color(dpg.mvThemeCol_ChildBg, (0, 0, 0, 0))
     
     # === TEXT THEMES ===
     

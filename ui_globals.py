@@ -42,10 +42,55 @@ MAX_VISIBLE_ROWS = 50
 SONG_VISIBLE_ROWS = 5
 SONG_PANEL_WIDTH = 340
 
+
+def compute_editor_width(hex_mode, show_volume):
+    """Calculate the correct editor panel width for current settings.
+    
+    DPG inserts item_spacing (8px) between EVERY adjacent widget in a
+    horizontal group.  We must count all widgets and all gaps exactly.
+    
+    Row layout (no volume):
+      [RowBtn] [Spacer4] [Note1][Inst1] [SpacerCH] [Note2][Inst2] ...
+      
+    Item count = 1(row) + 1(spc4) + CH*(note+inst) + (CH-1)*spacerCH
+    With volume: + CH*vol extra items
+    IS gaps = (item_count - 1) * 8
+    """
+    row_num_w = 32 if hex_mode else 40
+    note_w = 44
+    inst_w = 32 if hex_mode else 40
+    vol_w = 24 if hex_mode else 30
+    ch_spacer = 12
+    item_spacing = 8  # DPG default horizontal item spacing
+    spacer_lead = 4   # small spacer after row number
+    
+    from constants import MAX_CHANNELS
+    
+    # Count widgets and their widths
+    items_per_ch = 2  # note + inst buttons
+    if show_volume:
+        items_per_ch = 3  # + vol button
+    
+    n_items = (1                                 # row number button
+               + 1                               # leading spacer(4)
+               + MAX_CHANNELS * items_per_ch     # data buttons
+               + (MAX_CHANNELS - 1))             # inter-channel spacers
+    
+    widget_widths = (row_num_w + spacer_lead
+                     + MAX_CHANNELS * (note_w + inst_w + (vol_w if show_volume else 0))
+                     + (MAX_CHANNELS - 1) * ch_spacer)
+    
+    is_total = (n_items - 1) * item_spacing
+    
+    # Window chrome: padding (8px each side) + border (1px each) + scrollbar room
+    chrome = 32
+    
+    return widget_widths + is_total + chrome
+
 # =============================================================================
 # SHARED STATE
 # =============================================================================
-visible_rows = 13
+visible_rows = 11
 play_row = -1
 play_songline = -1
 last_autosave = 0
