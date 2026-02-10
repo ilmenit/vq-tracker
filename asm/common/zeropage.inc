@@ -146,7 +146,7 @@
     evt_trigger       = $CB     ; 4 bytes
 
     vcount_phase      = $CF     ; 1 byte
-    last_playing      = $D0     ; 1 byte
+    ; $D0 unused (was last_playing, removed in wait_loop/main_loop split)
 
     evt_note          = $D1     ; 4 bytes
     evt_inst          = $D5     ; 4 bytes

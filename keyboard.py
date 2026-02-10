@@ -143,6 +143,16 @@ def handle_key(sender, key):
         except:
             pass
 
+    # ── Skip while sample editor is open (modal) ────────────────────
+    try:
+        if (dpg.does_item_exist("sample_editor_win") and
+                dpg.is_item_shown("sample_editor_win")):
+            from sample_editor.ui_editor import handle_editor_key
+            handle_editor_key(key)
+            return
+    except Exception:
+        pass
+
     ctrl  = dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)
     shift = dpg.is_key_down(dpg.mvKey_LShift) or dpg.is_key_down(dpg.mvKey_RShift)
 

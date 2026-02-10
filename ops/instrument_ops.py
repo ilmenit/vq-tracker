@@ -188,10 +188,18 @@ def _on_replace_file_selected(paths):
     inst.original_sample_path = new_inst.original_sample_path
     inst.sample_data = new_inst.sample_data
     inst.sample_rate = new_inst.sample_rate
+    inst.invalidate_cache()  # Clear processed audio cache (sample changed)
     # Preserve: base_note (user may have tuned it)
+    # Preserve: effects (user-configured pipeline still applies)
 
     state.vq.invalidate()
     ui.refresh_instruments()
+    # Refresh sample editor if open (sample data changed under it)
+    try:
+        from sample_editor.ui_editor import refresh_editor
+        refresh_editor()
+    except Exception:
+        pass
     ui.show_status(f"Replaced with: {new_inst.name}")
 
 
@@ -254,6 +262,12 @@ def remove_instrument(*args):
     if not state.song.instruments:
         return
     save_undo("Remove instrument")
+    # Close sample editor — inst indices shift after removal
+    try:
+        from sample_editor.ui_editor import close_editor
+        close_editor()
+    except Exception:
+        pass
     if state.song.remove_instrument(state.instrument):
         if state.instrument >= len(state.song.instruments):
             state.instrument = max(0, len(state.song.instruments) - 1)
@@ -271,6 +285,11 @@ def reset_all_instruments(*args):
 
     def do_reset():
         save_undo("Reset all instruments")
+        try:
+            from sample_editor.ui_editor import close_editor
+            close_editor()
+        except Exception:
+            pass
         state.song.instruments.clear()
         state.instrument = 0
         for pattern in state.song.patterns:
@@ -299,9 +318,20 @@ def _do_rename(name: str):
         save_undo("Rename")
         state.song.instruments[state.instrument].name = name
         ui.refresh_instruments()
+        try:
+            from sample_editor.ui_editor import refresh_editor
+            refresh_editor()
+        except Exception:
+            pass
 
 
 def select_instrument(idx: int):
     """Select instrument by index."""
     state.instrument = max(0, min(idx, len(state.song.instruments) - 1))
     ui.refresh_instruments()
+    # Update sample editor if open
+    try:
+        from sample_editor.ui_editor import update_editor_instrument
+        update_editor_instrument(state.instrument)
+    except Exception:
+        pass

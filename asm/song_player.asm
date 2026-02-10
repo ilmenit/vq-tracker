@@ -181,8 +181,6 @@ start:
     sta COLPF2
     lda #COL_STOPPED            ; Black background when stopped
     sta COLBK
-    lda #$FF
-    sta last_playing            ; Force state change detection on first loop
     
     ; --- Enable timer IRQ ---
     lda #IRQ_MASK
@@ -191,17 +189,112 @@ start:
     sta STIMER                  ; Start timers
     
     cli                         ; Enable interrupts
-    jmp main_loop               ; Enter main loop (skip do_process_row!)
+    jmp wait_loop               ; Enter idle state (wait for SPACE to play)
 
 ; ==========================================================================
-; PROCESS ROW - Placed before main_loop for short branch distances
+; PROCESS ROW - Called from main_loop when a new row is due
 ; ==========================================================================
 do_process_row:
     icl "tracker/process_row.asm"
-    jmp ml_check_state_change   ; Return to main loop after processing
+    jmp ml_after_row            ; Return to main loop after processing
 
 ; ==========================================================================
-; MAIN LOOP
+; WAIT LOOP - Idle state (screen ON, waiting for SPACE)
+; ==========================================================================
+; State 1: Pre-play and post-play. Screen is always enabled.
+; Displays text and current position. Waits for SPACE to start playback.
+; In KEY_CONTROL=1 mode, R resets position to the beginning.
+; ==========================================================================
+wait_loop:
+    ; --- Frame detection via VCOUNT ---
+    lda VCOUNT
+    and #$80
+    tax
+    cmp vcount_phase
+    beq wl_check_keys
+    
+    stx vcount_phase
+    txa
+    bne wl_check_keys           ; Only act on 1->0 transition
+    
+    ; --- New frame: update display ---
+    jsr update_display
+    
+wl_check_keys:
+    ; --- Check for keypress ---
+    lda SKSTAT
+    and #$04
+    bne wait_loop               ; No key pressed, keep waiting
+    lda SKSTAT                  ; Double-read for debounce
+    and #$04
+    bne wait_loop
+    
+    lda KBCODE
+    and #$3F
+    
+    ; --- SPACE ($21) = start playback ---
+    cmp #$21
+    beq wl_start_play
+    
+.if KEY_CONTROL = 1
+    ; --- R ($28) = reset to beginning ---
+    cmp #$28
+    beq wl_do_reset
+.endif
+    
+    ; --- Unknown key: wait for release, continue ---
+wl_key_release:
+    lda SKSTAT
+    and #$04
+    beq wl_key_release
+    jmp wait_loop
+
+.if KEY_CONTROL = 1
+wl_do_reset:
+    ; Reset sequencer to beginning (stays in idle state)
+    jsr seq_init
+    ; Wait for R key release
+wl_reset_release:
+    lda SKSTAT
+    and #$04
+    beq wl_reset_release
+    lda SKSTAT
+    and #$04
+    beq wl_reset_release
+    jmp wait_loop
+.endif
+
+wl_start_play:
+    ; Wait for SPACE release before starting (prevents immediate stop)
+wl_space_release:
+    lda SKSTAT
+    and #$04
+    beq wl_space_release
+    lda SKSTAT
+    and #$04
+    beq wl_space_release
+    
+    ; --- Transition to playback ---
+.if BLANK_SCREEN = 1
+    lda #0
+    sta DMACTL                  ; Screen OFF for max CPU
+.endif
+    lda #COL_PLAYING
+    sta COLBK
+    lda #$FF
+    sta seq_playing
+.if KEY_CONTROL = 1
+    lda #$FF
+    sta last_key_code           ; Reset key debounce state
+.endif
+    jmp main_loop
+
+; ==========================================================================
+; MAIN LOOP - Playback state (screen off if BLANK_SCREEN=1)
+; ==========================================================================
+; State 2: Active playback. Processes ticks and rows.
+; In KEY_CONTROL=1 mode: SPACE=stop, R=restart (return to wait_loop).
+; In KEY_CONTROL=0 mode: no keyboard, plays once then returns to wait_loop.
 ; ==========================================================================
 main_loop:
     ; --- Frame detection via VCOUNT ---
@@ -218,65 +311,39 @@ main_loop:
     ; =====================================================================
     ; NEW FRAME - Process tick
     ; =====================================================================
-    lda seq_playing
-    beq ml_check_state_change   ; Not playing? Skip
-    
-    ; --- Tick counter ---
     inc seq_tick
     lda seq_tick
     cmp seq_speed
-    bcc ml_check_state_change   ; Not time for new row
+    bcc ml_after_row            ; Not time for new row
     
     ; --- New row ---
     lda #0
     sta seq_tick
     jmp do_process_row
     
-ml_check_state_change:
-    ; --- Handle play/stop transitions ---
+ml_after_row:
+    ; --- Check if song has ended (process_row sets seq_playing=0) ---
     lda seq_playing
-    cmp last_playing
-    beq ml_state_done
-    
-    sta last_playing
-    beq ml_now_stopped
-    
-    ; --- Started playing ---
-.if BLANK_SCREEN = 1
-    ldx #0
-    stx DMACTL                  ; Disable display DMA for max CPU
-.endif
-    lda #COL_PLAYING
-    bne ml_set_color            ; Always branches (COL_PLAYING=$74, Z=0)
-    
-ml_now_stopped:
-.if BLANK_SCREEN = 1
-    ldx #$22
-    stx DMACTL                  ; Re-enable display DMA
-.endif
-    lda #COL_STOPPED
+    beq ml_song_ended
 
-ml_set_color:
-    sta COLBK
-
-ml_state_done:
-.if BLANK_SCREEN = 1
-    lda seq_playing
-    bne ml_no_vblank            ; Skip display update while playing (screen is off)
-.endif
+    ; --- Update display (only when screen is visible) ---
+.if BLANK_SCREEN = 0
     jsr update_display
+.endif
 
 ml_no_vblank:
     ; =====================================================================
-    ; KEYBOARD HANDLING
+    ; KEYBOARD HANDLING (playback state)
     ; =====================================================================
 
 .if KEY_CONTROL = 1
     ; --- Full keyboard control mode ---
     lda last_key_code
     cmp #$FF
-    bne ml_check_release        ; Key still held? Check for release
+    beq ml_no_key_held          ; No key held, check for new press
+    jmp ml_check_release        ; Key held, check for release (far branch)
     
+ml_no_key_held:
     ; --- Check for new keypress ---
     lda SKSTAT
     and #$04
@@ -290,38 +357,25 @@ ml_no_vblank:
     and #$3F
     sta last_key_code
     
-    ; --- SPACE key ($21) = play/stop toggle ---
+    ; --- SPACE key ($21) = stop ---
     cmp #$21
-    bne ml_check_r_down
-    lda seq_playing
-    bne ml_do_stop
+    beq ml_do_stop
     
-    ; Start playing
-    lda #$FF
-    sta seq_playing
-    jmp main_loop
-    
-ml_do_stop:
-    ; Stop playing and silence all 4 channels
-    lda #0
-    sta seq_playing
-    sta trk0_active
-    sta trk1_active
-    sta trk2_active
-    sta trk3_active
-    lda #SILENCE
-    sta AUDC1
-    sta AUDC2
-    sta AUDC3
-    sta AUDC4
-    jmp main_loop
-    
-ml_check_r_down:
     ; --- R key ($28) = restart ---
     cmp #$28
-    bne ml_continue
+    beq ml_do_restart
+    jmp ml_continue
+
+ml_do_stop:
+    ; Stop playing, silence channels, return to idle
+    jsr silence_channels
+    jmp return_to_idle
+    
+ml_do_restart:
+    ; Silence channels, reset sequencer, return to idle
+    jsr silence_channels
     jsr seq_init
-    jmp main_loop
+    jmp return_to_idle
 
 ml_check_release:
     lda SKSTAT
@@ -334,28 +388,58 @@ ml_check_release:
     ; Key released
     lda #$FF
     sta last_key_code
-    ; Fall through to ml_continue
 
 .else
     ; --- Minimal keyboard mode (KEY_CONTROL=0) ---
-    lda seq_playing
-    bne ml_continue             ; Already playing? Skip keyboard
-    
-    lda SKSTAT
-    and #$04
-    bne ml_continue
-    
-    lda KBCODE
-    and #$3F
-    cmp #$21                    ; SPACE key?
-    bne ml_continue
-    
-    lda #$FF
-    sta seq_playing
+    ; No keyboard during playback. Song stops by itself.
 .endif
 
 ml_continue:
     jmp main_loop
+
+; --- Song ended (process_row set seq_playing=0) ---
+ml_song_ended:
+    jsr silence_channels
+    jmp return_to_idle
+
+; ==========================================================================
+; SHARED SUBROUTINES for state transitions
+; ==========================================================================
+
+silence_channels:
+    ; Silence all 4 channels
+    lda #0
+    sta seq_playing
+    sta trk0_active
+    sta trk1_active
+    sta trk2_active
+    sta trk3_active
+    lda #SILENCE
+    sta AUDC1
+    sta AUDC2
+    sta AUDC3
+    sta AUDC4
+    rts
+
+return_to_idle:
+    ; Restore screen and return to wait_loop
+.if BLANK_SCREEN = 1
+    lda #$22
+    sta DMACTL                  ; Screen back ON
+.endif
+    lda #COL_STOPPED
+    sta COLBK
+.if KEY_CONTROL = 1
+    ; Wait for key release before returning (prevents ghost keypress in wait_loop)
+@rti_release:
+    lda SKSTAT
+    and #$04
+    beq @rti_release
+    lda SKSTAT
+    and #$04
+    beq @rti_release
+.endif
+    jmp wait_loop
 
 ; ==========================================================================
 ; NMI STUB

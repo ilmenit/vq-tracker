@@ -11,12 +11,6 @@ seq_init:
     sta seq_playing
     sta vcount_phase
     
-    ; Force state change detection on next main loop iteration
-    ; This ensures DMACTL gets restored (BLANK_SCREEN=1) and
-    ; COLBK gets set correctly after any reset/restart.
-    lda #$FF
-    sta last_playing
-    
     ; Default configuration
     lda #6
     sta seq_speed

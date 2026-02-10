@@ -45,6 +45,12 @@ def new_song(*args):
 
 def _do_new():
     state.audio.stop_playback()
+    # Close sample editor before clearing instruments
+    try:
+        from sample_editor.ui_editor import close_editor
+        close_editor()
+    except Exception:
+        pass
     state.song.reset()
     state.undo.clear()
     state.songline = state.row = state.channel = state.instrument = 0
@@ -82,6 +88,13 @@ def _load_file(path: str):
     # Stop audio BEFORE loading to release any file handles
     # On Windows, the audio engine may hold references to sample files
     state.audio.stop_playback()
+    
+    # Close sample editor before replacing song
+    try:
+        from sample_editor.ui_editor import close_editor
+        close_editor()
+    except Exception:
+        pass
     
     logger.info(f"Loading project: {path}")
     song, editor_state, msg = load_project(path, file_io.work_dir)
@@ -150,16 +163,19 @@ def _trigger_auto_conversion():
 
     Uses sample_path (extracted files in work_dir) rather than original_sample_path,
     since the original files may no longer exist on the user's disk.
+    Writes processed WAVs for instruments with effects.
     """
-    input_files = []
-    for inst in state.song.instruments:
-        if inst.sample_path and os.path.exists(inst.sample_path):
-            input_files.append(inst.sample_path)
+    if not state.song.instruments:
+        return
 
+    from ui_callbacks import _prepare_conversion_files, show_vq_conversion_window
+    import ui_callbacks
+
+    input_files, proc_files, error = _prepare_conversion_files(state.song.instruments)
     if not input_files:
         return
 
-    from ui_callbacks import show_vq_conversion_window
+    ui_callbacks._vq_proc_files = proc_files
     show_vq_conversion_window(input_files)
 
 

@@ -322,6 +322,12 @@ def undo(*args):
         state.audio.set_song(state.song)
         state.selection.clear()
         ui.refresh_all()
+        # Refresh sample editor (instruments were replaced by undo)
+        try:
+            from sample_editor.ui_editor import refresh_editor
+            refresh_editor()
+        except Exception:
+            pass
         ui.show_status(f"Undo: {desc}" if desc else "Undo")
 
 
@@ -332,4 +338,9 @@ def redo(*args):
         state.audio.set_song(state.song)
         state.selection.clear()
         ui.refresh_all()
+        try:
+            from sample_editor.ui_editor import refresh_editor
+            refresh_editor()
+        except Exception:
+            pass
         ui.show_status(f"Redo: {desc}" if desc else "Redo")

@@ -607,12 +607,24 @@ def on_keyboard_control_toggle(sender, value):
         G.show_status("Keyboard control disabled (saves cycles, play-once mode)")
 
 
+def on_edit_instrument(*args):
+    """Open the sample editor for the currently selected instrument."""
+    from sample_editor.ui_editor import open_editor
+    inst = state.song.get_instrument(state.instrument)
+    if inst:
+        open_editor(state.instrument)
+    else:
+        G.show_status("No instrument selected")
+
 
 def on_input_inst_change(sender, value):
     try:
         idx = int(value.split(" - ")[0], 16 if state.hex_mode else 10)
         state.instrument = idx
         R.refresh_instruments()
+        # Update sample editor if open
+        from sample_editor.ui_editor import update_editor_instrument
+        update_editor_instrument(idx)
     except: pass
 
 
@@ -625,6 +637,11 @@ def on_input_vol_change(sender, value):
 
 def on_reset_song():
     def do_reset():
+        try:
+            from sample_editor.ui_editor import close_editor
+            close_editor()
+        except Exception:
+            pass
         state.song.reset()
         state.songline = state.row = state.channel = state.column = 0
         state.song_cursor_row = state.song_cursor_col = 0
@@ -709,6 +726,11 @@ def on_move_inst_up(sender, app_data):
         state.vq.invalidate()  # Invalidate VQ conversion
         R.refresh_instruments()
         R.refresh_editor()
+        try:
+            from sample_editor.ui_editor import update_editor_instrument
+            update_editor_instrument(state.instrument)
+        except Exception:
+            pass
         G.show_status("Moved instrument up")
 
 
@@ -724,6 +746,11 @@ def on_move_inst_down(sender, app_data):
         state.vq.invalidate()  # Invalidate VQ conversion
         R.refresh_instruments()
         R.refresh_editor()
+        try:
+            from sample_editor.ui_editor import update_editor_instrument
+            update_editor_instrument(state.instrument)
+        except Exception:
+            pass
         G.show_status("Moved instrument down")
 
 
@@ -932,6 +959,13 @@ def _load_autosave(path: str):
     # Stop audio BEFORE loading to release any file handles
     state.audio.stop_playback()
     
+    # Close sample editor before replacing song
+    try:
+        from sample_editor.ui_editor import close_editor
+        close_editor()
+    except Exception:
+        pass
+    
     # Autosave current work first
     if state.song.modified and G.autosave_enabled:
         G.do_autosave()
@@ -977,6 +1011,13 @@ def load_recent_file(sender, app_data, user_data):
     
     # Stop audio BEFORE loading to release any file handles
     state.audio.stop_playback()
+    
+    # Close sample editor before replacing song
+    try:
+        from sample_editor.ui_editor import close_editor
+        close_editor()
+    except Exception:
+        pass
     
     if state.song.modified and G.autosave_enabled:
         G.do_autosave()
@@ -1238,42 +1279,80 @@ def update_build_button_state():
 
 
 
+def _prepare_conversion_files(instruments) -> tuple:
+    """Prepare input files for VQ conversion, writing processed WAVs where needed.
+    
+    Always reads original audio from disk (sample_path), never from sample_data
+    which may contain VQ-converted audio when use_converted is active.
+    
+    Returns (input_files, proc_files, error_msg).
+    error_msg is non-empty if a file is missing.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    input_files = []
+    proc_files = []
+    for i, inst in enumerate(instruments):
+        working_path = inst.sample_path
+        if not working_path or not os.path.exists(working_path):
+            return None, [], (
+                f"Instrument '{inst.name}' has no valid sample file.\n\n"
+                f"Path: {working_path or '(empty)'}\n\n"
+                f"Please reload the instrument.")
+        
+        if inst.effects:
+            # Read original audio from disk (not sample_data which may be VQ)
+            import soundfile as sf
+            from sample_editor.pipeline import run_pipeline
+            try:
+                original_audio, sr = sf.read(working_path, dtype='float32')
+                if len(original_audio.shape) > 1:
+                    original_audio = original_audio.mean(axis=1)
+                processed = run_pipeline(original_audio, sr, inst.effects)
+                proc_path = working_path.replace('.wav', '_proc.wav')
+                sf.write(proc_path, processed, sr)
+                input_files.append(proc_path)
+                proc_files.append(proc_path)
+                logger.debug(f"  Inst {i}: wrote processed audio to {proc_path}")
+            except Exception as e:
+                logger.warning(f"  Inst {i}: failed to process effects: {e}, using raw")
+                input_files.append(working_path)
+        else:
+            input_files.append(working_path)
+    
+    return input_files, proc_files, ""
+
+
 def on_vq_convert_click(sender, app_data):
     """Start VQ conversion."""
-    from vq_convert import VQConverter
     from ui_dialogs import show_error
     import logging
     logger = logging.getLogger(__name__)
     
     logger.debug(f"on_vq_convert_click: {len(state.song.instruments)} instruments")
     
-    # Check if there are instruments
     if not state.song.instruments:
         show_error("No Instruments", "Add instruments before converting.")
         return
     
-    # Check all instruments have files - use sample_path (working copy in .tmp)
-    input_files = []
-    for i, inst in enumerate(state.song.instruments):
-        working_path = inst.sample_path
-        logger.debug(f"  Inst {i}: name='{inst.name}', sample_path='{working_path}'")
-        if working_path and os.path.exists(working_path):
-            input_files.append(working_path)
-        else:
-            show_error("Missing File", 
-                       f"Instrument '{inst.name}' has no valid sample file.\n\n"
-                       f"Path: {working_path or '(empty)'}\n\n"
-                       f"Please reload the instrument.")
-            return
+    input_files, proc_files, error = _prepare_conversion_files(state.song.instruments)
+    if input_files is None:
+        show_error("Missing File", error)
+        return
     
     logger.debug(f"Starting conversion with {len(input_files)} files")
     
-    # Show conversion window
+    # Track proc files for cleanup after conversion
+    global _vq_proc_files
+    _vq_proc_files = proc_files
+    
     show_vq_conversion_window(input_files)
 
 
 # Global reference to converter for polling
 _vq_converter = None
+_vq_proc_files = []
 
 
 def show_vq_conversion_window(input_files: list):
@@ -1385,6 +1464,16 @@ def poll_vq_conversion():
                 G.show_status("Conversion complete")
         else:
             G.show_status(f"Conversion failed: {result.error_message}")
+        
+        # Clean up processed temp files
+        global _vq_proc_files
+        for proc_path in _vq_proc_files:
+            try:
+                if os.path.exists(proc_path):
+                    os.remove(proc_path)
+            except OSError:
+                pass
+        _vq_proc_files = []
 
 
 def update_vq_convert_button():

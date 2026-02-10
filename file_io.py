@@ -754,6 +754,7 @@ def load_sample(inst: Instrument, path: str,
         
         inst.sample_data = data
         inst.sample_rate = rate
+        inst.invalidate_cache()  # Clear processed audio cache (new sample data)
         
         if update_path:
             inst.sample_path = path

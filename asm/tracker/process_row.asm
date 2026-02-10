@@ -567,9 +567,18 @@
     cmp #SONG_LENGTH
     bcc @pr_load_new
     
-    ; --- Song wrap ---
+    ; --- Song reached the end ---
+.if KEY_CONTROL = 1
+    ; Loop mode: wrap back to beginning
     lda #0
     sta seq_songline
+.else
+    ; Play-once mode: stop playback (main_loop will detect seq_playing=0)
+    lda #0
+    sta seq_songline
+    sta seq_playing
+    jmp @pr_done
+.endif
     
 @pr_load_new:
     jsr seq_load_songline

@@ -727,7 +727,13 @@ def build_bottom_row():
                     dpg.add_text("Select folders containing audio files.")
                     dpg.add_text("All samples inside will be imported.")
                     dpg.add_text("Great for sample packs!")
-                dpg.add_button(label="Repl", width=38, callback=ops.replace_instrument)
+                dpg.add_button(tag="inst_edit_btn", label="Edit", width=38, callback=C.on_edit_instrument)
+                with dpg.tooltip(dpg.last_item()):
+                    dpg.add_text("Sample Editor", color=(255, 255, 150))
+                    dpg.add_separator()
+                    dpg.add_text("Open non-destructive effects editor.")
+                    dpg.add_text("Trim, gain, echo, overdrive, and more.")
+                dpg.add_button(label="Replace", width=55, callback=ops.replace_instrument)
                 with dpg.tooltip(dpg.last_item()):
                     dpg.add_text("Replace Sample", color=(255, 255, 150))
                     dpg.add_separator()
