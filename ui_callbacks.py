@@ -612,6 +612,7 @@ def on_edit_instrument(*args):
     from sample_editor.ui_editor import open_editor
     inst = state.song.get_instrument(state.instrument)
     if inst:
+        invalidate_vq_conversion()
         open_editor(state.instrument)
     else:
         G.show_status("No instrument selected")
@@ -723,7 +724,7 @@ def on_move_inst_up(sender, app_data):
         _remap_instrument_indices(idx, idx - 1)
         state.instrument -= 1
         state.song.modified = True
-        state.vq.invalidate()  # Invalidate VQ conversion
+        invalidate_vq_conversion()  # Invalidate VQ + restore originals if needed
         R.refresh_instruments()
         R.refresh_editor()
         try:
@@ -743,7 +744,7 @@ def on_move_inst_down(sender, app_data):
         _remap_instrument_indices(idx, idx + 1)
         state.instrument += 1
         state.song.modified = True
-        state.vq.invalidate()  # Invalidate VQ conversion
+        invalidate_vq_conversion()  # Invalidate VQ + restore originals if needed
         R.refresh_instruments()
         R.refresh_editor()
         try:
@@ -1215,13 +1216,21 @@ def invalidate_vq_conversion():
     SYNCHRONIZATION: When VQ conversion is invalidated, BUILD must also be disabled.
     This happens when:
     - Instruments are added, removed, or replaced
+    - Sample editor is opened (effects may change)
     - User explicitly runs CONVERT again
     - New project is loaded
     
     BUILD button is only enabled (green) when:
     - state.vq.converted == True (CONVERT was successful)
     - state.song.instruments is not empty
+    
+    IMPORTANT: If use_converted was True, inst.sample_data contains VQ audio.
+    We must reload original samples before clearing the flag, otherwise all
+    playback/preview will use stale VQ data.
     """
+    # If samples were swapped to VQ audio, restore originals FIRST
+    was_using_converted = state.vq.use_converted
+    
     state.vq.invalidate()
     
     # Update CONVERT UI
@@ -1233,6 +1242,10 @@ def invalidate_vq_conversion():
         dpg.configure_item("vq_use_converted_cb", enabled=False)
     
     state.vq.use_converted = False
+    
+    # Restore original sample data if it was swapped
+    if was_using_converted:
+        _reload_original_samples()
     
     # Update BUILD button state (must be disabled when VQ is invalid)
     update_build_button_state()
