@@ -14,6 +14,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   the full hardware polyphony. The 6502 IRQ handler, process_row commit logic,
   and tracker_api all handle 4 channels with complete VQ/RAW mode support.
 
+- **Amiga MOD import**: Import 4-channel ProTracker .MOD files with automatic
+  conversion of patterns, instruments, song arrangement, and speed settings.
+  MOD samples are resampled to the POKEY rate and their `base_note` is set to
+  C-3 (matching MOD tuning conventions). After import, the optimizer runs
+  automatically to assign RAW/VQ modes.
+
+- **Built-in sample editor**: Simple built-in sample editor to trim sample,
+  change octave or apply effects. The editor is "non-destructive" and the 
+  applied list of commands is copied on instrument cloning, so multiple variants
+  can be created easily.
+
 - **Mixed VQ + RAW sample encoding**: Instruments can now individually use either
   VQ (Vector Quantization) or RAW (uncompressed 4-bit PCM) encoding. VQ gives
   better compression (8:1 with vec_size=8) using a shared 256-entry codebook.
@@ -27,12 +38,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   or CPU-heavy instruments to RAW when memory allows. After optimization,
   V (VQ) and R (RAW) indicators appear next to each instrument showing the
   recommendation. Toggling an instrument's checkbox preserves these indicators.
-
-- **Amiga MOD import**: Import 4-channel ProTracker .MOD files with automatic
-  conversion of patterns, instruments, song arrangement, and speed settings.
-  MOD samples are resampled to the POKEY rate and their `base_note` is set to
-  C-3 (matching MOD tuning conventions). After import, the optimizer runs
-  automatically to assign RAW/VQ modes.
 
 - **Configurable memory limit**: The sample data memory budget is adjustable
   (default 35 KB). The OPTIMIZE button and BUILD process respect this limit
