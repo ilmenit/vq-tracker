@@ -5,6 +5,7 @@ import numpy as np
 from constants import (MAX_CHANNELS, MAX_PATTERNS, MAX_ROWS, MAX_INSTRUMENTS,
                        MAX_SONGLINES, MAX_VOLUME, DEFAULT_SPEED, DEFAULT_LENGTH,
                        PAL_HZ, MAX_NOTES, NOTE_OFF, FORMAT_VERSION)
+from sample_editor.commands import SampleCommand
 
 @dataclass
 class Row:
@@ -125,9 +126,16 @@ class Instrument:
     sample_data: Optional[np.ndarray] = None
     sample_rate: int = 44100
     base_note: int = 1  # C-1 = 1.0x pitch (matches Atari pitch table index 0)
+    use_vq: bool = True  # True = VQ compressed, False = RAW (uncompressed)
+    effects: List[SampleCommand] = field(default_factory=list)
+    processed_data: Optional[np.ndarray] = field(default=None, repr=False)
     
     def is_loaded(self) -> bool:
         return self.sample_data is not None and len(self.sample_data) > 0
+    
+    def invalidate_cache(self):
+        """Clear processed audio cache. Call on any effects/sample change."""
+        self.processed_data = None
     
     def duration(self) -> float:
         return len(self.sample_data) / self.sample_rate if self.is_loaded() else 0.0
@@ -138,15 +146,19 @@ class Instrument:
         Used by BOTH undo system AND file persistence.
         sample_path is included so undo can re-attach audio data.
         For file persistence, sample_path is overwritten on load anyway.
-        sample_data is excluded (embedded as WAV file in archive,
+        sample_data/processed_data are excluded (embedded as WAV file in archive,
         or preserved via audio_refs in undo system).
         """
-        return {
+        d = {
             'name': self.name,
             'base_note': self.base_note,
             'sample_rate': self.sample_rate,
             'sample_path': self.sample_path,
+            'use_vq': self.use_vq,
         }
+        if self.effects:
+            d['effects'] = [cmd.to_dict() for cmd in self.effects]
+        return d
     
     @classmethod
     def from_dict(cls, d: dict) -> 'Instrument':
@@ -157,6 +169,8 @@ class Instrument:
             original_sample_path=d.get('original_sample_path', ''),
             base_note=d.get('base_note', 1),
             sample_rate=d.get('sample_rate', 44100),
+            use_vq=d.get('use_vq', True),
+            effects=[SampleCommand.from_dict(c) for c in d.get('effects', [])],
         )
 
 @dataclass

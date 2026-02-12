@@ -6,8 +6,8 @@ A cross-platform music tracker for composing **sample-based music** targeting **
 
 ## Features
 
-- **3-channel polyphonic playback** using VQ-compressed samples
-- **3 octaves** (C-1 to B-3) with pitch control via 8.8 fixed-point multipliers
+- **4-channel polyphonic playback** using VQ-compressed samples
+- **5 octaves (3 visible + 2 sub-octaves for pitch correction)** (C-1 to B-3) with pitch control via 8.8 fixed-point multipliers
 - **Pattern-based sequencing** with variable-length event encoding
 - **Real-time audio preview** that closely matches Atari hardware output
 - **Export to Atari executable** (.XEX) via MADS assembler
@@ -27,8 +27,7 @@ Get the latest release from the [Releases](https://github.com/ilmenit/vq-tracker
 1. **Load samples** â€” Add WAV/MP3 files as instruments
 2. **Convert** â€” Process samples through VQ compression
 3. **Compose** â€” Write music using patterns and the song editor
-4. **Analyze** â€” Check IRQ timing feasibility
-5. **Build** â€” Export to Atari executable (.XEX)
+4. **Build** â€” Export to Atari executable (.XEX)
 
 Press **F12** in the tracker to see all keyboard shortcuts.
 Shortcuts are configurable via **keyboard.json** (auto-created on first run).
@@ -72,8 +71,6 @@ The Atari CPU runs at 1.77 MHz (PAL). The tracker includes timing analysis to en
 | 7917 Hz     | ~224       | OK         | Over      |
 | 5278 Hz     | ~336       | Safe       | OK        |
 | 3958 Hz     | ~448       | Safe       | Safe      |
-
-Use **ANALYZE** before BUILD to check for timing issues.
 
 ## Project Format
 

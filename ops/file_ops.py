@@ -6,15 +6,29 @@ import os
 import logging
 
 import file_io
+import native_dialog
 from constants import MAX_VOLUME
 from state import state
 from file_io import (
-    save_project, load_project, export_asm, export_binary,
-    import_pokeyvq, EditorState,
+    save_project, load_project, export_binary,
+    EditorState,
 )
 from ops.base import ui, save_undo, fmt
 
 logger = logging.getLogger("tracker.ops.file")
+
+
+# =============================================================================
+# HELPERS
+# =============================================================================
+
+def _project_start_dir() -> str:
+    """Return a sensible starting directory for project file dialogs."""
+    if state.song.file_path:
+        d = os.path.dirname(state.song.file_path)
+        if os.path.isdir(d):
+            return d
+    return os.path.expanduser("~")
 
 
 # =============================================================================
@@ -31,6 +45,12 @@ def new_song(*args):
 
 def _do_new():
     state.audio.stop_playback()
+    # Close sample editor before clearing instruments
+    try:
+        from sample_editor.ui_editor import close_editor
+        close_editor()
+    except Exception:
+        pass
     state.song.reset()
     state.undo.clear()
     state.songline = state.row = state.channel = state.instrument = 0
@@ -47,8 +67,15 @@ def _do_new():
 
 
 def open_song(*args):
-    """Open project file."""
-    ui.show_file_dialog("Open Project", [".pvq", ".json"], _load_file)
+    """Open project file via native OS dialog."""
+    paths = native_dialog.open_files(
+        title="Open Project",
+        start_dir=_project_start_dir(),
+        filters={"Project Files": "pvq,json"},
+        allow_multi=False,
+    )
+    if paths:
+        _load_file(paths[0])
 
 
 def _load_file(path: str):
@@ -61,6 +88,13 @@ def _load_file(path: str):
     # Stop audio BEFORE loading to release any file handles
     # On Windows, the audio engine may hold references to sample files
     state.audio.stop_playback()
+    
+    # Close sample editor before replacing song
+    try:
+        from sample_editor.ui_editor import close_editor
+        close_editor()
+    except Exception:
+        pass
     
     logger.info(f"Loading project: {path}")
     song, editor_state, msg = load_project(path, file_io.work_dir)
@@ -111,7 +145,7 @@ def _restore_editor_state(editor_state: EditorState):
     state.vq.settings.vector_size = editor_state.vq_vector_size
     state.vq.settings.smoothness = editor_state.vq_smoothness
     state.vq.settings.enhance = editor_state.vq_enhance
-    state.vq.settings.optimize_speed = editor_state.vq_optimize_speed
+    state.vq.settings.memory_limit = editor_state.vq_memory_limit_kb * 1024
     state.vq.invalidate()
 
 
@@ -129,16 +163,19 @@ def _trigger_auto_conversion():
 
     Uses sample_path (extracted files in work_dir) rather than original_sample_path,
     since the original files may no longer exist on the user's disk.
+    Writes processed WAVs for instruments with effects.
     """
-    input_files = []
-    for inst in state.song.instruments:
-        if inst.sample_path and os.path.exists(inst.sample_path):
-            input_files.append(inst.sample_path)
+    if not state.song.instruments:
+        return
 
+    from ui_callbacks import _prepare_conversion_files, show_vq_conversion_window
+    import ui_callbacks
+
+    input_files, proc_files, error = _prepare_conversion_files(state.song.instruments)
     if not input_files:
         return
 
-    from ui_callbacks import show_vq_conversion_window
+    ui_callbacks._vq_proc_files = proc_files
     show_vq_conversion_window(input_files)
 
 
@@ -151,8 +188,15 @@ def save_song(*args):
 
 
 def save_song_as(*args):
-    """Save project as new file."""
-    ui.show_file_dialog("Save Project", [".pvq"], _save_file, save_mode=True)
+    """Save project as new file via native OS dialog."""
+    path = native_dialog.save_file(
+        title="Save Project",
+        start_dir=_project_start_dir(),
+        filters={"Project Files": "pvq"},
+        default_name=os.path.basename(state.song.file_path) if state.song.file_path else "untitled.pvq",
+    )
+    if path:
+        _save_file(path)
 
 
 def _save_file(path: str):
@@ -196,7 +240,7 @@ def _build_editor_state() -> EditorState:
         vq_vector_size=state.vq.vector_size,
         vq_smoothness=state.vq.smoothness,
         vq_enhance=state.vq.settings.enhance,
-        vq_optimize_speed=state.vq.settings.optimize_speed,
+        vq_memory_limit_kb=state.vq.settings.memory_limit // 1024,
     )
 
 
@@ -205,8 +249,14 @@ def _build_editor_state() -> EditorState:
 # =============================================================================
 
 def export_binary_file(*args):
-    """Export to binary .pvg format."""
-    ui.show_file_dialog("Export Binary", [".pvg"], _do_export_binary, save_mode=True)
+    """Export to binary .pvg format via native OS dialog."""
+    path = native_dialog.save_file(
+        title="Export Binary",
+        start_dir=_project_start_dir(),
+        filters={"Binary Files": "pvg"},
+    )
+    if path:
+        _do_export_binary(path)
 
 
 def _do_export_binary(path: str):
@@ -219,53 +269,97 @@ def _do_export_binary(path: str):
         ui.show_error("Export Error", msg)
 
 
-def export_asm_files(*args):
-    """Export to ASM files."""
-    ui.show_file_dialog("Export ASM", [], _do_export_asm, dir_mode=True)
+def import_mod(*args):
+    """Import Amiga MOD file via native OS dialog."""
+    paths = native_dialog.open_files(
+        title="Import MOD File",
+        start_dir=_project_start_dir(),
+        filters={"MOD Files": "mod"},
+        allow_multi=False,
+    )
+    if paths:
+        _do_import_mod(paths[0])
 
 
-def _do_export_asm(path: str):
+def _do_import_mod(path: str):
+    """Import a .MOD file, replacing the current song."""
     if not path:
         return
-    ok, msg = export_asm(state.song, path)
-    if ok:
-        ui.show_status(msg)
-    else:
-        ui.show_error("Export Error", msg)
-
-
-def import_vq_converter(*args):
-    """Import vq_converter output (conversion_info.json)."""
-    ui.show_file_dialog("Import vq_converter", [".json"], _do_import_vq_converter)
-
-
-def _do_import_vq_converter(path: str):
-    if not path:
+    if not file_io.work_dir:
+        ui.show_error("Import Error", "Working directory not initialized")
         return
 
-    results, config, msg = import_pokeyvq(path)
+    from mod_import import import_mod_file
 
-    if not results:
-        ui.show_error("Import Error", msg)
-        return
+    # Stop audio and close editors
+    state.audio.stop_playback()
+    try:
+        from sample_editor.ui_editor import close_editor
+        close_editor()
+    except Exception:
+        pass
 
-    loaded = 0
-    save_undo("Import vq_converter")
-    for inst, ok, inst_msg in results:
-        if ok:
-            idx = state.song.add_instrument()
-            if idx >= 0:
-                state.song.instruments[idx] = inst
-                loaded += 1
-            else:
-                ui.show_error("Warning", "Maximum instruments reached")
-                break
-
-    if loaded > 0:
-        state.song.modified = True
+    # Import MOD — writes WAV samples to work_dir.samples
+    # Do NOT clear_all first: if import fails, old song's files stay intact.
+    # The new WAVs overwrite any same-numbered old files; leftovers are harmless.
+    song, import_log = import_mod_file(path, file_io.work_dir)
+    if song:
+        # Success — clear VQ/build (now invalid), adopt new song
+        file_io.work_dir.clear_vq_output()
+        file_io.work_dir.clear_build()
+        state.song = song
+        state.undo.clear()
+        _reset_editor_state()
+        state.selection.clear()
         state.vq.invalidate()
-        ui.refresh_instruments()
-        ui.refresh_all_instrument_combos()
         state.audio.set_song(state.song)
+        ui.refresh_all()
+        ui.update_title()
+        ui.show_status(import_log.summary_line())
+        logger.info(import_log.summary_line())
+        
+        # Auto-optimize RAW/VQ mode for imported instruments
+        _auto_optimize()
+    else:
+        ui.show_status("MOD import failed")
 
-    ui.show_status(msg)
+    # Show result window (both success and failure)
+    from ui_callbacks import show_mod_import_result
+    show_mod_import_result(import_log, success=song is not None)
+
+
+def _auto_optimize():
+    """Run RAW/VQ optimizer silently after import."""
+    from optimize import analyze_instruments
+    
+    if not state.song.instruments:
+        return
+    
+    loaded = [inst for inst in state.song.instruments if inst.is_loaded()]
+    if not loaded:
+        return
+    
+    result = analyze_instruments(
+        instruments=state.song.instruments,
+        target_rate=state.vq.settings.rate,
+        vector_size=state.vq.settings.vector_size,
+        memory_budget=state.vq.settings.memory_limit,
+        song=state.song,
+        volume_control=state.song.volume_control,
+        system_hz=state.song.system,
+    )
+    
+    n_changed = 0
+    for a in result.analyses:
+        if a.index < len(state.song.instruments):
+            inst = state.song.instruments[a.index]
+            new_use_vq = not a.suggest_raw
+            if inst.use_vq != new_use_vq:
+                inst.use_vq = new_use_vq
+                n_changed += 1
+    
+    state._optimize_result = result
+    
+    if n_changed > 0:
+        ui.refresh_instruments()
+        logger.info(f"Auto-optimize: {n_changed} instrument(s) set to RAW. {result.summary}")

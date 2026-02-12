@@ -286,13 +286,8 @@ def export_song_data(song: Song, output_path: str, output_func=None) -> Tuple[bo
         vol_val = 1 if song.volume_control else 0
         cfg_lines.append(f"VOLUME_CONTROL = {vol_val}  ; 1=enable volume scaling, 0=disable")
         cfg_lines.append("")
-        # VQ optimization mode: 1=speed (full bytes), 0=size (nibble-packed)
-        # Read from state.vq.settings (matches what was used during CONVERT)
-        opt_speed_val = 1 if state.vq.settings.optimize_speed else 0
-        cfg_lines.append(f"OPTIMIZE_SPEED = {opt_speed_val}  ; 1=full bytes (fast), 0=nibble-packed (compact)")
-        cfg_lines.append("")
-        # Screen control: screen_control=True means show display, so BLANK_SCREEN=0
-        # screen_control=False (default) means blank display, so BLANK_SCREEN=1
+        # Screen control: screen_control=True (default) means show display, so BLANK_SCREEN=0
+        # screen_control=False means blank display, so BLANK_SCREEN=1
         blank_val = 0 if song.screen_control else 1
         cfg_lines.append(f"BLANK_SCREEN = {blank_val}  ; 1=no display (~15% more CPU), 0=normal display")
         cfg_lines.append("")
@@ -373,7 +368,7 @@ def export_song_data(song: Song, output_path: str, output_func=None) -> Tuple[bo
         for i, pattern in enumerate(song.patterns):
             lines.append("")
             lines.append(f"PTN_{i}:")
-            event_bytes = _encode_pattern_events(pattern, i, output_func)
+            event_bytes = _encode_pattern_events(pattern, i, song.instruments, output_func)
             
             if not event_bytes:
                 lines.append("    .byte $FF  ; Empty pattern")
@@ -402,21 +397,30 @@ def export_song_data(song: Song, output_path: str, output_func=None) -> Tuple[bo
         return False, str(e)
 
 
-def _encode_pattern_events(pattern: Pattern, pattern_idx: int, output_func=None) -> List[int]:
+def _encode_pattern_events(pattern: Pattern, pattern_idx: int, instruments: list, output_func=None) -> List[int]:
     """Encode pattern rows to variable-length event format.
     
     Args:
         pattern: Pattern to encode
         pattern_idx: Pattern index for debug output
+        instruments: List of Instrument objects (for base_note lookup)
         output_func: Optional function to call with debug output
     
     Returns list of bytes representing all events in the pattern.
     
-    Note encoding:
-        GUI note 1 (C-1) -> export as 1 -> ASM trigger: 1-1=0 -> pitch 1.0x
-        GUI note 13 (C-2) -> export as 13 -> ASM trigger: 13-1=12 -> pitch 2.0x
-        GUI note 25 (C-3) -> export as 25 -> ASM trigger: 25-1=24 -> pitch 4.0x
+    Note encoding (with PITCH_OFFSET=24 for extended 5-octave table):
+        export_note = gui_note + PITCH_OFFSET - (base_note - 1)
+        
+        For default base_note=1 (non-MOD):
+          GUI C-1 (1)  -> export 25 -> ASM idx 24 -> pitch 1.0x
+          GUI C-3 (25) -> export 49 -> ASM idx 48 -> pitch 4.0x
+        
+        For MOD base_note=25 (sample pitched at C-3):
+          GUI C-1 (1)  -> export  1 -> ASM idx  0 -> pitch 0.25x
+          GUI C-3 (25) -> export 25 -> ASM idx 24 -> pitch 1.0x
     """
+    PITCH_OFFSET = 24  # must match pitch_tables.asm
+    
     events = []
     last_inst = -1
     last_vol = -1
@@ -437,9 +441,16 @@ def _encode_pattern_events(pattern: Pattern, pattern_idx: int, output_func=None)
         if row.note == 255:  # NOTE_OFF
             note = 0  # ASM player treats note 0 as note-off
         else:
-            # Export GUI note as-is (1-36 for C-1 through B-3)
-            # The ASM player subtracts 1 to get pitch table index (0-35)
-            note = row.note
+            # Apply base_note pitch correction:
+            # Samples are resampled to POKEY rate, so base_note should map to 1.0x pitch.
+            # PITCH_OFFSET shifts the table so index 24 = 1.0x.
+            inst_idx = row.instrument
+            base_note = 1  # default
+            if 0 <= inst_idx < len(instruments):
+                base_note = getattr(instruments[inst_idx], 'base_note', 1)
+            
+            note = row.note + PITCH_OFFSET - (base_note - 1)
+            note = max(1, min(note, 60))  # clamp to valid range (1-60)
         
         inst = row.instrument
         vol = row.volume
@@ -447,14 +458,19 @@ def _encode_pattern_events(pattern: Pattern, pattern_idx: int, output_func=None)
         # Convert note to display string for debug
         NOTE_NAMES = ['C-', 'C#', 'D-', 'D#', 'E-', 'F-', 'F#', 'G-', 'G#', 'A-', 'A#', 'B-']
         if note == 0:
-            note_name = "OFF"
             pitch_idx = -1  # N/A for note-off
         else:
-            note_name = NOTE_NAMES[(note-1) % 12] + str(((note-1) // 12) + 1)
+            # Show original GUI note for clarity
+            gui_note = row.note
+            gui_name = NOTE_NAMES[(gui_note-1) % 12] + str(((gui_note-1) // 12) + 1) if gui_note != 255 else "OFF"
             pitch_idx = note - 1
+            pitch_mult = 2.0 ** ((pitch_idx - PITCH_OFFSET) / 12.0)
         
         if output_func:
-            output_func(f"    Row {row_num:02d}: {note_name} (note={note:2d} -> pitch_idx={pitch_idx:2d}) inst={inst} vol={vol:2d}")
+            if note == 0:
+                output_func(f"    Row {row_num:02d}: OFF inst={inst} vol={vol:2d}")
+            else:
+                output_func(f"    Row {row_num:02d}: {gui_name} (gui={gui_note:2d} export={note:2d} idx={pitch_idx:2d} pitch={pitch_mult:.3f}x) inst={inst} vol={vol:2d}")
         logger.debug(f"  Row {row_num}: note={note}, inst={inst}, vol={vol}")
         
         # First event in pattern must include inst+vol
@@ -644,7 +660,8 @@ def build_xex_sync(song: Song, output_xex_path: str) -> BuildResult:
             "VQ_HI.asm",
             "VQ_BLOB.asm",
             "VQ_INDICES.asm",
-            "SAMPLE_DIR.asm"
+            "SAMPLE_DIR.asm",
+            "RAW_SAMPLES.asm"
         ]
         
         missing_files = []
@@ -654,6 +671,12 @@ def build_xex_sync(song: Song, output_xex_path: str) -> BuildResult:
                 shutil.copy2(src, build_dir)
                 _output(f"    + {vq_file}\n")
                 logger.debug(f"Copied: {vq_file}")
+            elif vq_file == "RAW_SAMPLES.asm":
+                # Fallback stub if converter didn't generate one
+                stub_path = os.path.join(build_dir, vq_file)
+                with open(stub_path, 'w') as f:
+                    f.write("; RAW_SAMPLES.asm - empty (all instruments use VQ)\n")
+                _output(f"    + {vq_file} (generated stub)\n")
             else:
                 missing_files.append(vq_file)
                 _output(f"    ! MISSING: {vq_file}\n")
@@ -712,17 +735,12 @@ def build_xex_sync(song: Song, output_xex_path: str) -> BuildResult:
             "common/macros.inc",
             "common/pokey_setup.asm",
             "tracker/tracker_api.asm",
-            # IRQ handlers: song_player.asm includes one based on OPTIMIZE_SPEED
-            # We need at least one of these
             "pitch/pitch_tables.asm",
-            "pitch/LUT_NIBBLES.asm"
         ]
         
-        # Check for IRQ handler - need at least one
-        irq_speed = os.path.exists(os.path.join(build_dir, "tracker/tracker_irq_speed.asm"))
-        irq_size = os.path.exists(os.path.join(build_dir, "tracker/tracker_irq_size.asm"))
-        if not irq_speed and not irq_size:
-            critical_files.append("tracker/tracker_irq_speed.asm (or tracker_irq_size.asm)")
+        # Check for IRQ handler
+        if not os.path.exists(os.path.join(build_dir, "tracker/tracker_irq_speed.asm")):
+            critical_files.append("tracker/tracker_irq_speed.asm")
         
         missing_critical = []
         for cf in critical_files:

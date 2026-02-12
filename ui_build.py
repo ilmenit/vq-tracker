@@ -1,9 +1,11 @@
 """POKEY VQ Tracker - UI Building Functions"""
+import os
 import dearpygui.dearpygui as dpg
 from constants import (MAX_CHANNELS, MAX_VOLUME, MAX_ROWS, ROW_HEIGHT, COL_CH,
                        COL_NOTE, COL_INST, COL_VOL, COL_DIM,
                        VQ_RATES, VQ_RATE_DEFAULT, VQ_VECTOR_SIZES, VQ_VECTOR_DEFAULT,
-                       VQ_SMOOTHNESS_VALUES, VQ_SMOOTHNESS_DEFAULT)
+                       VQ_SMOOTHNESS_VALUES, VQ_SMOOTHNESS_DEFAULT,
+                       MEMORY_LIMIT_DEFAULT_KB, MEMORY_LIMIT_MIN_KB, MEMORY_LIMIT_MAX_KB)
 from state import state
 from ui_dialogs import show_about, show_shortcuts
 import ops
@@ -72,7 +74,79 @@ def on_delete_pattern_confirm():
     show_confirm_centered("Delete Pattern", f"Delete pattern {G.fmt(state.selected_pattern)}?", do_delete)
 
 
-def on_exit():
+def on_close_request(*args):
+    """Handle close request (X button, Alt+F4, File→Exit).
+    
+    If there are unsaved changes, shows a 3-button confirmation dialog.
+    Otherwise closes immediately.
+    """
+    if not state.song.modified:
+        _do_quit()
+        return
+
+    # Song has unsaved changes - show confirmation
+    tag = "quit_confirm_dlg"
+    if dpg.does_item_exist(tag):
+        dpg.delete_item(tag)
+
+    state.set_input_active(True)
+
+    vp_w = dpg.get_viewport_width()
+    vp_h = dpg.get_viewport_height()
+    dlg_w, dlg_h = 380, 145
+    btn_w = 100
+    spacing = 12
+    total_btns = btn_w * 3 + spacing * 2
+    left_margin = (dlg_w - total_btns) // 2 - 8
+
+    def on_save_quit():
+        state.set_input_active(False)
+        dpg.delete_item(tag)
+        # Save first, then quit
+        if state.song.file_path:
+            ops.save_song()
+            _do_quit()
+        else:
+            # Need Save As - save, then quit when done
+            import native_dialog
+            path = native_dialog.save_file(
+                title="Save Project",
+                start_dir=os.path.expanduser("~"),
+                filters={"Project Files": "pvq"},
+                default_name="untitled.pvq",
+            )
+            if path:
+                from ops.file_ops import _save_file
+                _save_file(path)
+                _do_quit()
+            # If cancelled Save As, don't quit
+
+    def on_quit_no_save():
+        state.set_input_active(False)
+        dpg.delete_item(tag)
+        _do_quit()
+
+    def on_cancel():
+        state.set_input_active(False)
+        dpg.delete_item(tag)
+
+    with dpg.window(tag=tag, label="Unsaved Changes", modal=True, no_resize=True,
+                    no_collapse=True, width=dlg_w, height=dlg_h,
+                    pos=[(vp_w - dlg_w) // 2, (vp_h - dlg_h) // 2]):
+        dpg.add_spacer(height=5)
+        dpg.add_text("You have unsaved changes. What would you like to do?")
+        dpg.add_spacer(height=20)
+        with dpg.group(horizontal=True):
+            dpg.add_spacer(width=left_margin)
+            dpg.add_button(label="Save & Quit", width=btn_w, callback=on_save_quit)
+            dpg.add_spacer(width=spacing)
+            dpg.add_button(label="Quit", width=btn_w, callback=on_quit_no_save)
+            dpg.add_spacer(width=spacing)
+            dpg.add_button(label="Cancel", width=btn_w, callback=on_cancel)
+
+
+def _do_quit():
+    """Unconditional shutdown - save config and stop DPG."""
     import logging
     logger = logging.getLogger("tracker.main")
     logger.info("Exiting...")
@@ -95,15 +169,15 @@ def build_menu():
             dpg.add_menu_item(label="Save", callback=ops.save_song, shortcut="Ctrl+S")
             dpg.add_menu_item(label="Save As...", callback=ops.save_song_as)
             dpg.add_separator()
-            dpg.add_menu_item(label="Import vq_converter...", callback=ops.import_vq_converter)
+            dpg.add_menu_item(label="Import MOD...", callback=ops.import_mod)
             with dpg.tooltip(dpg.last_item()):
-                dpg.add_text("Import vq_converter", color=(255, 255, 150))
+                dpg.add_text("Import Amiga MOD", color=(255, 255, 150))
                 dpg.add_separator()
-                dpg.add_text("Load instruments from a vq_converter")
-                dpg.add_text("conversion_info.json file.")
-            dpg.add_menu_item(label="Export .ASM...", callback=ops.export_asm_files)
+                dpg.add_text("Import an Amiga ProTracker .MOD file.")
+                dpg.add_text("Converts patterns, instruments and song")
+                dpg.add_text("arrangement to native tracker format.")
             dpg.add_separator()
-            dpg.add_menu_item(label="Exit", callback=on_exit)
+            dpg.add_menu_item(label="Exit", callback=on_close_request)
         
         with dpg.menu(label="Edit"):
             dpg.add_menu_item(label="Undo", callback=ops.undo, shortcut="Ctrl+Z")
@@ -129,6 +203,8 @@ def build_menu():
             dpg.add_menu_item(label="Transpose -1", callback=lambda: ops.transpose(-1))
             dpg.add_menu_item(label="Transpose +12", callback=lambda: ops.transpose(12))
             dpg.add_menu_item(label="Transpose -12", callback=lambda: ops.transpose(-12))
+            dpg.add_separator()
+            dpg.add_menu_item(label="Replace Instrument...", callback=C.on_replace_instrument)
         
         with dpg.menu(label="Help"):
             dpg.add_menu_item(label="Keyboard Shortcuts", callback=show_shortcuts, shortcut="F1")
@@ -140,7 +216,7 @@ def build_top_row():
     """Build the top row: [SONG] | [PATTERN] | [SETTINGS] | [SONG INFO]"""
     with dpg.group(horizontal=True):
         # SONG panel
-        with dpg.child_window(tag="song_panel", width=G.SONG_PANEL_WIDTH, height=G.TOP_PANEL_HEIGHT, border=True):
+        with dpg.child_window(tag="song_panel", width=G.SONG_PANEL_WIDTH, height=G.TOP_PANEL_HEIGHT, border=True, no_scrollbar=True, no_scroll_with_mouse=True):
             with dpg.group(horizontal=True):
                 dpg.add_text("SONG")
                 dpg.add_spacer(width=10)
@@ -154,7 +230,7 @@ def build_top_row():
                 with dpg.tooltip(dpg.last_item()):
                     dpg.add_text("Play From Here", color=(255, 255, 150))
                     dpg.add_separator()
-                    dpg.add_text("Play from current songline.")
+                    dpg.add_text("Play song from current songline.")
                     dpg.add_text(f"Keyboard: {key_config.get_combo_str('play_from_cursor')}")
                 dpg.add_button(label="Stop", width=40, callback=C.on_stop_click)
                 with dpg.tooltip(dpg.last_item()):
@@ -169,10 +245,12 @@ def build_top_row():
                 dpg.bind_item_theme(hdr, "theme_header_button")
                 dpg.add_spacer(width=3)
                 for ch in range(MAX_CHANNELS):
-                    hdr = dpg.add_button(label=f"C{ch+1}", width=40, height=18, enabled=False)
+                    hdr = dpg.add_button(label=f"C{ch+1}", width=40, height=18,
+                                         callback=C.song_header_click, user_data=ch)
                     dpg.bind_item_theme(hdr, f"theme_header_ch{ch}")
                     dpg.add_spacer(width=3)
-                hdr = dpg.add_button(label="SPD", width=30, height=18, enabled=False)
+                hdr = dpg.add_button(label="SPD", width=30, height=18,
+                                     callback=C.song_header_click, user_data=MAX_CHANNELS)
                 dpg.bind_item_theme(hdr, "theme_header_spd")
                 with dpg.tooltip(hdr):
                     dpg.add_text("Speed", color=(255, 255, 150))
@@ -304,17 +382,31 @@ def build_top_row():
                 dpg.add_spacer(height=3)
                 dpg.add_text("F1-F3 always select octave.", color=(150, 200, 150))
             
+            dpg.add_checkbox(tag="coupled_cb", label="Coupled", default_value=G.coupled_entry,
+                             callback=C.on_coupled_toggle)
+            with dpg.tooltip(dpg.last_item()):
+                dpg.add_text("Coupled Entry", color=(255, 255, 150))
+                dpg.add_separator()
+                dpg.add_text("ON: entering a note always stamps")
+                dpg.add_text("instrument and volume (classic).")
+                dpg.add_spacer(height=3)
+                dpg.add_text("OFF: entering a note in an occupied")
+                dpg.add_text("cell only changes the note.")
+                dpg.add_text("(edit mask / locking)")
+                dpg.add_spacer(height=3)
+                dpg.add_text("Empty cells always get full stamp.", color=(150, 200, 150))
+            
             # Row highlight interval
             dpg.add_spacer(height=3)
             with dpg.group(horizontal=True):
-                dpg.add_text("Rows:")
+                dpg.add_text("Mark:")
                 dpg.add_combo(tag="highlight_combo", items=["2", "4", "8", "16"],
                               default_value=str(G.highlight_interval), width=45,
                               callback=C.on_highlight_change)
             with dpg.tooltip(dpg.last_item()):
                 dpg.add_text("Row Highlight Interval", color=(255, 255, 150))
                 dpg.add_separator()
-                dpg.add_text("Highlight every N rows for")
+                dpg.add_text("Mark every N rows for")
                 dpg.add_text("visual beat reference.")
                 dpg.add_text("Common: 4 (4/4 time)")
         
@@ -414,23 +506,9 @@ def build_top_row():
                     dpg.add_text("Clear all song data and start fresh.")
                     dpg.add_text("Instruments are kept.")
             
-            # ANALYZE and BUILD buttons
-            # ANALYZE: Check timing feasibility before export
-            # BUILD & RUN: Validates song, creates executable, launches emulator
+            # BUILD & RUN button
             dpg.add_spacer(height=5)
             with dpg.group(horizontal=True):
-                dpg.add_button(tag="analyze_btn", label="ANALYZE", width=80, callback=C.on_analyze_click)
-                with dpg.tooltip(dpg.last_item()):
-                    dpg.add_text("Analyze Timing", color=(255, 255, 150))
-                    dpg.add_separator()
-                    dpg.add_text("Simulates Atari IRQ timing to")
-                    dpg.add_text("detect potential playback issues.")
-                    dpg.add_spacer(height=3)
-                    dpg.add_text("Checks:", color=(255, 200, 150))
-                    dpg.add_text("  â€¢ Cycle budget per row")
-                    dpg.add_text("  â€¢ Boundary crossing costs")
-                    dpg.add_text("  â€¢ Volume control feasibility")
-                dpg.add_spacer(width=5)
                 dpg.add_button(tag="build_btn", label="BUILD & RUN", width=100, callback=C.on_build_click)
                 with dpg.tooltip(dpg.last_item()):
                     dpg.add_text("Build & Run in Emulator", color=(255, 255, 150))
@@ -518,12 +596,25 @@ def rebuild_editor_grid():
     # Volume column visibility based on song setting
     show_volume = state.song.volume_control
     
+    # Resize editor panel to fit content
+    new_width = G.compute_editor_width(state.hex_mode, show_volume)
+    if dpg.does_item_exist("editor_panel"):
+        dpg.configure_item("editor_panel", width=new_width)
+    
     with dpg.group(tag="editor_content", parent="editor_panel"):
-        # Row 1: Channel headers
+        # Per-channel data width (must match column headers and data rows)
+        ch_data_w = note_w + 8 + inst_w  # IS=8 between buttons
+        if show_volume:
+            ch_data_w += 8 + vol_w
+        
+        # Row 1: Channel headers (aligned with data columns via fixed-width containers)
         with dpg.group(horizontal=True):
-            dpg.add_spacer(width=row_num_w + 8)
+            # Leading spacer matches: Button(row_num_w) [IS=8] Spacer(4) [IS=8]
+            dpg.add_spacer(width=row_num_w + 12)
             for ch in range(MAX_CHANNELS):
-                with dpg.group():
+                with dpg.child_window(width=ch_data_w, height=50,
+                                      border=False, no_scrollbar=True) as cw:
+                    dpg.bind_item_theme(cw, "theme_container_nopad")
                     with dpg.group(horizontal=True):
                         cb = dpg.add_checkbox(tag=f"ch_enabled_{ch}", default_value=True,
                                          callback=C.on_channel_toggle, user_data=ch)
@@ -533,7 +624,7 @@ def rebuild_editor_grid():
                             dpg.add_text(f"Enable/disable channel {ch+1} playback.")
                         dpg.add_text(f"Channel {ch+1}", color=COL_CH[ch])
                     with dpg.group(horizontal=True):
-                        dpg.add_text("Pattern:", color=(90,90,100))
+                        dpg.add_text("Ptn:", color=(90,90,100))
                         ptn_items = [G.fmt(i) for i in range(len(state.song.patterns))] + ["+"]
                         combo = dpg.add_combo(tag=f"ch_ptn_combo_{ch}", items=ptn_items, default_value="00",
                                       width=55, callback=C.on_editor_pattern_change, user_data=ch)
@@ -545,7 +636,7 @@ def rebuild_editor_grid():
                 if ch < MAX_CHANNELS - 1:
                     dpg.add_spacer(width=ch_spacer)
         
-        # Row 2: Column headers
+        # Row 2: Column headers (colored per channel, clickable to move cursor)
         with dpg.group(horizontal=True):
             hdr = dpg.add_button(label="Row", width=row_num_w, height=18, enabled=False)
             dpg.bind_item_theme(hdr, "theme_header_button")
@@ -555,29 +646,33 @@ def rebuild_editor_grid():
                 dpg.add_text("Row position in pattern.")
             dpg.add_spacer(width=4)
             for ch in range(MAX_CHANNELS):
-                hdr = dpg.add_button(label="Note", width=note_w, height=18, enabled=False)
-                dpg.bind_item_theme(hdr, "theme_header_button")
+                hdr = dpg.add_button(label="Note", width=note_w, height=18,
+                                     callback=C.editor_header_click, user_data=(ch, COL_NOTE))
+                dpg.bind_item_theme(hdr, f"theme_header_ch{ch}")
                 with dpg.tooltip(hdr):
-                    dpg.add_text("Note Column", color=(255, 255, 150))
+                    dpg.add_text(f"Channel {ch+1} — Note", color=COL_CH[ch])
                     dpg.add_separator()
+                    dpg.add_text("Click to move cursor here.")
                     dpg.add_text("Enter notes with keyboard:")
                     dpg.add_text("  Z-M = lower octave (C-B)")
                     dpg.add_text("  Q-P = upper octave (C-E)")
                 lbl = "Ins" if state.hex_mode else "Inst"
-                hdr = dpg.add_button(label=lbl, width=inst_w, height=18, enabled=False)
-                dpg.bind_item_theme(hdr, "theme_header_button")
+                hdr = dpg.add_button(label=lbl, width=inst_w, height=18,
+                                     callback=C.editor_header_click, user_data=(ch, COL_INST))
+                dpg.bind_item_theme(hdr, f"theme_header_ch{ch}")
                 with dpg.tooltip(hdr):
-                    dpg.add_text("Instrument Column", color=(255, 255, 150))
+                    dpg.add_text(f"Channel {ch+1} — Instrument", color=COL_CH[ch])
                     dpg.add_separator()
-                    dpg.add_text("Click to select instrument.")
+                    dpg.add_text("Click to move cursor here.")
                     dpg.add_text("Use [ ] keys to change.")
                 if show_volume:
-                    hdr = dpg.add_button(label="Vol", width=vol_w, height=18, enabled=False)
-                    dpg.bind_item_theme(hdr, "theme_header_button")
+                    hdr = dpg.add_button(label="Vol", width=vol_w, height=18,
+                                         callback=C.editor_header_click, user_data=(ch, COL_VOL))
+                    dpg.bind_item_theme(hdr, f"theme_header_ch{ch}")
                     with dpg.tooltip(hdr):
-                        dpg.add_text("Volume Column", color=(255, 255, 150))
+                        dpg.add_text(f"Channel {ch+1} — Volume", color=COL_CH[ch])
                         dpg.add_separator()
-                        dpg.add_text("Click to select volume (0-15).")
+                        dpg.add_text("Click to move cursor here.")
                         dpg.add_text("F = max, 0 = silent.")
                 if ch < MAX_CHANNELS - 1:
                     dpg.add_spacer(width=ch_spacer)
@@ -606,18 +701,23 @@ def build_bottom_row():
     """Build the bottom row: [PATTERN EDITOR] | [INSTRUMENTS]"""
     with dpg.group(horizontal=True, tag="bottom_row"):
         # PATTERN EDITOR
-        with dpg.child_window(tag="editor_panel", width=G.EDITOR_WIDTH, height=-25, border=True):
+        with dpg.child_window(tag="editor_panel", width=G.compute_editor_width(state.hex_mode, state.song.volume_control), height=-25, border=True, no_scrollbar=True, no_scroll_with_mouse=True):
             with dpg.group(horizontal=True):
                 dpg.add_text("PATTERN EDITOR")
                 dpg.add_spacer(width=20)
-                dpg.add_button(label="Play Pattern", width=95, callback=C.on_play_pattern_click)
+                dpg.add_button(label="Play", width=40, callback=C.on_play_pattern_click)
                 with dpg.tooltip(dpg.last_item()):
                     dpg.add_text("Play Pattern", color=(255, 255, 150))
                     dpg.add_separator()
                     dpg.add_text("Play current pattern from start.")
                     dpg.add_text(f"Keyboard: {key_config.get_combo_str('play_pattern')}")
-                dpg.add_spacer(width=10)
-                dpg.add_button(label="Stop", width=45, callback=C.on_stop_click)
+                dpg.add_button(label="From Here", width=70, callback=C.on_play_pattern_here)
+                with dpg.tooltip(dpg.last_item()):
+                    dpg.add_text("Play From Here", color=(255, 255, 150))
+                    dpg.add_separator()
+                    dpg.add_text("Play pattern from current cursor row.")
+                    dpg.add_text(f"Keyboard: {key_config.get_combo_str('play_stop_toggle')}")
+                dpg.add_button(label="Stop", width=40, callback=C.on_stop_click)
                 with dpg.tooltip(dpg.last_item()):
                     dpg.add_text("Stop Playback", color=(255, 255, 150))
                     dpg.add_separator()
@@ -649,7 +749,13 @@ def build_bottom_row():
                     dpg.add_text("Select folders containing audio files.")
                     dpg.add_text("All samples inside will be imported.")
                     dpg.add_text("Great for sample packs!")
-                dpg.add_button(label="Repl", width=38, callback=ops.replace_instrument)
+                dpg.add_button(tag="inst_edit_btn", label="Edit", width=38, callback=C.on_edit_instrument)
+                with dpg.tooltip(dpg.last_item()):
+                    dpg.add_text("Sample Editor", color=(255, 255, 150))
+                    dpg.add_separator()
+                    dpg.add_text("Open non-destructive effects editor.")
+                    dpg.add_text("Trim, gain, echo, overdrive, and more.")
+                dpg.add_button(label="Replace", width=55, callback=ops.replace_instrument)
                 with dpg.tooltip(dpg.last_item()):
                     dpg.add_text("Replace Sample", color=(255, 255, 150))
                     dpg.add_separator()
@@ -667,6 +773,12 @@ def build_bottom_row():
                     dpg.add_separator()
                     dpg.add_text("Remove selected instrument from list.")
                     dpg.add_text("Pattern data using it will be cleared.", color=(255, 150, 150))
+                dpg.add_button(label="Clone", width=45, callback=ops.clone_instrument)
+                with dpg.tooltip(dpg.last_item()):
+                    dpg.add_text("Clone Instrument", color=(255, 255, 150))
+                    dpg.add_separator()
+                    dpg.add_text("Deep copy selected instrument to end")
+                    dpg.add_text("of list, including all effects.")
                 dpg.add_button(label="Up", width=30, callback=C.on_move_inst_up)
                 with dpg.tooltip(dpg.last_item()):
                     dpg.add_text("Move Up", color=(255, 255, 150))
@@ -760,37 +872,53 @@ def build_bottom_row():
                     dpg.add_spacer(height=3)
                     dpg.add_text("Recommended: ON", color=(150, 200, 150))
             
-            # Second row: Optimize mode
+            # Second row: memory limit
             with dpg.group(horizontal=True):
-                dpg.add_text("Optimize:")
-                dpg.add_combo(tag="vq_optimize_combo", items=["Speed", "Size"], 
-                              default_value="Speed", width=70, callback=C.on_vq_setting_change)
+                dpg.add_text("Limit:")
+                dpg.add_input_int(tag="vq_memory_limit_input",
+                                  default_value=MEMORY_LIMIT_DEFAULT_KB,
+                                  min_value=MEMORY_LIMIT_MIN_KB,
+                                  max_value=MEMORY_LIMIT_MAX_KB,
+                                  min_clamped=True, max_clamped=True,
+                                  width=55, step=0,
+                                  callback=C.on_memory_limit_change)
                 with dpg.tooltip(dpg.last_item()):
-                    dpg.add_text("IRQ Optimization Mode", color=(255, 255, 150))
+                    dpg.add_text("Sample Data Memory Limit", color=(255, 255, 150))
                     dpg.add_separator()
-                    dpg.add_text("Controls CPU usage vs memory trade-off:")
-                    dpg.add_spacer(height=5)
-                    dpg.add_text("SPEED (recommended):", color=(100, 255, 100))
-                    dpg.add_text("  + ~58 cycles/channel (fast!)")
-                    dpg.add_text("  + Enables 6011 Hz sample rate")
-                    dpg.add_text("  + Smoother playback")
-                    dpg.add_text("  - 2x codebook memory (4KB)")
-                    dpg.add_spacer(height=5)
-                    dpg.add_text("SIZE:", color=(255, 200, 100))
-                    dpg.add_text("  + Compact codebook (2KB)")
-                    dpg.add_text("  - ~83 cycles/channel (slower)")
-                    dpg.add_text("  - Max 4729 Hz for 4 channels")
-                    dpg.add_spacer(height=5)
-                    dpg.add_text("Max Rate with 4 Channels:", color=(200, 200, 255))
-                    dpg.add_text("  Speed mode: 6011 Hz")
-                    dpg.add_text("  Size mode:  4729 Hz")
+                    dpg.add_text("Maximum memory for sample data (KB).")
+                    dpg.add_text("Used by OPTIMIZE to suggest RAW vs VQ.")
                     dpg.add_spacer(height=3)
-                    dpg.add_text("Recommended: Speed", color=(150, 200, 150))
+                    dpg.add_text("Atari memory map:", color=(200, 200, 255))
+                    dpg.add_text("  Main RAM: ~40 KB available")
+                    dpg.add_text("  With ROM area: up to 48 KB")
+                    dpg.add_text("  Player + song overhead: 3-8 KB")
+                    dpg.add_spacer(height=3)
+                    dpg.add_text(f"Range: {MEMORY_LIMIT_MIN_KB}-{MEMORY_LIMIT_MAX_KB} KB", color=(150, 150, 150))
+                    dpg.add_text("Bank-switched memory not yet supported.", color=(150, 150, 150))
+                    dpg.add_spacer(height=3)
+                    dpg.add_text(f"Default: {MEMORY_LIMIT_DEFAULT_KB} KB", color=(150, 200, 150))
+                dpg.add_text("KB", color=COL_DIM)
             
             dpg.add_spacer(height=3)
             
             # Convert button and status row
             with dpg.group(horizontal=True):
+                dpg.add_button(tag="vq_optimize_btn", label="OPTIMIZE", width=80,
+                               callback=C.on_optimize_click)
+                with dpg.tooltip(dpg.last_item()):
+                    dpg.add_text("Optimize RAW/VQ per Instrument", color=(255, 255, 150))
+                    dpg.add_separator()
+                    dpg.add_text("Analyzes samples and suggests which")
+                    dpg.add_text("should be RAW (uncompressed) vs VQ.")
+                    dpg.add_spacer(height=3)
+                    dpg.add_text("RAW = best quality, more memory, less CPU")
+                    dpg.add_text("VQ = smaller, higher CPU, some artifacts")
+                    dpg.add_spacer(height=3)
+                    dpg.add_text("Shows +/- hints on instrument list.", color=(150, 200, 150))
+                    dpg.add_text("You control: check/uncheck VQ per sample.", color=(150, 200, 150))
+                
+                dpg.add_spacer(width=5)
+                
                 dpg.add_button(tag="vq_convert_btn", label="CONVERT", width=80, 
                                callback=C.on_vq_convert_click)
                 with dpg.tooltip(dpg.last_item()):

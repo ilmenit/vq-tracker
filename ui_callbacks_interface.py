@@ -8,7 +8,7 @@ This eliminates implicit coupling between the ops package and the UI layer,
 makes dependencies explicit, and improves testability.
 """
 from dataclasses import dataclass, field
-from typing import Callable, Optional, List
+from typing import Callable
 
 
 # Type aliases for clarity
@@ -16,7 +16,6 @@ RefreshFn = Callable[[], None]
 StatusFn = Callable[[str], None]
 ErrorFn = Callable[[str, str], None]
 ConfirmFn = Callable[[str, str, Callable], None]
-FileDialogFn = Callable  # Variable signatures
 RenameFn = Callable[[str, str, Callable], None]
 
 
@@ -58,7 +57,6 @@ class UICallbacks:
     
     # --- Dialog callbacks ---
     show_confirm: Callable = field(default=_noop)
-    show_file_dialog: Callable = field(default=_noop)
     show_rename_dialog: Callable = field(default=_noop)
     
     # --- Menu callbacks ---

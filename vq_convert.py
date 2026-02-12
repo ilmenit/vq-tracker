@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 
 import runtime
 from constants import (VQ_RATE_DEFAULT, VQ_VECTOR_DEFAULT, VQ_SMOOTHNESS_DEFAULT,
-                       VQ_VECTOR_SIZES)
+                       VQ_VECTOR_SIZES, MEMORY_LIMIT_DEFAULT_KB)
 
 # Valid vector sizes (must be even for ASM nibble-packing)
 VALID_VECTOR_SIZES = {2, 4, 8, 16}
@@ -126,6 +126,9 @@ class VQArgs:
     tracker: bool = True
     pitch: bool = False
     raw: bool = False
+    
+    # Per-instrument RAW/VQ mode (0=VQ, 1=RAW). Empty list = all VQ.
+    sample_modes: List[int] = field(default_factory=list)
 
 
 # ============================================================================
@@ -138,7 +141,7 @@ class VQSettings:
     vector_size: int = VQ_VECTOR_DEFAULT
     smoothness: int = VQ_SMOOTHNESS_DEFAULT
     enhance: bool = True
-    optimize_speed: bool = True
+    memory_limit: int = MEMORY_LIMIT_DEFAULT_KB * 1024  # Bytes
     
     def __post_init__(self):
         if self.vector_size not in VALID_VECTOR_SIZES:
@@ -161,6 +164,9 @@ class VQResult:
     vq_data_size: int = 0        # Actual binary size for Atari (from builder.stats)
     converted_wavs: List[str] = field(default_factory=list)
     error_message: str = ""
+    # Per-instrument sizes (populated after conversion)
+    inst_vq_sizes: List[int] = field(default_factory=list)    # VQ compressed bytes per inst
+    inst_raw_sizes: List[int] = field(default_factory=list)    # RAW bytes per inst (at target rate)
 
 
 # ============================================================================
@@ -245,9 +251,15 @@ class VQConverter:
     def _queue_output(self, text: str):
         self.vq_state.output_queue.put(text)
     
-    def convert(self, input_files: List[str]):
-        """Start VQ conversion in a background thread."""
+    def convert(self, input_files: List[str], sample_modes: Optional[List[int]] = None):
+        """Start VQ conversion in a background thread.
+        
+        Args:
+            input_files: List of WAV file paths to convert
+            sample_modes: Per-instrument mode flags (0=VQ, 1=RAW). None = all VQ.
+        """
         self.logger.info(f"convert: {len(input_files)} files")
+        self._sample_modes = sample_modes or []
         
         # Reset state
         self.vq_state.conversion_complete = False
@@ -315,11 +327,11 @@ class VQConverter:
             
             self._queue_output(f"Converting {len(input_files)} file(s)...\n")
             self._queue_output(f"Output: {asm_output_dir}\n")
+            
             self._queue_output(f"Settings: rate={settings.rate}, "
                                f"vec={settings.vector_size}, "
                                f"smooth={settings.smoothness}, "
-                               f"enhance={'on' if settings.enhance else 'off'}, "
-                               f"optimize={'speed' if settings.optimize_speed else 'size'}\n")
+                               f"enhance={'on' if settings.enhance else 'off'}\n")
             self._queue_output("-" * 60 + "\n")
             
             args = VQArgs(
@@ -328,7 +340,7 @@ class VQConverter:
                 player="vq_multi_channel",
                 rate=settings.rate,
                 channels=1,
-                optimize="speed" if settings.optimize_speed else "size",
+                optimize="speed",
                 no_player=True,
                 quality=50.0,
                 smoothness=float(settings.smoothness),
@@ -340,6 +352,7 @@ class VQConverter:
                 voltage="off",
                 enhance="on" if settings.enhance else "off",
                 wav="off",
+                sample_modes=self._sample_modes,
             )
             
             # Capture builder's stdout/stderr
@@ -435,6 +448,7 @@ class VQConverter:
         """Find converted WAV files for preview playback.
         
         Size data comes from builder.stats directly, not from file scanning.
+        Also computes per-instrument VQ and RAW sizes.
         """
         converted_wavs = []
         
@@ -447,6 +461,22 @@ class VQConverter:
                     converted_wavs.append(wav_path)
         
         result.converted_wavs = converted_wavs
+        
+        # Parse conversion_info.json for per-instrument VQ sizes
+        import json
+        info_path = os.path.join(output_dir, "conversion_info.json")
+        if os.path.exists(info_path):
+            try:
+                with open(info_path, 'r') as f:
+                    info = json.load(f)
+                samples = info.get('samples', [])
+                for s in samples:
+                    start = s.get('index_start', 0)
+                    end = s.get('index_end', 0)
+                    result.inst_vq_sizes.append(end - start)  # VQ index bytes
+            except Exception as e:
+                self.logger.warning(f"Could not parse conversion_info.json: {e}")
+        
         return result
 
 

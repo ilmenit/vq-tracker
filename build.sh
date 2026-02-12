@@ -145,6 +145,15 @@ check_deps() {
     fi
     
     echo ""
+    echo "Checking MOD files..."
+    if [ -d "mods" ]; then
+        MOD_COUNT=$(ls -1 mods/*.MOD mods/*.mod 2>/dev/null | wc -l)
+        echo -e "  ${GREEN}[OK]${NC} mods/ directory found ($MOD_COUNT files)"
+    else
+        echo -e "  ${YELLOW}[?]${NC} mods/ directory not found (optional)"
+    fi
+    
+    echo ""
     if [ -n "$MISSING" ]; then
         echo "============================================================"
         echo -e "  ${RED}Missing components:${NC}$MISSING"

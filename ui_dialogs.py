@@ -3,69 +3,6 @@ import dearpygui.dearpygui as dpg
 from constants import COL_DIM, COL_ACCENT, COL_TEXT, APP_NAME, APP_VERSION
 from state import state
 
-# Callback storage
-_file_callback = None
-_file_multi = False
-
-def show_file_dialog(title: str, extensions: list, callback, 
-                     save_mode: bool = False, dir_mode: bool = False, multi: bool = False):
-    """Show file dialog.
-    
-    Args:
-        title: Dialog title
-        extensions: List of file extensions to filter (e.g., ['.wav', '.mp3'])
-        callback: Function to call with selected path(s)
-        save_mode: If True, show save dialog
-        dir_mode: If True, select directories instead of files
-        multi: If True, allow multiple file selection
-    
-    Note: When dir_mode=True, files are not shown (DearPyGui limitation).
-    """
-    global _file_callback, _file_multi
-    _file_callback = callback
-    _file_multi = multi
-    
-    if dpg.does_item_exist("file_dialog"):
-        dpg.delete_item("file_dialog")
-    
-    state.set_input_active(True)  # Block keyboard while dialog open
-    
-    with dpg.file_dialog(
-        tag="file_dialog",
-        directory_selector=dir_mode,
-        show=True,
-        callback=_on_file_ok,
-        cancel_callback=_on_file_cancel,
-        width=700,
-        height=450,
-        modal=True
-    ):
-        # Add file extensions for filtering (only effective when dir_mode=False)
-        if extensions:
-            for ext in extensions:
-                dpg.add_file_extension(ext)
-            dpg.add_file_extension(".*")
-
-
-def _on_file_ok(sender, data):
-    global _file_callback, _file_multi
-    state.set_input_active(False)  # Re-enable keyboard
-    if _file_callback:
-        if _file_multi and 'selections' in data and len(data['selections']) > 0:
-            paths = list(data['selections'].values())
-            _file_callback(paths)
-        elif 'file_path_name' in data:
-            _file_callback(data['file_path_name'])
-        elif 'selections' in data and data['selections']:
-            _file_callback(list(data['selections'].values())[0])
-    _file_callback = None
-
-
-def _on_file_cancel(sender, data):
-    global _file_callback
-    state.set_input_active(False)  # Re-enable keyboard
-    _file_callback = None
-
 
 def show_confirm(title: str, message: str, callback):
     """Show confirmation dialog centered on viewport."""
@@ -279,7 +216,7 @@ def show_about():
         dpg.add_text("Features:", color=COL_DIM)
         dpg.add_text("  - 4 channel polyphonic playback", color=COL_DIM)
         dpg.add_text("  - WAV sample import", color=COL_DIM)
-        dpg.add_text("  - Export to ASM/binary", color=COL_DIM)
+        dpg.add_text("  - Export to Atari binary (.xex)", color=COL_DIM)
         dpg.add_spacer(height=15)
         with dpg.group(horizontal=True):
             dpg.add_spacer(width=left_margin)
@@ -388,8 +325,7 @@ def show_shortcuts():
         dpg.add_text("  1. Load samples (Add/Folder)")
         dpg.add_text("  2. CONVERT samples to VQ format")
         dpg.add_text("  3. Write your song (patterns/notes)")
-        dpg.add_text("  4. ANALYZE timing (check cycles)")
-        dpg.add_text("  5. BUILD executable (.XEX)")
+        dpg.add_text("  4. BUILD executable (.XEX)")
 
         # Config file note
         dpg.add_spacer(height=4)

@@ -17,7 +17,7 @@ VERSION_PATCH = 0
 
 # Version stage: "alpha", "beta", "rc", "release"
 VERSION_STAGE = "beta"
-VERSION_STAGE_NUM = 2  # e.g., beta 1, beta 2, rc1, rc2
+VERSION_STAGE_NUM = 3  # e.g., beta 1, beta 2, rc1, rc2
 
 # Full version string
 if VERSION_STAGE == "release":
@@ -29,7 +29,7 @@ else:
 VERSION_DISPLAY = f"Beta {VERSION_STAGE_NUM}"
 
 # Build date (updated manually or by CI)
-BUILD_DATE = "2025-02"
+BUILD_DATE = "2026-02"
 
 # =============================================================================
 # APPLICATION INFO

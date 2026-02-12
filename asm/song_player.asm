@@ -1,48 +1,16 @@
 ; ==========================================================================
 ; SONG PLAYER - POKEY VQ Tracker (Main Module)
 ; ==========================================================================
-; Version: 3.8 - Branch-Optimized Layout
-;
-; This is the main orchestrator that includes all player components.
-; Code is split into logical modules in the tracker/ folder for clarity.
-;
-; Module Organization:
-; ====================
-;   song_player.asm (this file)
-;     â”œâ”€â”€ Constants, display list, entry point
-;     â”œâ”€â”€ do_process_row (ICL before main_loop for short branches)
-;     â”œâ”€â”€ Main loop with frame timing
-;     â”œâ”€â”€ Keyboard handling
-;     â””â”€â”€ Includes:
-;         â”œâ”€â”€ tracker/process_row.asm     (included before main_loop)
-;         â”œâ”€â”€ tracker/parse_event.asm     (subroutine - event parsing)
-;         â”œâ”€â”€ tracker/seq_init.asm        (subroutine - initialization)
-;         â”œâ”€â”€ tracker/seq_load_songline.asm (subroutine - songline loading)
-;         â”œâ”€â”€ tracker/update_display.asm  (conditional - display update)
-;         â””â”€â”€ tracker/tracker_irq_*.asm   (IRQ handler)
-;
-; Code Layout Rationale:
-; ======================
-;   process_row.asm (~400 bytes) is placed BEFORE main_loop so that the
-;   common-case branches (skipping row processing) stay within 127 bytes.
-;   This saves ~3 cycles per frame vs using extended JEQ/JNE instructions.
+; Version: 4.0 - 4-Channel Polyphonic
 ;
 ; Features:
-; =========
-;   - 3-channel polyphonic playback via VQ-compressed samples
+;   - 4-channel polyphonic playback via VQ-compressed samples (AUDC1-AUDC4)
 ;   - Per-songline speed control (1-255 ticks per row)
 ;   - Variable-length event encoding for compact pattern storage
 ;   - Two-phase note triggering (minimal IRQ disable time)
 ;   - Keyboard control: SPACE=play/stop, R=restart
 ;   - Optional volume control per note (VOLUME_CONTROL=1)
 ;   - Optional blank screen mode for max CPU (BLANK_SCREEN=1)
-;   - Two IRQ modes: speed or size optimized (OPTIMIZE_SPEED)
-;
-; Memory Layout:
-; ==============
-;   Zero-page $20-$26: Staging area overflow (ZIOCB area, safe during play)
-;   Zero-page $80-$FF: Channel state, sequencer, staging
-;   $2000+: Code and data
 ;
 ; ==========================================================================
 
@@ -85,6 +53,16 @@
     .endif
 
 ; ==========================================================================
+; SMC OPCODE CONSTANTS
+; ==========================================================================
+; Self-modifying code opcodes for the IRQ handler dispatch mechanism.
+; Defined here so they are available before the include of process_row.
+    OPCODE_BMI = $30            ; BMI: dispatch = no-pitch
+    OPCODE_BPL = $10            ; BPL: dispatch = has-pitch
+    OPCODE_BCS = $B0            ; BCS: VQ boundary hit (A >= MIN_VECTOR)
+    OPCODE_BEQ = $F0            ; BEQ: RAW boundary hit (A == 0, page wrap)
+
+; ==========================================================================
 ; CODE START
 ; ==========================================================================
     ORG $2000
@@ -97,18 +75,7 @@ COL_STOPPED = $00               ; Background color when stopped (black)
 COL_PLAYING = $74               ; Background color when playing (blue)
 
 ; ==========================================================================
-; SEQUENCER STATE - All in zero-page (see zeropage.inc)
-; ==========================================================================
-; Zero-page allocations:
-;   $20-$26: ZIOCB area (prep*_vol, prep2_end_*, prep2_vq_*)
-;   $80-$C2: Channel state + sequencer core
-;   $C3-$FF: Sequencer arrays + staging
-;
-; Alias for code compatibility:
-seq_local_row = seq_local_row_zp
-
-; ==========================================================================
-; DISPLAY LIST
+; DISPLAY LIST AND TEXT
 ; ==========================================================================
 .if BLANK_SCREEN = 0
 ; --- Normal display: 2 text lines (always visible) ---
@@ -217,15 +184,12 @@ start:
     jsr Pokey_Setup
     
     ; --- Initialize display colors ---
-    ; ANTIC mode 2 uses COLPF1 (luminance) + COLPF2 (hue) for text
     lda #$0E                    ; White/bright luminance
     sta COLPF1
-    lda #$94                    ; Blue hue (for inverse/background of chars)
+    lda #$94                    ; Blue hue
     sta COLPF2
     lda #COL_STOPPED            ; Black background when stopped
     sta COLBK
-    lda #$FF
-    sta last_playing            ; Force state change detection on first loop
     
     ; --- Enable timer IRQ ---
     lda #IRQ_MASK
@@ -234,162 +198,198 @@ start:
     sta STIMER                  ; Start timers
     
     cli                         ; Enable interrupts
-    jmp main_loop               ; Enter main loop (skip do_process_row!)
+    jmp wait_loop               ; Enter idle state (wait for SPACE to play)
 
 ; ==========================================================================
-; PROCESS ROW - Moved here so main_loop branches stay in range
-; ==========================================================================
-; Row processing is placed BEFORE main_loop so that the common-case branches
-; (skipping row processing) remain short. Only when actually processing a row
-; (~1/6 of frames at speed=6) do we pay the JMP overhead.
-;
-; IMPORTANT: This code block is jumped to from main_loop, NOT fallen into!
-; The JMP main_loop above ensures we don't execute this on startup.
-;
-; Cycle cost comparison:
-;   Old (inlined, out-of-range JEQ/JNE): 5 cycles per skip (common case)
-;   New (JMP here + JMP back): 6 cycles total, but only when processing
-;   Common case (skip): 2-3 cycles (short branch)
+; PROCESS ROW - Called from main_loop when a new row is due
 ; ==========================================================================
 do_process_row:
     icl "tracker/process_row.asm"
-    jmp ml_check_state_change   ; Return to main loop after processing
+    jmp ml_after_row            ; Return to main loop after processing
 
 ; ==========================================================================
-; MAIN LOOP
+; WAIT LOOP - Idle state (screen ON, waiting for SPACE)
 ; ==========================================================================
-; Frame-driven loop using VCOUNT polling (no NMI needed).
-; Processes one row per seq_speed ticks (50 ticks/sec on PAL).
+; State 1: Pre-play and post-play. Screen is always enabled.
+; Displays text and current position. Waits for SPACE to start playback.
+; In KEY_CONTROL=1 mode, R resets position to the beginning.
 ; ==========================================================================
-main_loop:
+wait_loop:
     ; --- Frame detection via VCOUNT ---
-    ; VCOUNT bit 7 toggles at mid-screen; we detect 1->0 transition
     lda VCOUNT
     and #$80
     tax
     cmp vcount_phase
-    beq ml_no_vblank            ; No phase change (2-3 cycles, in range)
+    beq wl_check_keys
+    
+    stx vcount_phase
+    txa
+    bne wl_check_keys           ; Only act on 1->0 transition
+    
+    ; --- New frame: update display ---
+    jsr update_display
+    
+wl_check_keys:
+    ; --- Check for keypress ---
+    lda SKSTAT
+    and #$04
+    bne wait_loop               ; No key pressed, keep waiting
+    lda SKSTAT                  ; Double-read for debounce
+    and #$04
+    bne wait_loop
+    
+    lda KBCODE
+    and #$3F
+    
+    ; --- SPACE ($21) = start playback ---
+    cmp #$21
+    beq wl_start_play
+    
+.if KEY_CONTROL = 1
+    ; --- R ($28) = reset to beginning ---
+    cmp #$28
+    beq wl_do_reset
+.endif
+    
+    ; --- Unknown key: wait for release, continue ---
+wl_key_release:
+    lda SKSTAT
+    and #$04
+    beq wl_key_release
+    jmp wait_loop
+
+.if KEY_CONTROL = 1
+wl_do_reset:
+    ; Reset sequencer to beginning (stays in idle state)
+    jsr seq_init
+    ; Wait for R key release
+wl_reset_release:
+    lda SKSTAT
+    and #$04
+    beq wl_reset_release
+    lda SKSTAT
+    and #$04
+    beq wl_reset_release
+    jmp wait_loop
+.endif
+
+wl_start_play:
+    ; Wait for SPACE release before starting (prevents immediate stop)
+wl_space_release:
+    lda SKSTAT
+    and #$04
+    beq wl_space_release
+    lda SKSTAT
+    and #$04
+    beq wl_space_release
+    
+    ; --- Transition to playback ---
+.if BLANK_SCREEN = 1
+    lda #0
+    sta DMACTL                  ; Screen OFF for max CPU
+.endif
+    lda #COL_PLAYING
+    sta COLBK
+    lda #$FF
+    sta seq_playing
+.if KEY_CONTROL = 1
+    lda #$FF
+    sta last_key_code           ; Reset key debounce state
+.endif
+    jmp main_loop
+
+; ==========================================================================
+; MAIN LOOP - Playback state (screen off if BLANK_SCREEN=1)
+; ==========================================================================
+; State 2: Active playback. Processes ticks and rows.
+; In KEY_CONTROL=1 mode: SPACE=stop, R=restart (return to wait_loop).
+; In KEY_CONTROL=0 mode: no keyboard, plays once then returns to wait_loop.
+; ==========================================================================
+main_loop:
+    ; --- Frame detection via VCOUNT ---
+    lda VCOUNT
+    and #$80
+    tax
+    cmp vcount_phase
+    beq ml_no_vblank            ; No phase change
     
     stx vcount_phase            ; Update phase
     txa
-    bne ml_no_vblank            ; Only act on 1->0 transition (2-3 cycles)
+    bne ml_no_vblank            ; Only act on 1->0 transition
     
     ; =====================================================================
     ; NEW FRAME - Process tick
     ; =====================================================================
-    lda seq_playing
-    beq ml_check_state_change   ; Not playing? Skip row processing (2-3 cycles)
-    
-    ; --- Tick counter ---
     inc seq_tick
     lda seq_tick
     cmp seq_speed
-    bcc ml_check_state_change   ; Not time for new row yet (2-3 cycles)
+    bcc ml_after_row            ; Not time for new row
     
-    ; --- New row: reset tick and jump to processing ---
+    ; --- New row ---
     lda #0
     sta seq_tick
-    jmp do_process_row          ; Process row (3 cycles, only ~1/6 of frames)
+    jmp do_process_row
     
-ml_check_state_change:
-    ; --- Handle play/stop transitions ---
+ml_after_row:
+    ; --- Check if song has ended (process_row sets seq_playing=0) ---
     lda seq_playing
-    cmp last_playing
-    beq ml_state_done           ; No change
-    
-    sta last_playing
-    beq ml_now_stopped          ; Transition to stopped
-    
-    ; --- Started playing ---
-    lda #COL_PLAYING
-.if BLANK_SCREEN = 1
-    ldx #0
-    stx DMACTL                  ; Disable display for max CPU (0 cycles stolen)
-.endif
-    bne ml_set_color            ; Always branches
-    
-ml_now_stopped:
-    ; --- Stopped playing ---
-    lda #COL_STOPPED
-.if BLANK_SCREEN = 1
-    ldx #$22                    ; Enable DL DMA ($20) + normal playfield ($02)
-    stx DMACTL                  ; Re-enable display when stopped
-.endif
+    beq ml_song_ended
 
-ml_set_color:
-    sta COLBK
-
-ml_state_done:
-    ; --- Update display every frame ---
-    ; Always update display variables so they're current when playback stops.
-    ; When BLANK_SCREEN=1, the display is blanked during playback (DMACTL=0)
-    ; but values are still updated so they're visible when stopped.
+    ; --- Update display (only when screen is visible) ---
+.if BLANK_SCREEN = 0
     jsr update_display
+.endif
 
 ml_no_vblank:
     ; =====================================================================
-    ; KEYBOARD HANDLING
-    ; =====================================================================
-    ; When KEY_CONTROL=1: Full keyboard control (play/stop/restart)
-    ; When KEY_CONTROL=0: Minimal - just SPACE to start, then no checking
-    ;                     Saves ~30-50 cycles per main loop iteration
+    ; KEYBOARD HANDLING (playback state)
     ; =====================================================================
 
 .if KEY_CONTROL = 1
     ; --- Full keyboard control mode ---
     lda last_key_code
     cmp #$FF
-    bne ml_check_release        ; Key still held? Check for release
+    beq ml_no_key_held          ; No key held, check for new press
+    jmp ml_check_release        ; Key held, check for release (far branch)
     
+ml_no_key_held:
     ; --- Check for new keypress ---
     lda SKSTAT
-    and #$04                    ; Bit 2 = key pressed
-    bne ml_continue             ; No key? Continue loop
+    and #$04
+    bne ml_continue
     lda SKSTAT                  ; Double-read for debounce
     and #$04
     bne ml_continue
     
     ; --- Process keypress ---
     lda KBCODE
-    and #$3F                    ; Mask to key code
+    and #$3F
     sta last_key_code
     
-    ; --- SPACE key ($21) = play/stop toggle ---
+    ; --- SPACE key ($21) = stop ---
     cmp #$21
-    bne ml_check_r_down
-    lda seq_playing
-    bne ml_do_stop
+    beq ml_do_stop
     
-    ; Start playing
-    lda #$FF
-    sta seq_playing
-    jmp main_loop
-    
-ml_do_stop:
-    ; Stop playing and silence all channels
-    lda #0
-    sta seq_playing
-    sta trk0_active
-    sta trk1_active
-    sta trk2_active
-    lda #SILENCE
-    sta AUDC1
-    sta AUDC2
-    sta AUDC3
-    jmp main_loop
-    
-ml_check_r_down:
     ; --- R key ($28) = restart ---
     cmp #$28
-    bne ml_continue             ; Unknown key? Continue loop
-    jsr seq_init                ; Reinitialize everything
-    jmp main_loop
+    beq ml_do_restart
+    jmp ml_continue
+
+ml_do_stop:
+    ; Stop playing, silence channels, return to idle
+    jsr silence_channels
+    jmp return_to_idle
+    
+ml_do_restart:
+    ; Silence channels, reset sequencer, return to idle
+    jsr silence_channels
+    jsr seq_init
+    jmp return_to_idle
 
 ml_check_release:
-    ; --- Check for key release ---
     lda SKSTAT
     and #$04
-    beq ml_continue             ; Still pressed? Continue
+    beq ml_continue
     lda SKSTAT                  ; Double-read for debounce
     and #$04  
     beq ml_continue
@@ -397,36 +397,61 @@ ml_check_release:
     ; Key released
     lda #$FF
     sta last_key_code
-    ; Fall through to ml_continue
 
 .else
     ; --- Minimal keyboard mode (KEY_CONTROL=0) ---
-    ; Only check for SPACE when stopped, then no more keyboard checks
-    lda seq_playing
-    bne ml_continue             ; Already playing? Skip all keyboard (saves cycles!)
-    
-    ; Not playing - check for SPACE to start
-    lda SKSTAT
-    and #$04                    ; Bit 2 = key pressed
-    bne ml_continue             ; No key? Continue loop
-    
-    lda KBCODE
-    and #$3F
-    cmp #$21                    ; SPACE key?
-    bne ml_continue
-    
-    ; Start playing (one-shot - will play through song)
-    lda #$FF
-    sta seq_playing
-    ; Fall through to ml_continue
+    ; No keyboard during playback. Song stops by itself.
 .endif
 
 ml_continue:
-    ; Trampoline to main_loop - consolidates backward branches
     jmp main_loop
 
+; --- Song ended (process_row set seq_playing=0) ---
+ml_song_ended:
+    jsr silence_channels
+    jmp return_to_idle
+
 ; ==========================================================================
-; NMI STUB - Not used (we poll VCOUNT instead)
+; SHARED SUBROUTINES for state transitions
+; ==========================================================================
+
+silence_channels:
+    ; Silence all 4 channels
+    lda #0
+    sta seq_playing
+    sta trk0_active
+    sta trk1_active
+    sta trk2_active
+    sta trk3_active
+    lda #SILENCE
+    sta AUDC1
+    sta AUDC2
+    sta AUDC3
+    sta AUDC4
+    rts
+
+return_to_idle:
+    ; Restore screen and return to wait_loop
+.if BLANK_SCREEN = 1
+    lda #$22
+    sta DMACTL                  ; Screen back ON
+.endif
+    lda #COL_STOPPED
+    sta COLBK
+.if KEY_CONTROL = 1
+    ; Wait for key release before returning (prevents ghost keypress in wait_loop)
+@rti_release:
+    lda SKSTAT
+    and #$04
+    beq @rti_release
+    lda SKSTAT
+    and #$04
+    beq @rti_release
+.endif
+    jmp wait_loop
+
+; ==========================================================================
+; NMI STUB
 ; ==========================================================================
 nmi_stub:
     rti
@@ -434,49 +459,89 @@ nmi_stub:
 ; ==========================================================================
 ; INCLUDE SUBROUTINES
 ; ==========================================================================
-    icl "tracker/parse_event.asm"       ; Event parsing (called 3x per row)
+    icl "tracker/parse_event.asm"       ; Event parsing (called 4x per row)
     icl "tracker/seq_init.asm"          ; Initialization
     icl "tracker/seq_load_songline.asm" ; Songline loading
-    icl "tracker/update_display.asm"    ; Display update (conditional)
+    icl "tracker/update_display.asm"    ; Display update
+    icl "common/pokey_setup.asm"        ; POKEY initialization
 
 ; ==========================================================================
-; INCLUDE IRQ HANDLER (speed or size optimized)
+; INCLUDE IRQ HANDLER
 ; ==========================================================================
-.if OPTIMIZE_SPEED = 1
-    icl "tracker/tracker_irq_speed.asm" ; Full-byte VQ data (faster)
-.else
-    icl "tracker/tracker_irq_size.asm"  ; Nibble-packed VQ data (smaller)
-.endif
+    icl "tracker/tracker_irq_speed.asm"
 
 ; ==========================================================================
 ; INCLUDE DATA TABLES
 ; ==========================================================================
-    icl "pitch/pitch_tables.asm"        ; NOTE_PITCH_LO/HI tables
+    icl "pitch/pitch_tables.asm"
 
-.if OPTIMIZE_SPEED = 0
-    icl "pitch/LUT_NIBBLES.asm"         ; Nibble extraction LUTs (size mode)
-.endif
-
-    icl "pitch/VOLUME_SCALE.asm"        ; Volume scaling table (conditional)
-    icl "common/pokey_setup.asm"        ; POKEY initialization
+    icl "pitch/VOLUME_SCALE.asm"
 
 ; ==========================================================================
 ; INCLUDE SONG AND SAMPLE DATA
 ; ==========================================================================
-    icl "SONG_DATA.asm"                 ; Song structure and patterns
-    icl "SAMPLE_DIR.asm"                ; Sample pointers
-    icl "VQ_LO.asm"                     ; VQ codebook low bytes
-    icl "VQ_HI.asm"                     ; VQ codebook high bytes
-    icl "VQ_BLOB.asm"                   ; VQ vector data
-    icl "VQ_INDICES.asm"                ; VQ index streams
+    icl "SONG_DATA.asm"
+    icl "SAMPLE_DIR.asm"        ; SAMPLE_START/END + SAMPLE_MODE tables
+    icl "VQ_LO.asm"
+    icl "VQ_HI.asm"
+    icl "VQ_BLOB.asm"
+    icl "VQ_INDICES.asm"
+    icl "RAW_SAMPLES.asm"       ; Page-aligned RAW AUDC data (may be empty)
 
 ; ==========================================================================
-; VOLUME CONTROL VARIABLE (not in zero-page)
+; STAGING AREA - Regular memory (used at row rate only, not IRQ rate)
 ; ==========================================================================
-; trk2_vol_shift must be in regular memory because $BE-$BF are used
-; for trk0/trk1 vol_shift, and we ran out of contiguous zero-page.
+; Channel 0 staging
+prep0_pitch_lo:   .byte 0
+prep0_pitch_hi:   .byte 0
+prep0_stream_lo:  .byte 0
+prep0_stream_hi:  .byte 0
+prep0_end_lo:     .byte 0
+prep0_end_hi:     .byte 0
+prep0_vq_lo:      .byte 0
+prep0_vq_hi:      .byte 0
+prep0_mode:       .byte 0     ; 0=VQ, non-zero=RAW
+; Channel 1 staging
+prep1_pitch_lo:   .byte 0
+prep1_pitch_hi:   .byte 0
+prep1_stream_lo:  .byte 0
+prep1_stream_hi:  .byte 0
+prep1_end_lo:     .byte 0
+prep1_end_hi:     .byte 0
+prep1_vq_lo:      .byte 0
+prep1_vq_hi:      .byte 0
+prep1_mode:       .byte 0
+; Channel 2 staging
+prep2_pitch_lo:   .byte 0
+prep2_pitch_hi:   .byte 0
+prep2_stream_lo:  .byte 0
+prep2_stream_hi:  .byte 0
+prep2_end_lo:     .byte 0
+prep2_end_hi:     .byte 0
+prep2_vq_lo:      .byte 0
+prep2_vq_hi:      .byte 0
+prep2_mode:       .byte 0
+; Channel 3 staging
+prep3_pitch_lo:   .byte 0
+prep3_pitch_hi:   .byte 0
+prep3_stream_lo:  .byte 0
+prep3_stream_hi:  .byte 0
+prep3_end_lo:     .byte 0
+prep3_end_hi:     .byte 0
+prep3_vq_lo:      .byte 0
+prep3_vq_hi:      .byte 0
+prep3_mode:       .byte 0
+
+; ==========================================================================
+; VOLUME CONTROL VARIABLES (not in zero-page)
+; ==========================================================================
 .if VOLUME_CONTROL = 1
-trk2_vol_shift:   .byte $F0             ; Channel 2 volume (pre-shifted)
+prep0_vol:        .byte $F0
+prep1_vol:        .byte $F0
+prep2_vol:        .byte $F0
+prep3_vol:        .byte $F0
+trk2_vol_shift:   .byte $F0    ; Channel 2 volume (pre-shifted)
+trk3_vol_shift:   .byte $F0    ; Channel 3 volume (pre-shifted)
 .endif
 
 ; ==========================================================================

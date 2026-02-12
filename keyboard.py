@@ -125,7 +125,8 @@ def handle_key(sender, key):
     # ── Skip while typing in a text field ─────────────────────────────────
     if state.input_active:
         return
-    for tag in ("title_input", "author_input", "step_input", "ptn_len_input"):
+    for tag in ("title_input", "author_input", "step_input", "ptn_len_input",
+                "vq_memory_limit_input"):
         try:
             if dpg.does_item_exist(tag) and (dpg.is_item_active(tag) or dpg.is_item_focused(tag)):
                 return
@@ -142,6 +143,16 @@ def handle_key(sender, key):
                 return
         except:
             pass
+
+    # ── Skip while sample editor is open (modal) ────────────────────
+    try:
+        if (dpg.does_item_exist("sample_editor_win") and
+                dpg.is_item_shown("sample_editor_win")):
+            from sample_editor.ui_editor import handle_editor_key
+            handle_editor_key(key)
+            return
+    except Exception:
+        pass
 
     ctrl  = dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)
     shift = dpg.is_key_down(dpg.mvKey_LShift) or dpg.is_key_down(dpg.mvKey_RShift)
@@ -199,8 +210,8 @@ def handle_key(sender, key):
     elif key == dpg.mvKey_Right: ops.move_cursor(0,  1)
     elif key == dpg.mvKey_Tab:
         ops.prev_channel() if shift else ops.next_channel()
-    elif key == dpg.mvKey_Prior: ops.jump_rows(-16)
-    elif key == dpg.mvKey_Next:  ops.jump_rows( 16)
+    elif key == dpg.mvKey_Prior: ops.jump_rows(-G.visible_rows)
+    elif key == dpg.mvKey_Next:  ops.jump_rows( G.visible_rows)
     elif key == dpg.mvKey_Home:  ops.jump_start()
     elif key == dpg.mvKey_End:   ops.jump_end()
 
@@ -325,6 +336,16 @@ def _handle_song_key(key):
     elif key == dpg.mvKey_End:
         clear_song_pending()
         state.song_cursor_row = total_songlines - 1
+        state.songline = state.song_cursor_row
+        ops.refresh_song_editor(); ops.refresh_editor()
+    elif key == dpg.mvKey_Prior:
+        clear_song_pending()
+        state.song_cursor_row = max(0, state.song_cursor_row - G.SONG_VISIBLE_ROWS)
+        state.songline = state.song_cursor_row
+        ops.refresh_song_editor(); ops.refresh_editor()
+    elif key == dpg.mvKey_Next:
+        clear_song_pending()
+        state.song_cursor_row = min(total_songlines - 1, state.song_cursor_row + G.SONG_VISIBLE_ROWS)
         state.songline = state.song_cursor_row
         ops.refresh_song_editor(); ops.refresh_editor()
     elif key == dpg.mvKey_Delete:

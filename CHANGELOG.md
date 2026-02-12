@@ -5,6 +5,58 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [Beta 3] - 2025-02
+
+### Major Features
+
+- **4-channel polyphonic playback**: Expanded from 3 to 4 independent sample
+  channels. All four POKEY audio registers (AUDC1–AUDC4) are now used, giving
+  the full hardware polyphony. The 6502 IRQ handler, process_row commit logic,
+  and tracker_api all handle 4 channels with complete VQ/RAW mode support.
+
+- **Mixed VQ + RAW sample encoding**: Instruments can now individually use either
+  VQ (Vector Quantization) or RAW (uncompressed 4-bit PCM) encoding. VQ gives
+  better compression (8:1 with vec_size=8) using a shared 256-entry codebook.
+  RAW uses more memory but costs fewer CPU cycles per sample — no codebook
+  lookup needed. The player selects the correct handler per channel at note
+  trigger time via self-modifying code, with zero overhead during playback.
+
+- **OPTIMIZE button**: Analyzes all instruments and the song arrangement to
+  recommend VQ or RAW mode for each instrument. The optimizer simulates
+  playback row-by-row to find the worst-case CPU load, then switches short
+  or CPU-heavy instruments to RAW when memory allows. After optimization,
+  V (VQ) and R (RAW) indicators appear next to each instrument showing the
+  recommendation. Toggling an instrument's checkbox preserves these indicators.
+
+- **Amiga MOD import**: Import 4-channel ProTracker .MOD files with automatic
+  conversion of patterns, instruments, song arrangement, and speed settings.
+  MOD samples are resampled to the POKEY rate and their `base_note` is set to
+  C-3 (matching MOD tuning conventions). After import, the optimizer runs
+  automatically to assign RAW/VQ modes.
+
+- **Configurable memory limit**: The sample data memory budget is adjustable
+  (default 35 KB). The OPTIMIZE button and BUILD process respect this limit
+  when deciding how to fit instruments into the Atari's 64 KB RAM.
+
+- **Coupled note entry mode**: New setting (on by default) that controls whether
+  entering a note on an occupied cell overwrites the instrument and volume
+  (FastTracker 2 style) or preserves them (Renoise-style edit mask). Toggle
+  in Settings panel.
+
+- **Clone instrument**: Deep-copies the selected instrument (audio data, effects
+  chain, settings) to a new slot at the end of the instrument list.
+
+- **Removed size-optimized player from tracker**: The tracker now always uses
+  the speed-optimized IRQ handler. 
+
+- **Simplified menus**: Removed "Import vq_converter..." and "Export .ASM..."
+  menu items. The tracker workflow is now: compose → convert → build (.xex).
+
+- **Native File and Folder Selectors**: Removed ugly and non-intuitive custom
+  selectors. Now application is using system native selectors.
+
+---
+
 ## [Beta 2] - 2025-02
 
 ### Bug Fixes

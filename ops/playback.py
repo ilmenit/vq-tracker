@@ -29,9 +29,9 @@ def play_song_start(*args):
 
 
 def play_song_here(*args):
-    """Play song from current position."""
-    state.audio.play_song(from_start=False, songline=state.songline, row=state.row)
-    ui.show_status(f"Playing from line {fmt(state.songline)} row {fmt(state.row)}...")
+    """Play song from current songline (from start of its pattern)."""
+    state.audio.play_song(from_start=False, songline=state.songline, row=0)
+    ui.show_status(f"Playing song from line {fmt(state.songline)}...")
 
 
 def stop_playback(*args):

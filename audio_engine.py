@@ -211,7 +211,10 @@ class AudioEngine:
         ch.active = True
         ch.note = note
         ch.volume = volume
-        ch.sample_data = inst.sample_data
+        # Use processed audio if effects are applied
+        from sample_editor.pipeline import get_playback_audio
+        audio = get_playback_audio(inst)
+        ch.sample_data = audio if audio is not None else inst.sample_data
         ch.sample_rate = inst.sample_rate
         ch.position = 0.0
         logger.debug(f"Note triggered: ch={ch_idx}, pitch={ch.pitch:.3f}, sample_len={len(ch.sample_data)}")

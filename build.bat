@@ -252,6 +252,14 @@ if exist "samples" (
 )
 
 echo.
+echo Checking MOD files...
+if exist "mods" (
+    echo   [OK] mods\ directory found
+) else (
+    echo   [?] mods\ directory not found ^(optional^)
+)
+
+echo.
 if defined MISSING (
     echo ============================================================
     echo   Missing components:%MISSING%

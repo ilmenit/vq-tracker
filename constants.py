@@ -34,6 +34,18 @@ VQ_VECTOR_DEFAULT = 8
 VQ_SMOOTHNESS_VALUES = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
 VQ_SMOOTHNESS_DEFAULT = 0
 
+# Memory budget for sample data (bytes)
+# Atari memory map with ROM-under-RAM:
+#   $2000-$BFFF = 40 KB standard area
+#   $C000-$CFFF = +4 KB (OS ROM copied to RAM)
+#   Player code + tables ≈ 3-5 KB overhead
+# Default 40 KB = comfortable fit in main RAM
+# Max 48 KB = aggressive, uses nearly all available RAM
+# Above 48 KB would require bank-switched extended memory (not supported)
+MEMORY_LIMIT_DEFAULT_KB = 35
+MEMORY_LIMIT_MIN_KB = 4
+MEMORY_LIMIT_MAX_KB = 48
+
 # === FOCUS AREAS ===
 FOCUS_SONG = 0
 FOCUS_PATTERN = 1

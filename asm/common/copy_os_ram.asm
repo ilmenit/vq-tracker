@@ -64,7 +64,11 @@ CopyOSRomToRam:
     lda os_copy_ptr+1
     bne @copy_loop
     
-    ; Done copying - leave RAM enabled (PORTB Bit 0 = 0)
+    ; Done copying - restore interrupts for OS loader
+    ; ROM stays enabled (PORTB bit 0 = 1) which is correct for OS
+    lda #$40                ; Enable VBI (bit 6) - OS needs this for loader
+    sta $D40E               ; Restore NMIEN
+    cli                     ; Re-enable IRQ (needed for SIO disk loading)
     rts
 
     ini CopyOSRomToRam

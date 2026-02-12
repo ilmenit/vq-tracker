@@ -42,10 +42,55 @@ MAX_VISIBLE_ROWS = 50
 SONG_VISIBLE_ROWS = 5
 SONG_PANEL_WIDTH = 340
 
+
+def compute_editor_width(hex_mode, show_volume):
+    """Calculate the correct editor panel width for current settings.
+    
+    DPG inserts item_spacing (8px) between EVERY adjacent widget in a
+    horizontal group.  We must count all widgets and all gaps exactly.
+    
+    Row layout (no volume):
+      [RowBtn] [Spacer4] [Note1][Inst1] [SpacerCH] [Note2][Inst2] ...
+      
+    Item count = 1(row) + 1(spc4) + CH*(note+inst) + (CH-1)*spacerCH
+    With volume: + CH*vol extra items
+    IS gaps = (item_count - 1) * 8
+    """
+    row_num_w = 32 if hex_mode else 40
+    note_w = 44
+    inst_w = 32 if hex_mode else 40
+    vol_w = 24 if hex_mode else 30
+    ch_spacer = 12
+    item_spacing = 8  # DPG default horizontal item spacing
+    spacer_lead = 4   # small spacer after row number
+    
+    from constants import MAX_CHANNELS
+    
+    # Count widgets and their widths
+    items_per_ch = 2  # note + inst buttons
+    if show_volume:
+        items_per_ch = 3  # + vol button
+    
+    n_items = (1                                 # row number button
+               + 1                               # leading spacer(4)
+               + MAX_CHANNELS * items_per_ch     # data buttons
+               + (MAX_CHANNELS - 1))             # inter-channel spacers
+    
+    widget_widths = (row_num_w + spacer_lead
+                     + MAX_CHANNELS * (note_w + inst_w + (vol_w if show_volume else 0))
+                     + (MAX_CHANNELS - 1) * ch_spacer)
+    
+    is_total = (n_items - 1) * item_spacing
+    
+    # Window chrome: padding (8px each side) + border (1px each) + scrollbar room
+    chrome = 32
+    
+    return widget_widths + is_total + chrome
+
 # =============================================================================
 # SHARED STATE
 # =============================================================================
-visible_rows = 13
+visible_rows = 11
 play_row = -1
 play_songline = -1
 last_autosave = 0
@@ -55,6 +100,7 @@ recent_files = []
 # Editor settings (saved to config)
 piano_keys_mode = True  # True: number keys play sharps; False: 1-3 select octave (tracker style)
 highlight_interval = 4  # Row highlight interval: 2, 4, 8, or 16
+coupled_entry = True    # True: note entry always stamps inst+vol; False: only change note in occupied cells
 
 
 # =============================================================================
@@ -100,7 +146,7 @@ def parse_int_value(text: str, default: int = 0) -> int:
 
 def load_config():
     """Load configuration from disk."""
-    global autosave_enabled, recent_files, piano_keys_mode, highlight_interval
+    global autosave_enabled, recent_files, piano_keys_mode, highlight_interval, coupled_entry
     logger.debug(f"Loading config from: {CONFIG_FILE}")
     try:
         AUTOSAVE_DIR.mkdir(parents=True, exist_ok=True)
@@ -117,6 +163,7 @@ def load_config():
                 # New settings
                 piano_keys_mode = ed.get('piano_keys_mode', True)
                 highlight_interval = ed.get('highlight_interval', 4)
+                coupled_entry = ed.get('coupled_entry', True)
                 # Validate highlight_interval
                 if highlight_interval not in [2, 4, 8, 16]:
                     highlight_interval = 4
@@ -141,9 +188,9 @@ def save_config():
                 'octave': state.octave,
                 'step': state.step,
                 'follow': state.follow,
-                # New settings
                 'piano_keys_mode': piano_keys_mode,
                 'highlight_interval': highlight_interval,
+                'coupled_entry': coupled_entry,
             }
         }
         with open(CONFIG_FILE, 'w') as f:
@@ -219,7 +266,6 @@ def do_autosave():
             vq_vector_size=state.vq.vector_size,
             vq_smoothness=state.vq.smoothness,
             vq_enhance=state.vq.settings.enhance,
-            vq_optimize_speed=state.vq.settings.optimize_speed,
         )
         
         save_project(state.song, editor_state, str(filename), file_io.work_dir)

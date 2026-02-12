@@ -19,20 +19,45 @@ from ops.base import ui, save_undo, fmt, get_samples_dir
 logger = logging.getLogger("tracker.ops.instruments")
 
 
+from typing import Optional
+
+
+def _audio_filters() -> dict:
+    """Build filter dict for native file dialog from supported extensions."""
+    exts = get_supported_extensions()
+    # "wav,mp3,ogg,flac,aiff,aif,m4a,wma" (without dots)
+    spec = ",".join(e.lstrip(".") for e in sorted(exts))
+    return {"Audio Files": spec}
+
+
 # =========================================================================
 # PUBLIC ENTRY POINTS (called from menus / keyboard shortcuts)
 # =========================================================================
 
 def add_sample(*args):
-    """Load sample file(s) - multi-select with audio preview."""
-    from ui_browser import show_sample_browser
-    show_sample_browser('file', _on_files_selected)
+    """Load sample file(s) - native multi-select file dialog."""
+    import native_dialog
+    paths = native_dialog.open_files(
+        title="Add Sample Files",
+        start_dir=_last_browse_dir(),
+        filters=_audio_filters(),
+        allow_multi=True,
+    )
+    if paths:
+        _remember_browse_dir(paths[0])
+        _on_files_selected(paths)
 
 
 def add_folder(*args):
-    """Load all samples from selected folder(s)."""
-    from ui_browser import show_sample_browser
-    show_sample_browser('folder', _on_folders_selected)
+    """Load all samples from selected folder."""
+    import native_dialog
+    folder = native_dialog.pick_folder(
+        title="Add Samples from Folder",
+        start_dir=_last_browse_dir(),
+    )
+    if folder:
+        _remember_browse_dir(folder)
+        _on_folders_selected([folder])
 
 
 def replace_instrument(*args):
@@ -43,22 +68,47 @@ def replace_instrument(*args):
         return
 
     inst = state.song.instruments[state.instrument]
-    from ui_browser import show_sample_browser
 
-    # Open browser in single-select file mode, starting from the
-    # directory of the instrument's original source file (if known)
-    start_dir = None
+    # Start from the directory of the instrument's original source file
+    start_dir = _last_browse_dir()
     if inst.original_sample_path:
         parent = os.path.dirname(inst.original_sample_path)
         if os.path.isdir(parent):
             start_dir = parent
 
-    show_sample_browser(
-        'file', _on_replace_file_selected,
-        start_path=start_dir,
-        ok_label="\u2713 Replace",
+    import native_dialog
+    paths = native_dialog.open_files(
+        title=f"Replace Instrument: {inst.name}",
+        start_dir=start_dir,
+        filters=_audio_filters(),
         allow_multi=False,
-        title=f"Replace Instrument: {inst.name}")
+    )
+    if paths:
+        _remember_browse_dir(paths[0])
+        _on_replace_file_selected(paths)
+
+
+# =========================================================================
+# BROWSE DIRECTORY MEMORY (persists across dialogs within session)
+# =========================================================================
+_browse_dir = None
+
+
+def _last_browse_dir() -> Optional[str]:
+    """Return the last directory the user browsed to."""
+    global _browse_dir
+    if _browse_dir and os.path.isdir(_browse_dir):
+        return _browse_dir
+    return os.path.expanduser("~")
+
+
+def _remember_browse_dir(path: str):
+    """Remember the directory of a selected file/folder."""
+    global _browse_dir
+    if os.path.isdir(path):
+        _browse_dir = path
+    else:
+        _browse_dir = os.path.dirname(path)
 
 
 # =========================================================================
@@ -138,10 +188,18 @@ def _on_replace_file_selected(paths):
     inst.original_sample_path = new_inst.original_sample_path
     inst.sample_data = new_inst.sample_data
     inst.sample_rate = new_inst.sample_rate
+    inst.invalidate_cache()  # Clear processed audio cache (sample changed)
     # Preserve: base_note (user may have tuned it)
+    # Preserve: effects (user-configured pipeline still applies)
 
     state.vq.invalidate()
     ui.refresh_instruments()
+    # Refresh sample editor if open (sample data changed under it)
+    try:
+        from sample_editor.ui_editor import refresh_editor
+        refresh_editor()
+    except Exception:
+        pass
     ui.show_status(f"Replaced with: {new_inst.name}")
 
 
@@ -204,6 +262,12 @@ def remove_instrument(*args):
     if not state.song.instruments:
         return
     save_undo("Remove instrument")
+    # Close sample editor — inst indices shift after removal
+    try:
+        from sample_editor.ui_editor import close_editor
+        close_editor()
+    except Exception:
+        pass
     if state.song.remove_instrument(state.instrument):
         if state.instrument >= len(state.song.instruments):
             state.instrument = max(0, len(state.song.instruments) - 1)
@@ -221,6 +285,11 @@ def reset_all_instruments(*args):
 
     def do_reset():
         save_undo("Reset all instruments")
+        try:
+            from sample_editor.ui_editor import close_editor
+            close_editor()
+        except Exception:
+            pass
         state.song.instruments.clear()
         state.instrument = 0
         for pattern in state.song.patterns:
@@ -249,9 +318,60 @@ def _do_rename(name: str):
         save_undo("Rename")
         state.song.instruments[state.instrument].name = name
         ui.refresh_instruments()
+        try:
+            from sample_editor.ui_editor import refresh_editor
+            refresh_editor()
+        except Exception:
+            pass
 
 
 def select_instrument(idx: int):
     """Select instrument by index."""
     state.instrument = max(0, min(idx, len(state.song.instruments) - 1))
     ui.refresh_instruments()
+    # Update sample editor if open
+    try:
+        from sample_editor.ui_editor import update_editor_instrument
+        update_editor_instrument(state.instrument)
+    except Exception:
+        pass
+
+
+def clone_instrument(*args):
+    """Clone selected instrument (deep copy with processed audio) to end of list."""
+    import copy
+    
+    if not state.song.instruments:
+        return
+    if state.instrument >= len(state.song.instruments):
+        return
+    
+    src = state.song.instruments[state.instrument]
+    if not src.is_loaded():
+        ui.show_status("Cannot clone: instrument has no audio data")
+        return
+    
+    save_undo("Clone instrument")
+    
+    # Check if we can add another instrument
+    idx = state.song.add_instrument()
+    if idx < 0:
+        ui.show_status("Cannot clone: maximum instruments reached")
+        return
+    
+    # Deep copy all fields
+    clone = copy.copy(src)
+    clone.name = src.name + " (clone)"
+    # Deep copy numpy arrays so edits to clone don't affect original
+    if src.sample_data is not None:
+        clone.sample_data = src.sample_data.copy()
+    if src.processed_data is not None:
+        clone.processed_data = src.processed_data.copy()
+    # Deep copy effects list
+    clone.effects = copy.deepcopy(src.effects)
+    
+    state.song.instruments[idx] = clone
+    state.instrument = idx
+    state.vq.invalidate()
+    ui.refresh_instruments()
+    ui.show_status(f"Cloned instrument to slot {idx}: {clone.name}")
