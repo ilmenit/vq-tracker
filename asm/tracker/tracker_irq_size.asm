@@ -18,9 +18,13 @@
     .error "MIN_VECTOR must be 2, 4, 8, or 16"
 .endif
 
-; SMC opcodes for dispatch (used by process_row.asm)
-OPCODE_BMI = $30
-OPCODE_BPL = $10
+; SMC opcodes (defined in song_player.asm; guarded here for standalone use)
+.ifndef OPCODE_BMI
+    OPCODE_BMI = $30
+.endif
+.ifndef OPCODE_BPL
+    OPCODE_BPL = $10
+.endif
 
 Tracker_IRQ:
     sta irq_save_a

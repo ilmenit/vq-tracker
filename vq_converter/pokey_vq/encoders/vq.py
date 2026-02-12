@@ -197,26 +197,27 @@ class VQEncoder(Encoder):
         full_vectors = np.array(full_vectors)
             
         # Single Channel Mode: No hardware glitch simulation needed (single channel is stable).
-        # We just output the stepped waveform.
+        # We output the stepped waveform quantized to actual POKEY voltage levels.
         if self.channels == 1:
-             # Find nearest voltage in single channel table
-             # Note: full_vectors are normalized 0-1 values.
-             # POKEY_VOLTAGE_TABLE is 0-0.55. 
-             # Wait, training normalized them to POKEY_VOLTAGE_TABLE domain.
-             # So full_vectors should match table values closely.
-             # We just replicate them.
+             # Quantize codebook float values to 16 POKEY levels (matches real hardware output)
+             table_norm = POKEY_VOLTAGE_TABLE / POKEY_VOLTAGE_TABLE[-1]  # normalize to [0,1]
+             pokey_indices = np.searchsorted(table_norm, full_vectors)
+             pokey_indices = np.clip(pokey_indices, 0, len(table_norm) - 1)
+             # Nearest-neighbor correction
+             left = np.clip(pokey_indices - 1, 0, len(table_norm) - 1)
+             use_left = np.abs(full_vectors - table_norm[left]) < np.abs(full_vectors - table_norm[pokey_indices])
+             pokey_indices = np.where(use_left, left, pokey_indices)
+             quantized = table_norm[pokey_indices]
              
-             # Expand to high res
+             # Expand to high res (one POKEY sample = period_cycles of 1.77MHz clock)
              period_int = int(period_cycles)
-             high_res = np.repeat(full_vectors, period_int)
+             high_res = np.repeat(quantized, period_int)
              
-             # Resample
+             # Resample to target rate
              num_target_samples = int(len(high_res) * target_sr / POKEY_CLOCK)
              resampled = scipy.signal.resample(high_res, num_target_samples)
              
-             # Center
-             # full_vectors is 0..1 (Normalized Audio Domain)
-             # Just map to -1..1 for WAV output
+             # Map from [0,1] to [-1,1] for WAV output
              resampled = (resampled - 0.5) * 2.0
              
              return resampled

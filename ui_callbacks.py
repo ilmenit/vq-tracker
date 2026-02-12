@@ -544,6 +544,14 @@ def on_piano_keys_toggle(sender, value):
     G.show_status(f"Keyboard mode: {mode_name}")
 
 
+def on_coupled_toggle(sender, value):
+    """Toggle coupled note+instrument+volume entry."""
+    G.coupled_entry = value
+    G.save_config()
+    mode_name = "Coupled" if value else "Note only"
+    G.show_status(f"Entry mode: {mode_name}")
+
+
 def on_highlight_change(sender, value):
     """Change row highlight interval."""
     try:
@@ -681,8 +689,198 @@ def on_playback_stop():
     R.refresh_editor()
 
 
+# =============================================================================
+# REPLACE INSTRUMENT
+# =============================================================================
+
+_REPLACE_DLG = "replace_inst_dlg"
+
+
+def on_replace_instrument(*args):
+    """Show the Replace Instrument dialog."""
+    if dpg.does_item_exist(_REPLACE_DLG):
+        dpg.delete_item(_REPLACE_DLG)
+
+    instruments = state.song.instruments
+    if not instruments:
+        G.show_status("No instruments loaded")
+        return
+
+    # Build instrument items: "00 - Kick", "01 - Snare", ...
+    inst_items = [f"{G.fmt_inst(i)} - {inst.name}"
+                  for i, inst in enumerate(instruments)]
+
+    # Build pattern items: "00", "01", ...
+    num_patterns = len(state.song.patterns)
+    ptn_items = [G.fmt(i) for i in range(num_patterns)]
+
+    # Default pattern: the one currently under the cursor
+    current_ptn = state.get_patterns()[state.channel]
+
+    # Default instrument indices (clamped to valid range)
+    from_default = max(0, min(state.instrument, len(inst_items) - 1))
+    # Default "To" to next instrument if possible, so From != To
+    to_default = (from_default + 1) % len(inst_items)
+
+    vp_w = dpg.get_viewport_width()
+    vp_h = dpg.get_viewport_height()
+    dlg_w, dlg_h = 380, 260
+
+    with dpg.window(tag=_REPLACE_DLG, label="Replace Instrument",
+                    modal=True, no_resize=True, no_collapse=True,
+                    width=dlg_w, height=dlg_h,
+                    pos=[(vp_w - dlg_w) // 2, (vp_h - dlg_h) // 2]):
+
+        dpg.add_spacer(height=6)
+
+        # -- Scope row --
+        with dpg.group(horizontal=True):
+            dpg.add_checkbox(tag=f"{_REPLACE_DLG}_all",
+                             label="In all patterns",
+                             default_value=False,
+                             callback=_on_replace_scope_toggle)
+            dpg.add_spacer(width=20)
+            dpg.add_text("Pattern:", color=(180, 180, 180))
+            dpg.add_combo(tag=f"{_REPLACE_DLG}_ptn",
+                          items=ptn_items,
+                          default_value=G.fmt(current_ptn),
+                          width=60)
+
+        dpg.add_spacer(height=12)
+
+        # -- From instrument --
+        with dpg.group(horizontal=True):
+            dpg.add_text("From:", color=(180, 180, 180))
+            dpg.add_spacer(width=10)
+            dpg.add_combo(tag=f"{_REPLACE_DLG}_from",
+                          items=inst_items,
+                          default_value=inst_items[from_default],
+                          width=260)
+
+        dpg.add_spacer(height=8)
+
+        # -- To instrument --
+        with dpg.group(horizontal=True):
+            dpg.add_text("To:    ", color=(180, 180, 180))
+            dpg.add_spacer(width=10)
+            dpg.add_combo(tag=f"{_REPLACE_DLG}_to",
+                          items=inst_items,
+                          default_value=inst_items[to_default],
+                          width=260)
+
+        dpg.add_spacer(height=16)
+
+        # -- Result label (hidden until replace runs) --
+        dpg.add_text("", tag=f"{_REPLACE_DLG}_result", color=(120, 200, 120))
+
+        dpg.add_spacer(height=4)
+
+        # -- Buttons --
+        with dpg.group(horizontal=True):
+            dpg.add_spacer(width=115)
+            dpg.add_button(label="Replace", width=100,
+                           callback=_do_replace_instrument)
+            dpg.add_spacer(width=10)
+            dpg.add_button(label="Close", width=100,
+                           callback=lambda: dpg.delete_item(_REPLACE_DLG))
+
+
+def _on_replace_scope_toggle(sender, value, *args):
+    """Enable/disable pattern combo based on 'all patterns' checkbox."""
+    ptn_tag = f"{_REPLACE_DLG}_ptn"
+    if dpg.does_item_exist(ptn_tag):
+        dpg.configure_item(ptn_tag, enabled=not value)
+
+
+def _do_replace_instrument(*args):
+    """Execute the instrument replacement."""
+    from ops.base import save_undo
+
+    all_patterns = dpg.get_value(f"{_REPLACE_DLG}_all")
+    from_str = dpg.get_value(f"{_REPLACE_DLG}_from")
+    to_str = dpg.get_value(f"{_REPLACE_DLG}_to")
+
+    # Parse instrument indices from "XX - Name" strings
+    try:
+        from_idx = int(from_str.split(" - ")[0], 16 if state.hex_mode else 10)
+        to_idx = int(to_str.split(" - ")[0], 16 if state.hex_mode else 10)
+    except (ValueError, IndexError):
+        G.show_status("Error: could not parse instrument selection")
+        return
+
+    if from_idx == to_idx:
+        if dpg.does_item_exist(f"{_REPLACE_DLG}_result"):
+            dpg.set_value(f"{_REPLACE_DLG}_result",
+                          "From and To are the same instrument.")
+            dpg.configure_item(f"{_REPLACE_DLG}_result",
+                               color=(240, 180, 80))
+        return
+
+    # Determine which patterns to scan
+    if all_patterns:
+        patterns = list(range(len(state.song.patterns)))
+    else:
+        ptn_str = dpg.get_value(f"{_REPLACE_DLG}_ptn")
+        try:
+            ptn_idx = int(ptn_str, 16 if state.hex_mode else 10)
+        except ValueError:
+            G.show_status("Error: invalid pattern number")
+            return
+        if ptn_idx >= len(state.song.patterns):
+            G.show_status(f"Pattern {ptn_str} does not exist")
+            return
+        patterns = [ptn_idx]
+
+    from constants import NOTE_OFF
+
+    # Scan first to count matches before committing undo
+    matches = []
+    for pi in patterns:
+        ptn = state.song.patterns[pi]
+        for row in ptn.rows:
+            if (row.instrument == from_idx
+                    and row.note > 0
+                    and row.note != NOTE_OFF):
+                matches.append(row)
+
+    if not matches:
+        scope = "all patterns" if all_patterns else f"pattern {G.fmt(patterns[0])}"
+        msg = f"No matches found in {scope}"
+        if dpg.does_item_exist(f"{_REPLACE_DLG}_result"):
+            dpg.set_value(f"{_REPLACE_DLG}_result", msg)
+            dpg.configure_item(f"{_REPLACE_DLG}_result", color=(180, 180, 100))
+        return
+
+    save_undo("Replace Instrument")
+
+    for row in matches:
+        row.instrument = to_idx
+    count = len(matches)
+
+    state.song.modified = True
+    R.refresh_editor()
+
+    from_name = state.song.instruments[from_idx].name if from_idx < len(state.song.instruments) else "?"
+    to_name = state.song.instruments[to_idx].name if to_idx < len(state.song.instruments) else "?"
+    scope = "all patterns" if all_patterns else f"pattern {G.fmt(patterns[0])}"
+
+    msg = f"Replaced {count} note(s) in {scope}"
+    if dpg.does_item_exist(f"{_REPLACE_DLG}_result"):
+        dpg.set_value(f"{_REPLACE_DLG}_result", msg)
+        col = (120, 200, 120) if count > 0 else (180, 180, 100)
+        dpg.configure_item(f"{_REPLACE_DLG}_result", color=col)
+    G.show_status(f"Replaced {count} note(s): {from_name} -> {to_name} ({scope})")
+
+
 def on_play_pattern_click(sender, app_data):
-    ops.play_stop()
+    ops.play_pattern()
+
+
+def on_play_pattern_here(sender, app_data):
+    """Play current pattern from cursor position."""
+    state.audio.play_from(state.songline, state.row)
+    from ops.base import ui, fmt
+    ui.show_status(f"Playing pattern from row {fmt(state.row)}...")
 
 
 def on_play_song_click(sender, app_data):
@@ -856,6 +1054,58 @@ def on_global_mouse_click(sender, app_data):
                     return
         except:
             pass
+
+
+def _is_mouse_over(panel_tag):
+    """Check if mouse cursor is over a given panel."""
+    if not dpg.does_item_exist(panel_tag):
+        return False
+    try:
+        pos = dpg.get_item_pos(panel_tag)
+        rect = dpg.get_item_rect_size(panel_tag)
+        if not pos or not rect:
+            return False
+        mx, my = dpg.get_mouse_pos(local=False)
+        return (pos[0] <= mx <= pos[0] + rect[0] and
+                pos[1] <= my <= pos[1] + rect[1])
+    except Exception:
+        return False
+
+
+def on_mouse_wheel(sender, app_data):
+    """Handle mouse wheel for pattern editor and song scrolling.
+    
+    app_data is the wheel delta: positive = scroll up, negative = scroll down.
+    """
+    if state.input_active:
+        return
+
+    # Don't scroll while sample editor modal is open
+    try:
+        from sample_editor.ui_editor import is_editor_open
+        if is_editor_open():
+            return
+    except Exception:
+        pass
+
+    delta = app_data  # +1 = wheel up, -1 = wheel down
+    rows = -1 if delta > 0 else 1  # scroll 1 row per notch
+
+    if _is_mouse_over("editor_panel"):
+        ops.move_cursor(rows, 0)
+    elif _is_mouse_over("song_panel"):
+        total = len(state.song.songlines)
+        if delta > 0 and state.song_cursor_row > 0:
+            state.song_cursor_row = max(0, state.song_cursor_row - 1)
+            state.songline = state.song_cursor_row
+            R.refresh_song_editor()
+            R.refresh_editor()
+        elif delta < 0 and state.song_cursor_row < total - 1:
+            state.song_cursor_row = min(total - 1,
+                                        state.song_cursor_row + 1)
+            state.songline = state.song_cursor_row
+            R.refresh_song_editor()
+            R.refresh_editor()
 
 
 # =============================================================================
@@ -1089,15 +1339,23 @@ def on_vq_setting_change(sender, app_data):
     
     state.vq.settings.enhance = dpg.get_value("vq_enhance_cb") if dpg.does_item_exist("vq_enhance_cb") else True
     
-    # Optimize mode: "Speed" -> True, "Size" -> False
-    try:
-        opt_value = dpg.get_value("vq_optimize_combo")
-        state.vq.settings.optimize_speed = (opt_value == "Speed")
-    except:
-        pass
-    
     # Invalidate conversion
     invalidate_vq_conversion()
+
+
+def on_memory_limit_change(sender, app_data):
+    """Called when memory limit field changes."""
+    from constants import MEMORY_LIMIT_MIN_KB, MEMORY_LIMIT_MAX_KB
+    
+    # Clamp value
+    kb = max(MEMORY_LIMIT_MIN_KB, min(MEMORY_LIMIT_MAX_KB, int(app_data)))
+    state.vq.settings.memory_limit = kb * 1024
+    
+    # Clear optimize suggestions (budget changed)
+    if hasattr(state, '_optimize_result'):
+        state._optimize_result = None
+    
+    R.refresh_instruments()
 
 
 def on_vq_use_converted_change(sender, app_data):
@@ -1233,6 +1491,10 @@ def invalidate_vq_conversion():
     
     state.vq.invalidate()
     
+    # Clear optimize suggestions (they're based on old settings)
+    if hasattr(state, '_optimize_result'):
+        state._optimize_result = None
+    
     # Update CONVERT UI
     if dpg.does_item_exist("vq_size_label"):
         dpg.set_value("vq_size_label", "")
@@ -1337,6 +1599,60 @@ def _prepare_conversion_files(instruments) -> tuple:
     return input_files, proc_files, ""
 
 
+def on_optimize_click(sender, app_data):
+    """Analyze instruments and apply optimal RAW/VQ per instrument."""
+    import ui_refresh as R
+    from ui_dialogs import show_error
+    from optimize import analyze_instruments
+    
+    if not state.song.instruments:
+        show_error("No Instruments", "Add instruments before optimizing.")
+        return
+    
+    loaded = [inst for inst in state.song.instruments if inst.is_loaded()]
+    if not loaded:
+        show_error("No Audio", "Instruments have no audio data loaded.")
+        return
+    
+    # Run the optimizer
+    result = analyze_instruments(
+        instruments=state.song.instruments,
+        target_rate=state.vq.settings.rate,
+        vector_size=state.vq.settings.vector_size,
+        memory_budget=state.vq.settings.memory_limit,
+        vq_result=state.vq.result if state.vq.converted else None,
+        song=state.song,
+        volume_control=state.song.volume_control,
+        system_hz=state.song.system,
+    )
+    
+    # Apply suggestions directly to instrument checkboxes
+    n_changed = 0
+    for a in result.analyses:
+        if a.index < len(state.song.instruments):
+            inst = state.song.instruments[a.index]
+            new_use_vq = not a.suggest_raw
+            if inst.use_vq != new_use_vq:
+                inst.use_vq = new_use_vq
+                n_changed += 1
+    
+    # If any modes changed, re-conversion is required (data format changes)
+    if n_changed > 0:
+        invalidate_vq_conversion()
+    
+    # Store result for indicator display in refresh_instruments
+    state._optimize_result = result
+    
+    # Refresh instrument list (checkboxes will reflect the new settings)
+    R.refresh_instruments()
+    
+    # Show summary
+    if n_changed > 0:
+        G.show_status(f"Optimized: {n_changed} instrument(s) changed. {result.summary}")
+    else:
+        G.show_status(f"Already optimal. {result.summary}")
+
+
 def on_vq_convert_click(sender, app_data):
     """Start VQ conversion."""
     from ui_dialogs import show_error
@@ -1362,6 +1678,69 @@ def on_vq_convert_click(sender, app_data):
     
     show_vq_conversion_window(input_files)
 
+
+# =============================================================================
+# MOD IMPORT RESULT WINDOW
+# =============================================================================
+
+_MOD_IMPORT_DLG = "mod_import_result"
+
+
+def show_mod_import_result(import_log, success: bool):
+    """Show MOD import result window with log output."""
+    if dpg.does_item_exist(_MOD_IMPORT_DLG):
+        dpg.delete_item(_MOD_IMPORT_DLG)
+
+    state.set_input_active(True)
+
+    vp_w = dpg.get_viewport_width()
+    vp_h = dpg.get_viewport_height()
+    w, h = 700, 450
+
+    title = "MOD Import — Complete" if success else "MOD Import — Failed"
+
+    def on_close():
+        state.set_input_active(False)
+        if dpg.does_item_exist(_MOD_IMPORT_DLG):
+            dpg.delete_item(_MOD_IMPORT_DLG)
+
+    with dpg.window(tag=_MOD_IMPORT_DLG, label=title, modal=True,
+                    width=w, height=h,
+                    pos=[(vp_w - w) // 2, (vp_h - h) // 2],
+                    no_resize=False, no_collapse=True, on_close=on_close):
+
+        # Status line
+        if success:
+            dpg.add_text(import_log.summary_line(), color=(120, 200, 120))
+        else:
+            dpg.add_text(import_log.summary_line(), color=(240, 80, 80))
+        dpg.add_separator()
+        dpg.add_spacer(height=5)
+
+        # Log text area
+        with dpg.child_window(tag=f"{_MOD_IMPORT_DLG}_scroll",
+                               height=-50, border=True):
+            dpg.add_input_text(tag=f"{_MOD_IMPORT_DLG}_text",
+                               multiline=True, readonly=True,
+                               width=-1, height=-1,
+                               default_value=import_log.get_text())
+
+        dpg.add_spacer(height=5)
+
+        # Close button
+        with dpg.group(horizontal=True):
+            dpg.add_spacer(width=550)
+            dpg.add_button(label="Close", width=100, callback=on_close)
+
+    # Scroll to bottom
+    if dpg.does_item_exist(f"{_MOD_IMPORT_DLG}_scroll"):
+        dpg.set_y_scroll(f"{_MOD_IMPORT_DLG}_scroll",
+                         dpg.get_y_scroll_max(f"{_MOD_IMPORT_DLG}_scroll"))
+
+
+# =============================================================================
+# VQ CONVERSION
+# =============================================================================
 
 # Global reference to converter for polling
 _vq_converter = None
@@ -1416,9 +1795,11 @@ def show_vq_conversion_window(input_files: list):
             dpg.add_button(tag="vq_close_btn", label="Processing...", width=90, 
                            enabled=False, callback=on_close)
     
-    # Start conversion
+    # Start conversion — pass per-instrument RAW/VQ modes
+    # Must match input_files ordering (all instruments, same as _prepare_conversion_files)
+    sample_modes = [0 if inst.use_vq else 1 for inst in state.song.instruments]
     _vq_converter = VQConverter(state.vq)
-    _vq_converter.convert(input_files)
+    _vq_converter.convert(input_files, sample_modes=sample_modes)
 
 
 def poll_vq_conversion():
@@ -1455,6 +1836,18 @@ def poll_vq_conversion():
                     dpg.set_value("vq_size_label", f"Atari data: {format_size(result.vq_data_size)}")
                 else:
                     dpg.set_value("vq_size_label", "")
+            
+            # Compute per-instrument RAW sizes for display
+            if not result.inst_raw_sizes:
+                from optimize import compute_raw_size
+                for inst in state.song.instruments:
+                    if inst.is_loaded():
+                        data = inst.processed_data if inst.processed_data is not None else inst.sample_data
+                        raw_sz = compute_raw_size(data, inst.sample_rate,
+                                                  state.vq.settings.rate)
+                        result.inst_raw_sizes.append(raw_sz)
+                    else:
+                        result.inst_raw_sizes.append(0)
             
             # Auto-enable and check "Use converted" checkbox
             if dpg.does_item_exist("vq_use_converted_cb"):

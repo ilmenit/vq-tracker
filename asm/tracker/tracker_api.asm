@@ -6,7 +6,7 @@
 ;
 ; Register Usage:
 ;   A = Sample Index (0 to SAMPLE_COUNT-1)
-;   X = Note Index (0-35: C-1=0, C-2=12, C-3=24)
+;   X = Note Index (0-59: see pitch_tables.asm for extended 5-octave range)
 ;   Y = Channel Index (0-3)
 ; ==========================================================================
 
@@ -89,6 +89,20 @@ Tracker_PlayNote:
     lda VQ_HI,y
     sta trk0_sample_ptr+1
     
+    ; Reset boundary SMC to VQ mode (may have been set to RAW by process_row)
+    lda #MIN_VECTOR
+    sta ch0_boundary_cmp
+    lda #OPCODE_BCS
+    sta ch0_boundary_br
+    lda #<ch0_vq_boundary
+    sta ch0_boundary_jmp
+    lda #>ch0_vq_boundary
+    sta ch0_boundary_jmp+1
+    lda #<ch0_vq_pitch_chk
+    sta ch0_pitch_jmp
+    lda #>ch0_vq_pitch_chk
+    sta ch0_pitch_jmp+1
+    
     lda #$FF
     sta trk0_active
     rts
@@ -155,6 +169,20 @@ Tracker_PlayNote:
     sta trk1_sample_ptr
     lda VQ_HI,y
     sta trk1_sample_ptr+1
+    
+    ; Reset boundary SMC to VQ mode (may have been set to RAW by process_row)
+    lda #MIN_VECTOR
+    sta ch1_boundary_cmp
+    lda #OPCODE_BCS
+    sta ch1_boundary_br
+    lda #<ch1_vq_boundary
+    sta ch1_boundary_jmp
+    lda #>ch1_vq_boundary
+    sta ch1_boundary_jmp+1
+    lda #<ch1_vq_pitch_chk
+    sta ch1_pitch_jmp
+    lda #>ch1_vq_pitch_chk
+    sta ch1_pitch_jmp+1
     
     lda #$FF
     sta trk1_active
@@ -223,6 +251,20 @@ Tracker_PlayNote:
     lda VQ_HI,y
     sta trk2_sample_ptr+1
     
+    ; Reset boundary SMC to VQ mode (may have been set to RAW by process_row)
+    lda #MIN_VECTOR
+    sta ch2_boundary_cmp
+    lda #OPCODE_BCS
+    sta ch2_boundary_br
+    lda #<ch2_vq_boundary
+    sta ch2_boundary_jmp
+    lda #>ch2_vq_boundary
+    sta ch2_boundary_jmp+1
+    lda #<ch2_vq_pitch_chk
+    sta ch2_pitch_jmp
+    lda #>ch2_vq_pitch_chk
+    sta ch2_pitch_jmp+1
+    
     lda #$FF
     sta trk2_active
     rts
@@ -289,6 +331,20 @@ Tracker_PlayNote:
     sta trk3_sample_ptr
     lda VQ_HI,y
     sta trk3_sample_ptr+1
+    
+    ; Reset boundary SMC to VQ mode (may have been set to RAW by process_row)
+    lda #MIN_VECTOR
+    sta ch3_boundary_cmp
+    lda #OPCODE_BCS
+    sta ch3_boundary_br
+    lda #<ch3_vq_boundary
+    sta ch3_boundary_jmp
+    lda #>ch3_vq_boundary
+    sta ch3_boundary_jmp+1
+    lda #<ch3_vq_pitch_chk
+    sta ch3_pitch_jmp
+    lda #>ch3_vq_pitch_chk
+    sta ch3_pitch_jmp+1
     
     lda #$FF
     sta trk3_active

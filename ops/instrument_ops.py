@@ -335,3 +335,43 @@ def select_instrument(idx: int):
         update_editor_instrument(state.instrument)
     except Exception:
         pass
+
+
+def clone_instrument(*args):
+    """Clone selected instrument (deep copy with processed audio) to end of list."""
+    import copy
+    
+    if not state.song.instruments:
+        return
+    if state.instrument >= len(state.song.instruments):
+        return
+    
+    src = state.song.instruments[state.instrument]
+    if not src.is_loaded():
+        ui.show_status("Cannot clone: instrument has no audio data")
+        return
+    
+    save_undo("Clone instrument")
+    
+    # Check if we can add another instrument
+    idx = state.song.add_instrument()
+    if idx < 0:
+        ui.show_status("Cannot clone: maximum instruments reached")
+        return
+    
+    # Deep copy all fields
+    clone = copy.copy(src)
+    clone.name = src.name + " (clone)"
+    # Deep copy numpy arrays so edits to clone don't affect original
+    if src.sample_data is not None:
+        clone.sample_data = src.sample_data.copy()
+    if src.processed_data is not None:
+        clone.processed_data = src.processed_data.copy()
+    # Deep copy effects list
+    clone.effects = copy.deepcopy(src.effects)
+    
+    state.song.instruments[idx] = clone
+    state.instrument = idx
+    state.vq.invalidate()
+    ui.refresh_instruments()
+    ui.show_status(f"Cloned instrument to slot {idx}: {clone.name}")

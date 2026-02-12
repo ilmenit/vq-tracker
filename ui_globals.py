@@ -100,6 +100,7 @@ recent_files = []
 # Editor settings (saved to config)
 piano_keys_mode = True  # True: number keys play sharps; False: 1-3 select octave (tracker style)
 highlight_interval = 4  # Row highlight interval: 2, 4, 8, or 16
+coupled_entry = True    # True: note entry always stamps inst+vol; False: only change note in occupied cells
 
 
 # =============================================================================
@@ -145,7 +146,7 @@ def parse_int_value(text: str, default: int = 0) -> int:
 
 def load_config():
     """Load configuration from disk."""
-    global autosave_enabled, recent_files, piano_keys_mode, highlight_interval
+    global autosave_enabled, recent_files, piano_keys_mode, highlight_interval, coupled_entry
     logger.debug(f"Loading config from: {CONFIG_FILE}")
     try:
         AUTOSAVE_DIR.mkdir(parents=True, exist_ok=True)
@@ -162,6 +163,7 @@ def load_config():
                 # New settings
                 piano_keys_mode = ed.get('piano_keys_mode', True)
                 highlight_interval = ed.get('highlight_interval', 4)
+                coupled_entry = ed.get('coupled_entry', True)
                 # Validate highlight_interval
                 if highlight_interval not in [2, 4, 8, 16]:
                     highlight_interval = 4
@@ -186,9 +188,9 @@ def save_config():
                 'octave': state.octave,
                 'step': state.step,
                 'follow': state.follow,
-                # New settings
                 'piano_keys_mode': piano_keys_mode,
                 'highlight_interval': highlight_interval,
+                'coupled_entry': coupled_entry,
             }
         }
         with open(CONFIG_FILE, 'w') as f:
@@ -264,7 +266,6 @@ def do_autosave():
             vq_vector_size=state.vq.vector_size,
             vq_smoothness=state.vq.smoothness,
             vq_enhance=state.vq.settings.enhance,
-            vq_optimize_speed=state.vq.settings.optimize_speed,
         )
         
         save_project(state.song, editor_state, str(filename), file_io.work_dir)

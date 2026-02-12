@@ -5,6 +5,120 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [Beta 3] - 2025-02
+
+### Major Features
+
+- **4-channel polyphonic playback**: Expanded from 3 to 4 independent sample
+  channels. All four POKEY audio registers (AUDC1–AUDC4) are now used, giving
+  the full hardware polyphony. The 6502 IRQ handler, process_row commit logic,
+  and tracker_api all handle 4 channels with complete VQ/RAW mode support.
+
+- **Mixed VQ + RAW sample encoding**: Instruments can now individually use either
+  VQ (Vector Quantization) or RAW (uncompressed 4-bit PCM) encoding. VQ gives
+  better compression (8:1 with vec_size=8) using a shared 256-entry codebook.
+  RAW uses more memory but costs fewer CPU cycles per sample — no codebook
+  lookup needed. The player selects the correct handler per channel at note
+  trigger time via self-modifying code, with zero overhead during playback.
+
+- **OPTIMIZE button**: Analyzes all instruments and the song arrangement to
+  recommend VQ or RAW mode for each instrument. The optimizer simulates
+  playback row-by-row to find the worst-case CPU load, then switches short
+  or CPU-heavy instruments to RAW when memory allows. After optimization,
+  V (VQ) and R (RAW) indicators appear next to each instrument showing the
+  recommendation. Toggling an instrument's checkbox preserves these indicators.
+
+- **Amiga MOD import**: Import 4-channel ProTracker .MOD files with automatic
+  conversion of patterns, instruments, song arrangement, and speed settings.
+  MOD samples are resampled to the POKEY rate and their `base_note` is set to
+  C-3 (matching MOD tuning conventions). After import, the optimizer runs
+  automatically to assign RAW/VQ modes.
+
+- **Configurable memory limit**: The sample data memory budget is adjustable
+  (default 35 KB). The OPTIMIZE button and BUILD process respect this limit
+  when deciding how to fit instruments into the Atari's 64 KB RAM.
+
+- **Coupled note entry mode**: New setting (on by default) that controls whether
+  entering a note on an occupied cell overwrites the instrument and volume
+  (FastTracker 2 style) or preserves them (Renoise-style edit mask). Toggle
+  in Settings panel.
+
+- **Clone instrument**: Deep-copies the selected instrument (audio data, effects
+  chain, settings) to a new slot at the end of the instrument list.
+
+### Bug Fixes
+
+- **MOD instruments played 2 octaves too high on Atari**: The ASM pitch table
+  ignored `base_note`. MOD samples are pitched for C-3 playback, but the
+  exporter mapped C-3 to pitch index 24 = 4.0x instead of 1.0x. Fixed by
+  extending the pitch table from 36 to 60 entries (5 octaves including 0.25x
+  and 0.5x sub-octaves) and applying a base_note correction during export:
+  `export_note = gui_note + 24 - (base_note - 1)`.
+
+- **VQ preview cheating vs RAW**: The VQ preview played codebook vectors at
+  float32 precision (~24-bit quality) instead of quantizing through the real
+  16-level POKEY voltage table. This made VQ sound dramatically better than RAW
+  in preview, but the difference does not exist on real hardware. Both VQ and
+  RAW previews now go through honest 16-level POKEY quantization.
+
+- **RAW preview used wrong interpolation**: RAW preview used sinc interpolation
+  (scipy.signal.resample) creating ringing artifacts. Now uses zero-order hold
+  (np.repeat at 1.77 MHz → resample to 48 kHz), matching real POKEY hardware
+  sample-and-hold behavior and identical to the VQ preview method.
+
+- **IRQ skip labels fell through into RAW handlers**: Every `chN_skip` label
+  in tracker_irq_speed.asm pointed to the same address as `chN_raw_boundary`
+  (only comments between, no instructions). On every non-boundary tick, execution
+  fell through from skip into the RAW boundary handler. Fixed by placing all RAW
+  handlers after the `rti` instruction, reachable only via SMC JMP targets.
+
+- **Branch out of range after removing size optimization**: Removing
+  OPTIMIZE_SPEED conditionals made commit blocks exceed the 6502's ±127 byte
+  relative branch limit. Fixed by inverting `beq @commit_done_N` to
+  `bne @do_commit_N / jmp @commit_done_N`.
+
+- **Atari data size display excluded RAW samples**: The size shown after
+  conversion only counted VQ_BLOB + VQ_INDICES. RAW_SAMPLES bytes were never
+  added. All-RAW projects showed "2 B". Fixed.
+
+- **Keyboard notes played while typing in Limit field**: The memory limit
+  input field did not suppress keyboard note entry, causing notes to trigger
+  while typing numbers. Fixed by adding the field to the input-active check list.
+
+- **Optimize indicators disappeared on checkbox toggle**: Clicking a VQ/RAW
+  checkbox cleared the optimize result, hiding the V/R recommendation
+  indicators. The indicators now persist through checkbox toggles (only cleared
+  by operations that change the instrument list or settings).
+
+### Improvements
+
+- **Noise shaping for RAW samples**: 1st-order error-feedback noise shaping
+  pushes quantization noise from audible low frequencies to less-audible high
+  frequencies. At 15 kHz POKEY rate, noise in the 0–2 kHz band drops by ~18x.
+  Auto-enabled when POKEY rate ≥ 6 kHz.
+
+- **2-cycle/channel IRQ optimization**: Data bytes now store raw 0–15 volumes
+  instead of pre-baked `$10|vol`. Removes the `AND #$0F` instruction from the
+  IRQ hot path, saving 8 cycles per IRQ tick across 4 channels.
+
+- **Removed size-optimized player from tracker**: The tracker now always uses
+  the speed-optimized IRQ handler. The size-optimized variant (nibble-packed,
+  no RAW support) remains available in the standalone vq_converter.
+
+- **Auto-optimize on MOD import**: After importing a MOD file, the RAW/VQ
+  optimizer runs automatically so instruments start with sensible mode
+  assignments.
+
+- **Simplified menus**: Removed "Import vq_converter..." and "Export .ASM..."
+  menu items. The tracker workflow is now: compose → convert → build (.xex).
+
+### Documentation
+
+- Updated User Guide: 4-channel playback, VQ vs RAW encoding explained,
+  OPTIMIZE workflow, MOD import guide, memory limit configuration.
+
+---
+
 ## [Beta 2] - 2025-02
 
 ### Bug Fixes

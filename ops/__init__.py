@@ -22,8 +22,8 @@ from ops.base import (
 
 from ops.file_ops import (
     new_song, open_song, save_song, save_song_as,
-    export_binary_file, export_asm_files,
-    import_vq_converter,
+    export_binary_file,
+    import_mod,
 )
 
 from ops.editing import (
@@ -49,6 +49,7 @@ from ops.playback import (
 from ops.instrument_ops import (
     add_sample, add_folder, replace_instrument, remove_instrument,
     reset_all_instruments, rename_instrument, select_instrument,
+    clone_instrument,
 )
 
 from ops.pattern_ops import (

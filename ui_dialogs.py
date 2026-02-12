@@ -216,7 +216,7 @@ def show_about():
         dpg.add_text("Features:", color=COL_DIM)
         dpg.add_text("  - 4 channel polyphonic playback", color=COL_DIM)
         dpg.add_text("  - WAV sample import", color=COL_DIM)
-        dpg.add_text("  - Export to ASM/binary", color=COL_DIM)
+        dpg.add_text("  - Export to Atari binary (.xex)", color=COL_DIM)
         dpg.add_spacer(height=15)
         with dpg.group(horizontal=True):
             dpg.add_spacer(width=left_margin)

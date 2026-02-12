@@ -167,6 +167,15 @@ function Check-Dependencies {
         Write-Warn "samples\ directory not found (optional)"
     }
     
+    Write-Header "Checking MOD files..."
+    if (Test-Path "mods") {
+        $modCount = (Get-ChildItem -Path "mods" -Include "*.mod","*.MOD" -File).Count
+        Write-OK "mods\ directory found ($modCount files)"
+    }
+    else {
+        Write-Warn "mods\ directory not found (optional)"
+    }
+    
     Write-Host ""
     if ($missing.Count -gt 0) {
         Write-Host "============================================================" -ForegroundColor Red

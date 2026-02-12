@@ -149,6 +149,20 @@ def check_samples_directory():
         return False, 0
 
 
+def check_mods_directory():
+    """Check if mods directory exists with example MOD files."""
+    print("\nChecking MOD files...")
+
+    if os.path.isdir("mods"):
+        mods = [f for f in os.listdir("mods")
+                if f.lower().endswith('.mod')]
+        print(f"  Found mods/ directory with {len(mods)} MOD file(s)")
+        return True, len(mods)
+    else:
+        print("  mods/ directory not found (optional - example MOD files)")
+        return False, 0
+
+
 def clean_build():
     """Remove build artifacts."""
     print("Cleaning build directories...")
@@ -276,7 +290,16 @@ def create_distribution(exe_path: str):
     else:
         copied_items.append("  â—‹ samples/ (not found, skipped)")
     
-    # 5. Copy documentation files
+    # 5. Copy mods/ folder (OPTIONAL - example MOD files for import)
+    if os.path.isdir("mods"):
+        shutil.copytree("mods", os.path.join(release_dir, "mods"))
+        mod_count = len([f for f in os.listdir("mods")
+                        if f.lower().endswith('.mod')])
+        copied_items.append(f"  mods/ ({mod_count} example MOD file(s))")
+    else:
+        copied_items.append("  mods/ (not found, skipped)")
+    
+    # 6. Copy documentation files
     docs = [
         ("README.md", "Main documentation", True),
         ("UserGuide.md", "Detailed user guide", True),
@@ -356,6 +379,7 @@ Contents included:
   â€¢ asm/ folder (ASM templates for BUILD)
   â€¢ bin/ folder (MADS assembler for BUILD)
   â€¢ samples/ folder (example audio to get started)
+  • mods/ folder (example MOD files for import)
   â€¢ Documentation files
 
 Users do NOT need Python installed - everything is self-contained!
@@ -408,6 +432,7 @@ Examples:
     bin_ok = check_bin_directory()
     asm_ok = check_asm_directory()
     samples_ok, sample_count = check_samples_directory()
+    mods_ok, mod_count = check_mods_directory()
     
     if args.check:
         print("\n" + "=" * 60)
@@ -446,7 +471,7 @@ Examples:
         print("EXECUTABLE BUILD SUCCESSFUL!")
         print("=" * 60)
         print(f"\nExecutable: {exe_path}")
-        print("\nTo create a complete distribution folder with asm/, bin/, samples/:")
+        print("\nTo create a complete distribution folder with asm/, bin/, samples/, mods/:")
         print("  python build_release.py --dist")
     
     sys.exit(0)

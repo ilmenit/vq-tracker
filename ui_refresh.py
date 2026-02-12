@@ -168,6 +168,7 @@ def refresh_instruments():
     dpg.delete_item("instlist", children_only=True)
     
     from ui_theme import get_inst_theme
+    from vq_convert import format_size
     # Green background when user is USING converted samples, not just when converted
     is_converted = state.vq.use_converted
     
@@ -182,31 +183,141 @@ def refresh_instruments():
             dpg.add_text("  [Folder] - Load all WAVs from folder", color=(120, 120, 120))
             dpg.add_spacer(height=10)
     else:
+        # Get per-instrument sizes from VQ result (if available)
+        vq_result = state.vq.result if state.vq.converted else None
+        # Get optimize suggestions (if available)
+        opt_result = getattr(state, '_optimize_result', None)
+        
         for i, inst in enumerate(state.song.instruments):
             is_current = (i == state.instrument)
             theme = get_inst_theme(is_current, is_converted)
             
             with dpg.group(horizontal=True, parent="instlist"):
+                # Instrument number
                 dpg.add_text(f"{G.fmt(i)}", color=(100,100,110))
-                dpg.add_spacer(width=3)
+                dpg.add_spacer(width=2)
+                
+                # Preview button
                 if _preview_callback:
                     play_btn = dpg.add_button(label=">", width=22, height=20,
                                               callback=_preview_callback, user_data=i)
                     with dpg.tooltip(play_btn):
                         dpg.add_text("Preview sample")
-                dpg.add_spacer(width=3)
-                name = inst.name[:24] if inst.name else "(unnamed)"
+                
+                dpg.add_spacer(width=2)
+                
+                # VQ checkbox
+                cb_tag = f"inst_vq_cb_{i}"
+                dpg.add_checkbox(tag=cb_tag, label="", default_value=inst.use_vq,
+                                 callback=_on_vq_checkbox_change, user_data=i)
+                with dpg.tooltip(cb_tag):
+                    if inst.use_vq:
+                        dpg.add_text("VQ compressed", color=(200, 200, 100))
+                        dpg.add_text("Uncheck for RAW (better quality, more memory)")
+                    else:
+                        dpg.add_text("RAW (uncompressed)", color=(100, 200, 100))
+                        dpg.add_text("Check for VQ (smaller, lower quality)")
+                
+                # Optimize suggestion indicator (next to checkbox)
+                if opt_result and i < len(opt_result.analyses):
+                    a = opt_result.analyses[i]
+                    # Show whether current setting matches optimizer's suggestion
+                    matches = (inst.use_vq == (not a.suggest_raw))
+                    if a.suggest_raw:
+                        if matches:
+                            ind = dpg.add_text("R", color=(100, 255, 100))
+                        else:
+                            ind = dpg.add_text("R", color=(255, 100, 100))
+                        with dpg.tooltip(ind):
+                            dpg.add_text("Optimizer: RAW", color=(100, 255, 100))
+                            if not matches:
+                                dpg.add_text("(you overrode this)", color=(255, 200, 100))
+                            dpg.add_text(f"Reason: {a.reason}")
+                            dpg.add_text(f"RAW: {format_size(a.raw_size_aligned)}, VQ: {format_size(a.vq_size)}")
+                            if a.cpu_saving > 0.5:
+                                dpg.add_text(f"CPU saving: {a.cpu_saving:.1f} cyc/IRQ")
+                    else:
+                        if matches:
+                            ind = dpg.add_text("V", color=(200, 200, 100))
+                        else:
+                            ind = dpg.add_text("V", color=(255, 100, 100))
+                        with dpg.tooltip(ind):
+                            dpg.add_text("Optimizer: VQ", color=(200, 200, 100))
+                            if not matches:
+                                dpg.add_text("(you overrode this)", color=(255, 200, 100))
+                            dpg.add_text(f"Reason: {a.reason}")
+                            dpg.add_text(f"RAW: {format_size(a.raw_size_aligned)}, VQ: {format_size(a.vq_size)}")
+                
+                # Instrument name button (clickable to select)
+                name = inst.name[:20] if inst.name else "(unnamed)"
+                
+                # Build label with size info
+                size_str = ""
+                if vq_result and i < len(vq_result.inst_vq_sizes):
+                    if inst.use_vq:
+                        sz = vq_result.inst_vq_sizes[i]
+                        size_str = f" ({format_size(sz)})" if sz > 0 else ""
+                    else:
+                        # Show RAW size estimate (page-aligned)
+                        if inst.is_loaded():
+                            from optimize import compute_raw_size, compute_raw_size_aligned
+                            raw_sz = compute_raw_size(
+                                inst.processed_data if inst.processed_data is not None else inst.sample_data,
+                                inst.sample_rate, state.vq.settings.rate)
+                            raw_aligned = compute_raw_size_aligned(raw_sz)
+                            size_str = f" ({format_size(raw_aligned)})"
+                elif inst.is_loaded():
+                    # Before conversion: show estimated size
+                    from optimize import compute_raw_size, compute_raw_size_aligned, estimate_vq_size
+                    data = inst.processed_data if inst.processed_data is not None else inst.sample_data
+                    sr = inst.sample_rate
+                    rate = state.vq.settings.rate
+                    if inst.use_vq:
+                        est = estimate_vq_size(data, sr, rate, state.vq.settings.vector_size)
+                        size_str = f" (~{format_size(est)})"
+                    else:
+                        est = compute_raw_size_aligned(compute_raw_size(data, sr, rate))
+                        size_str = f" (~{format_size(est)})"
+                
+                label = f"{name}{size_str}"
+                
                 if _select_callback:
-                    btn = dpg.add_button(label=name, width=-1, height=20,
+                    btn = dpg.add_button(label=label, width=-1, height=20,
                                          callback=_select_callback, user_data=i)
                     with dpg.tooltip(btn):
-                        dpg.add_text("Click to select as current instrument")
+                        lines = [f"Click to select as current instrument"]
+                        if inst.is_loaded():
+                            dur = inst.duration()
+                            lines.append(f"Duration: {dur:.2f}s")
+                            lines.append(f"Mode: {'VQ' if inst.use_vq else 'RAW'}")
+                        for line in lines:
+                            dpg.add_text(line)
                     dpg.bind_item_theme(btn, theme)
     
     # Update VQ UI elements
     _update_vq_ui()
     
     refresh_all_instrument_combos()
+
+
+def _on_vq_checkbox_change(sender, app_data, user_data):
+    """Handle VQ checkbox toggle for an instrument."""
+    from ui_callbacks import invalidate_vq_conversion
+    inst_idx = user_data
+    if 0 <= inst_idx < len(state.song.instruments):
+        state.song.instruments[inst_idx].use_vq = app_data
+        # Changing VQ/RAW mode requires re-conversion because:
+        # - SAMPLE_DIR.asm pointers change (VQ_INDICES vs RAW_INST_XX labels)
+        # - SAMPLE_MODE flags change ($00 vs $FF)
+        # - RAW_SAMPLES.asm needs regeneration
+        # - VQ_BLOB format may change (size→speed forced by RAW instruments)
+        # Preserve optimize suggestions — they're still valid as reference
+        saved = getattr(state, '_optimize_result', None)
+        invalidate_vq_conversion()
+        state._optimize_result = saved
+        # Re-refresh with restored optimize result (invalidate already refreshed
+        # once but _optimize_result was None at that point)
+        refresh_instruments()
 
 
 def _update_vq_ui():
@@ -378,8 +489,8 @@ def update_controls():
         dpg.set_value("vq_smooth_combo", str(state.vq.settings.smoothness))
     if dpg.does_item_exist("vq_enhance_cb"):
         dpg.set_value("vq_enhance_cb", state.vq.settings.enhance)
-    if dpg.does_item_exist("vq_optimize_combo"):
-        dpg.set_value("vq_optimize_combo", "Speed" if state.vq.settings.optimize_speed else "Size")
+    if dpg.does_item_exist("vq_memory_limit_input"):
+        dpg.set_value("vq_memory_limit_input", state.vq.settings.memory_limit // 1024)
     
     G.update_title()
 

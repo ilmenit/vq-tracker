@@ -11,7 +11,6 @@
 ;   - Keyboard control: SPACE=play/stop, R=restart
 ;   - Optional volume control per note (VOLUME_CONTROL=1)
 ;   - Optional blank screen mode for max CPU (BLANK_SCREEN=1)
-;   - Two IRQ modes: speed or size optimized (OPTIMIZE_SPEED)
 ;
 ; ==========================================================================
 
@@ -52,6 +51,16 @@
     .ifndef ALGO_FIXED
         .error "song_player.asm requires ALGO_FIXED=1"
     .endif
+
+; ==========================================================================
+; SMC OPCODE CONSTANTS
+; ==========================================================================
+; Self-modifying code opcodes for the IRQ handler dispatch mechanism.
+; Defined here so they are available before the include of process_row.
+    OPCODE_BMI = $30            ; BMI: dispatch = no-pitch
+    OPCODE_BPL = $10            ; BPL: dispatch = has-pitch
+    OPCODE_BCS = $B0            ; BCS: VQ boundary hit (A >= MIN_VECTOR)
+    OPCODE_BEQ = $F0            ; BEQ: RAW boundary hit (A == 0, page wrap)
 
 ; ==========================================================================
 ; CODE START
@@ -459,20 +468,12 @@ nmi_stub:
 ; ==========================================================================
 ; INCLUDE IRQ HANDLER
 ; ==========================================================================
-.if OPTIMIZE_SPEED = 1
     icl "tracker/tracker_irq_speed.asm"
-.else
-    icl "tracker/tracker_irq_size.asm"
-.endif
 
 ; ==========================================================================
 ; INCLUDE DATA TABLES
 ; ==========================================================================
     icl "pitch/pitch_tables.asm"
-
-.if OPTIMIZE_SPEED = 0
-    icl "pitch/LUT_NIBBLES.asm"
-.endif
 
     icl "pitch/VOLUME_SCALE.asm"
 
@@ -480,11 +481,12 @@ nmi_stub:
 ; INCLUDE SONG AND SAMPLE DATA
 ; ==========================================================================
     icl "SONG_DATA.asm"
-    icl "SAMPLE_DIR.asm"
+    icl "SAMPLE_DIR.asm"        ; SAMPLE_START/END + SAMPLE_MODE tables
     icl "VQ_LO.asm"
     icl "VQ_HI.asm"
     icl "VQ_BLOB.asm"
     icl "VQ_INDICES.asm"
+    icl "RAW_SAMPLES.asm"       ; Page-aligned RAW AUDC data (may be empty)
 
 ; ==========================================================================
 ; STAGING AREA - Regular memory (used at row rate only, not IRQ rate)
@@ -498,6 +500,7 @@ prep0_end_lo:     .byte 0
 prep0_end_hi:     .byte 0
 prep0_vq_lo:      .byte 0
 prep0_vq_hi:      .byte 0
+prep0_mode:       .byte 0     ; 0=VQ, non-zero=RAW
 ; Channel 1 staging
 prep1_pitch_lo:   .byte 0
 prep1_pitch_hi:   .byte 0
@@ -507,6 +510,7 @@ prep1_end_lo:     .byte 0
 prep1_end_hi:     .byte 0
 prep1_vq_lo:      .byte 0
 prep1_vq_hi:      .byte 0
+prep1_mode:       .byte 0
 ; Channel 2 staging
 prep2_pitch_lo:   .byte 0
 prep2_pitch_hi:   .byte 0
@@ -516,6 +520,7 @@ prep2_end_lo:     .byte 0
 prep2_end_hi:     .byte 0
 prep2_vq_lo:      .byte 0
 prep2_vq_hi:      .byte 0
+prep2_mode:       .byte 0
 ; Channel 3 staging
 prep3_pitch_lo:   .byte 0
 prep3_pitch_hi:   .byte 0
@@ -525,6 +530,7 @@ prep3_end_lo:     .byte 0
 prep3_end_hi:     .byte 0
 prep3_vq_lo:      .byte 0
 prep3_vq_hi:      .byte 0
+prep3_mode:       .byte 0
 
 ; ==========================================================================
 ; VOLUME CONTROL VARIABLES (not in zero-page)

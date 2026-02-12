@@ -406,7 +406,6 @@ def try_load_last_project():
                 state.vq.settings.vector_size = editor_state.vq_vector_size
                 state.vq.settings.smoothness = editor_state.vq_smoothness
                 state.vq.settings.enhance = editor_state.vq_enhance
-                state.vq.settings.optimize_speed = editor_state.vq_optimize_speed
                 
                 # VQ output not loaded - will be regenerated
                 state.vq.invalidate()
@@ -530,6 +529,7 @@ def main():
     with dpg.handler_registry():
         dpg.add_key_press_handler(callback=handle_key)
         dpg.add_mouse_click_handler(callback=C.on_global_mouse_click)
+        dpg.add_mouse_wheel_handler(callback=C.on_mouse_wheel)
     
     # Viewport resize handler
     dpg.set_viewport_resize_callback(C.on_viewport_resize)

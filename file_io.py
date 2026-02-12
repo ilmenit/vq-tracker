@@ -145,7 +145,8 @@ except ImportError:
 from constants import (PROJECT_EXT, BINARY_EXT, DEFAULT_SPEED, DEFAULT_OCTAVE,
                        DEFAULT_STEP, MAX_VOLUME, MAX_CHANNELS, PAL_HZ, FOCUS_EDITOR,
                        NOTE_OFF, APP_VERSION, FORMAT_VERSION, VQ_RATE_DEFAULT,
-                       VQ_VECTOR_DEFAULT, VQ_SMOOTHNESS_DEFAULT)
+                       VQ_VECTOR_DEFAULT, VQ_SMOOTHNESS_DEFAULT,
+                       MEMORY_LIMIT_DEFAULT_KB)
 from data_model import Song, Instrument, Pattern, Row
 
 # =============================================================================
@@ -198,7 +199,7 @@ class EditorState:
     vq_vector_size: int = VQ_VECTOR_DEFAULT
     vq_smoothness: int = VQ_SMOOTHNESS_DEFAULT
     vq_enhance: bool = True
-    vq_optimize_speed: bool = True  # True=speed (full bytes), False=size (nibble-packed)
+    vq_memory_limit_kb: int = MEMORY_LIMIT_DEFAULT_KB  # Sample data memory budget in KB
     
     def to_dict(self) -> dict:
         return asdict(self)

@@ -125,7 +125,8 @@ def handle_key(sender, key):
     # ── Skip while typing in a text field ─────────────────────────────────
     if state.input_active:
         return
-    for tag in ("title_input", "author_input", "step_input", "ptn_len_input"):
+    for tag in ("title_input", "author_input", "step_input", "ptn_len_input",
+                "vq_memory_limit_input"):
         try:
             if dpg.does_item_exist(tag) and (dpg.is_item_active(tag) or dpg.is_item_focused(tag)):
                 return

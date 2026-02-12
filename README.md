@@ -6,8 +6,8 @@ A cross-platform music tracker for composing **sample-based music** targeting **
 
 ## Features
 
-- **3-channel polyphonic playback** using VQ-compressed samples
-- **3 octaves** (C-1 to B-3) with pitch control via 8.8 fixed-point multipliers
+- **4-channel polyphonic playback** using VQ-compressed samples
+- **5 octaves (3 visible + 2 sub-octaves for pitch correction)** (C-1 to B-3) with pitch control via 8.8 fixed-point multipliers
 - **Pattern-based sequencing** with variable-length event encoding
 - **Real-time audio preview** that closely matches Atari hardware output
 - **Export to Atari executable** (.XEX) via MADS assembler

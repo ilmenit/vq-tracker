@@ -10,8 +10,8 @@ import native_dialog
 from constants import MAX_VOLUME
 from state import state
 from file_io import (
-    save_project, load_project, export_asm, export_binary,
-    import_pokeyvq, EditorState,
+    save_project, load_project, export_binary,
+    EditorState,
 )
 from ops.base import ui, save_undo, fmt
 
@@ -145,7 +145,7 @@ def _restore_editor_state(editor_state: EditorState):
     state.vq.settings.vector_size = editor_state.vq_vector_size
     state.vq.settings.smoothness = editor_state.vq_smoothness
     state.vq.settings.enhance = editor_state.vq_enhance
-    state.vq.settings.optimize_speed = editor_state.vq_optimize_speed
+    state.vq.settings.memory_limit = editor_state.vq_memory_limit_kb * 1024
     state.vq.invalidate()
 
 
@@ -240,7 +240,7 @@ def _build_editor_state() -> EditorState:
         vq_vector_size=state.vq.vector_size,
         vq_smoothness=state.vq.smoothness,
         vq_enhance=state.vq.settings.enhance,
-        vq_optimize_speed=state.vq.settings.optimize_speed,
+        vq_memory_limit_kb=state.vq.settings.memory_limit // 1024,
     )
 
 
@@ -269,65 +269,97 @@ def _do_export_binary(path: str):
         ui.show_error("Export Error", msg)
 
 
-def export_asm_files(*args):
-    """Export to ASM files via native OS dialog."""
-    folder = native_dialog.pick_folder(
-        title="Export ASM - Select Output Folder",
-        start_dir=_project_start_dir(),
-    )
-    if folder:
-        _do_export_asm(folder)
-
-
-def _do_export_asm(path: str):
-    if not path:
-        return
-    ok, msg = export_asm(state.song, path)
-    if ok:
-        ui.show_status(msg)
-    else:
-        ui.show_error("Export Error", msg)
-
-
-def import_vq_converter(*args):
-    """Import vq_converter output (conversion_info.json) via native OS dialog."""
+def import_mod(*args):
+    """Import Amiga MOD file via native OS dialog."""
     paths = native_dialog.open_files(
-        title="Import vq_converter",
+        title="Import MOD File",
         start_dir=_project_start_dir(),
-        filters={"JSON Files": "json"},
+        filters={"MOD Files": "mod"},
         allow_multi=False,
     )
     if paths:
-        _do_import_vq_converter(paths[0])
+        _do_import_mod(paths[0])
 
 
-def _do_import_vq_converter(path: str):
+def _do_import_mod(path: str):
+    """Import a .MOD file, replacing the current song."""
     if not path:
         return
-
-    results, config, msg = import_pokeyvq(path)
-
-    if not results:
-        ui.show_error("Import Error", msg)
+    if not file_io.work_dir:
+        ui.show_error("Import Error", "Working directory not initialized")
         return
 
-    loaded = 0
-    save_undo("Import vq_converter")
-    for inst, ok, inst_msg in results:
-        if ok:
-            idx = state.song.add_instrument()
-            if idx >= 0:
-                state.song.instruments[idx] = inst
-                loaded += 1
-            else:
-                ui.show_error("Warning", "Maximum instruments reached")
-                break
+    from mod_import import import_mod_file
 
-    if loaded > 0:
-        state.song.modified = True
+    # Stop audio and close editors
+    state.audio.stop_playback()
+    try:
+        from sample_editor.ui_editor import close_editor
+        close_editor()
+    except Exception:
+        pass
+
+    # Import MOD — writes WAV samples to work_dir.samples
+    # Do NOT clear_all first: if import fails, old song's files stay intact.
+    # The new WAVs overwrite any same-numbered old files; leftovers are harmless.
+    song, import_log = import_mod_file(path, file_io.work_dir)
+    if song:
+        # Success — clear VQ/build (now invalid), adopt new song
+        file_io.work_dir.clear_vq_output()
+        file_io.work_dir.clear_build()
+        state.song = song
+        state.undo.clear()
+        _reset_editor_state()
+        state.selection.clear()
         state.vq.invalidate()
-        ui.refresh_instruments()
-        ui.refresh_all_instrument_combos()
         state.audio.set_song(state.song)
+        ui.refresh_all()
+        ui.update_title()
+        ui.show_status(import_log.summary_line())
+        logger.info(import_log.summary_line())
+        
+        # Auto-optimize RAW/VQ mode for imported instruments
+        _auto_optimize()
+    else:
+        ui.show_status("MOD import failed")
 
-    ui.show_status(msg)
+    # Show result window (both success and failure)
+    from ui_callbacks import show_mod_import_result
+    show_mod_import_result(import_log, success=song is not None)
+
+
+def _auto_optimize():
+    """Run RAW/VQ optimizer silently after import."""
+    from optimize import analyze_instruments
+    
+    if not state.song.instruments:
+        return
+    
+    loaded = [inst for inst in state.song.instruments if inst.is_loaded()]
+    if not loaded:
+        return
+    
+    result = analyze_instruments(
+        instruments=state.song.instruments,
+        target_rate=state.vq.settings.rate,
+        vector_size=state.vq.settings.vector_size,
+        memory_budget=state.vq.settings.memory_limit,
+        song=state.song,
+        volume_control=state.song.volume_control,
+        system_hz=state.song.system,
+    )
+    
+    n_changed = 0
+    for a in result.analyses:
+        if a.index < len(state.song.instruments):
+            inst = state.song.instruments[a.index]
+            new_use_vq = not a.suggest_raw
+            if inst.use_vq != new_use_vq:
+                inst.use_vq = new_use_vq
+                n_changed += 1
+    
+    state._optimize_result = result
+    
+    if n_changed > 0:
+        ui.refresh_instruments()
+        logger.info(f"Auto-optimize: {n_changed} instrument(s) set to RAW. {result.summary}")

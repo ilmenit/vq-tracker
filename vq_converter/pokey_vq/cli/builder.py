@@ -410,70 +410,148 @@ class PokeyVQBuilder:
         if self.args.enhance.lower() == 'on':
             print("    [ENHANCE] Applying Audio Enhancements...")
             
-            # 1. High-Pass Filter (50 Hz) - Gentle cleanup
-            print("      - High-Pass Filter (50 Hz)")
-            sos = scipy.signal.butter(2, 50, 'hp', fs=sr, output='sos')
-            audio = scipy.signal.sosfilt(sos, audio)
+            # Process each instrument INDEPENDENTLY for maximum dynamic range.
+            # Each sample should use the full [-1,1] range — the tracker's
+            # per-note volume (VOLUME_SCALE) handles relative loudness at playback.
+            # Global normalization would let loud instruments starve quiet ones
+            # of POKEY levels (only 16 levels available).
+            for b_idx, (b_start, b_end) in enumerate(self.sample_boundaries):
+                seg = audio[b_start:b_end].copy()
+                
+                # 1. High-Pass Filter (50 Hz) - remove DC offset and sub-bass rumble
+                if len(seg) > 12:  # need enough samples for filter
+                    sos = scipy.signal.butter(2, 50, 'hp', fs=sr, output='sos')
+                    seg = scipy.signal.sosfilt(sos, seg)
+                
+                # 2. Gain + Soft Limiter — boost quiet content, prevent clipping
+                input_gain_db = 6.0
+                linear_gain = 10 ** (input_gain_db / 20.0)
+                seg = seg * linear_gain
+                seg = np.tanh(seg)
+                
+                # 3. Per-instrument normalize to full range
+                max_val = np.max(np.abs(seg))
+                if max_val > 0:
+                    seg = seg / max_val
+                
+                audio[b_start:b_end] = seg
+            
+            print(f"      - Per-instrument: HP 50Hz + gain +6dB + tanh + normalize")
+            print(f"      - {len(self.sample_boundaries)} instruments enhanced independently")
 
-            # 2. Dynamic Range Compression / Soft Limiting
-            # Goal: Boost average volume (RMS) to compete with 8-bit noise floor,
-            # but prevent harsh clipping. 
-            print("      - Dynamic Range Compression (Gain + Soft Limiter)")
-            
-            # Boost gain significantly to bring up quiet details (guitar/vocals)
-            input_gain_db = 6.0 
-            linear_gain = 10 ** (input_gain_db / 20.0)
-            audio = audio * linear_gain
-            
-            # Soft Limiter (tanh)
-            # x_out = tanh(x_in)
-            # This "squashes" peaks smoothly instead of hard clipping.
-            audio = np.tanh(audio)
-            
-            # 3. Component Normalization
-            # Ensure we use full range -1.0 to 1.0
-            max_val = np.max(np.abs(audio))
-            if max_val > 0:
-                audio = audio / max_val
-            
-            print(f"      - Final Peak: {np.max(np.abs(audio)):.2f}")
+        # Store full merged audio for RAW sample generation
+        self._merged_audio = audio.copy()
+        self._merged_sr = sr
+        self._all_boundaries = list(self.sample_boundaries)
+        self._all_names = list(self.sample_names)
+
+        # --- Split VQ / RAW instruments ---
+        # VQ encoder should only train on VQ instruments to:
+        # 1. Produce a codebook optimized for VQ content only
+        # 2. Avoid wasting VQ_INDICES bytes on RAW instruments
+        # 3. Avoid wasting VQ_BLOB entries on vectors that only RAW audio needs
+        sample_modes = getattr(self.args, 'sample_modes', None) or []
+        has_any_raw = any(sample_modes[i] for i in range(min(len(sample_modes), len(self._all_boundaries))))
+        has_any_vq = any(not sample_modes[i] if i < len(sample_modes) else True
+                         for i in range(len(self._all_boundaries)))
+
+        if has_any_raw and has_any_vq:
+            # Mixed mode: extract VQ-only audio for encoding
+            vq_segments = []
+            vq_boundaries = []
+            vq_names = []
+            vq_orig_indices = []
+            vq_pos = 0
+
+            for i, (start, end) in enumerate(self._all_boundaries):
+                is_raw = i < len(sample_modes) and sample_modes[i]
+                if not is_raw:
+                    seg = audio[start:end]
+                    vq_boundaries.append((vq_pos, vq_pos + len(seg)))
+                    vq_segments.append(seg)
+                    vq_names.append(self._all_names[i] if i < len(self._all_names) else f"inst_{i}")
+                    vq_orig_indices.append(i)
+                    vq_pos += len(seg)
+
+            audio = np.concatenate(vq_segments)
+            self.sample_boundaries = vq_boundaries
+            self.sample_names = vq_names
+            self._vq_orig_indices = vq_orig_indices
+
+            n_vq = len(vq_orig_indices)
+            n_raw = len(self._all_boundaries) - n_vq
+            print(f"  > Split: {n_vq} VQ + {n_raw} RAW instruments")
+            print(f"    VQ audio: {len(audio)} samples ({len(audio)/sr:.2f}s)")
+            raw_total = sum(end - start for i, (start, end) in enumerate(self._all_boundaries)
+                           if i < len(sample_modes) and sample_modes[i])
+            print(f"    RAW audio: {raw_total} samples ({raw_total/sr:.2f}s) — excluded from VQ codebook")
+        elif has_any_raw and not has_any_vq:
+            # All RAW: no VQ encoding needed
+            self._vq_orig_indices = []
+            self.sample_boundaries = []
+            self.sample_names = []
+            print(f"  > All {len(self._all_boundaries)} instruments are RAW — skipping VQ encoding")
+        else:
+            # All VQ: no split needed (original behavior)
+            self._vq_orig_indices = list(range(len(self._all_boundaries)))
 
         # Use ACTUAL hardware rate for compression to avoid pitch shift
-        print(f"  > Running VQ Experiment (Rate={self.actual_rate:.2f}Hz, L={self.lambda_val:.5f}, Cb={self.args.codebook})")
-        if self.args.lbg:
-            print("    [LBG] Using Improved Codebook Initialization (K-Means++ / Splitting)")
-        
-        # Experiment Selection
-        if self.args.algo == 'raw':
-            print("    [RAW] Using Pure POKEY Stream (Uncompressed)")
-            encoder = RawEncoder(rate=self.actual_rate, dual=(self.args.channels == 2)) 
-            
-        else: # fixed
-            print("    [FIXED] Using Standard VQ")
-            encoder = VQEncoder(
-                rate=self.actual_rate,
-                min_len=self.args.min_vector, 
-                max_len=self.args.max_vector,
-                lambda_val=self.lambda_val, 
-                codebook_size=self.args.codebook,
-                max_iterations=self.args.iterations,
-                vq_alpha=self.alpha_val, 
-                constrained=(self.args.voltage.lower() == 'on'), 
-                lbg_init=self.args.lbg,
-                channels=self.args.channels,
-                sample_boundaries=self.sample_boundaries
-            )
-        
-        # Define export path
-        # RAW needs path to generate .raw intermediate. VQ uses manual export.
-        do_export_in_run = self.output_bin if self.args.algo == 'raw' else None
+        if not has_any_vq:
+            # ALL instruments are RAW — skip VQ encoding entirely
+            # Generate minimal VQ stubs so ASM includes don't break
+            codebook = [[0.0] * self.args.min_vector]  # 1 dummy vector
+            indices = np.array([], dtype=np.uint8)
+            size = 0
+            decoded = np.array([], dtype=np.float32)
+            elapsed = 0.0
+            encoder = None
 
-        # Run Encoder
-        is_fast_cpu = (self.args.optimize == 'speed')
+            print(f"  > Skipping VQ encoding (all instruments RAW)")
+            print(f"      - Exporting minimal VQ stubs...")
+            self._export_data(codebook, indices)
+
+        else:
+            print(f"  > Running VQ Experiment (Rate={self.actual_rate:.2f}Hz, L={self.lambda_val:.5f}, Cb={self.args.codebook})")
+            if self.args.lbg:
+                print("    [LBG] Using Improved Codebook Initialization (K-Means++ / Splitting)")
+            
+            # Experiment Selection
+            if self.args.algo == 'raw':
+                print("    [RAW] Using Pure POKEY Stream (Uncompressed)")
+                encoder = RawEncoder(rate=self.actual_rate, dual=(self.args.channels == 2)) 
+                
+            else: # fixed
+                print("    [FIXED] Using Standard VQ")
+                encoder = VQEncoder(
+                    rate=self.actual_rate,
+                    min_len=self.args.min_vector, 
+                    max_len=self.args.max_vector,
+                    lambda_val=self.lambda_val, 
+                    codebook_size=self.args.codebook,
+                    max_iterations=self.args.iterations,
+                    vq_alpha=self.alpha_val, 
+                    constrained=(self.args.voltage.lower() == 'on'), 
+                    lbg_init=self.args.lbg,
+                    channels=self.args.channels,
+                    sample_boundaries=self.sample_boundaries
+                )
+            
+            # Define export path
+            do_export_in_run = self.output_bin if self.args.algo == 'raw' else None
+
+            # Run Encoder (on VQ-only audio)
+            is_fast_cpu = (self.args.optimize == 'speed')
+            
+            result = encoder.run(audio, sr, bin_export_path=do_export_in_run, fast=is_fast_cpu)
         
-        result = encoder.run(audio, sr, bin_export_path=do_export_in_run, fast=is_fast_cpu)
+        # Default stats (overwritten in the fixed-VQ branch below)
+        duration = len(self._merged_audio) / sr
+        rmse = psnr = lsd = 0.0
         
-        if self.args.algo == 'raw':
+        if not has_any_vq:
+            # All-RAW path handled above — jump to end of compress
+            pass
+        elif self.args.algo == 'raw':
             size, decoded, elapsed, final_indices = result
             
             # Setup for WAV simulation
@@ -488,131 +566,128 @@ class PokeyVQBuilder:
                 self._export_raw_asm(raw_bytes)
                 print(f"      - Exported RAW ASM: {len(raw_bytes)} bytes")
             else:
-                 # RawEncoder might have saved to .bin?
-                 # Actually RawEncoder.run logic: if bin_export_path... write .bin, write .raw key
                  pass
         
         else:
             size, decoded, elapsed, codebook, indices = result
         
-            # FIXED MODE (Standard VQ)
-            # Export manually to ensure Single Channel Table/Packing is used
-            print(f"      - Exporting Fixed VQ Data...")
+            # FIXED MODE (Standard VQ) — VQ-only audio was encoded
+            print(f"      - Exporting Fixed VQ Data (VQ instruments only)...")
             self._export_data(codebook, indices)
 
-            # --- Calculate Stats for JSON ---
+            # --- Calculate Stats for VQ instruments only ---
             min_len = min(len(audio), len(decoded))
             rmse = calculate_rmse(audio[:min_len], decoded[:min_len])
             psnr = calculate_psnr(audio[:min_len], decoded[:min_len])
             lsd = calculate_lsd(audio[:min_len], decoded[:min_len], sr=sr)
-            duration = len(audio) / sr
-            bitrate = size * 8 / duration
-            
-            # --- Instrument Generation & Metadata ---
-            # If tracker mode or multi-sample, generate individual instrument WAVs and JSON
-            
-            # Use sample boundaries to split indices
-            # Re-calculate index boundaries (logic similar to mads_exporter)
-            index_boundaries = []
-            
-            if self.sample_boundaries:
-                curr_audio = 0
-                boundary_idx = 0
-                start_idx = 0
-                
-                # First sample starts at 0
-                
-                for i, cb_idx in enumerate(indices):
-                    vec_len = len(codebook[cb_idx])
-                    next_audio = curr_audio + vec_len
-                    
-                    if boundary_idx < len(self.sample_boundaries):
-                         _, b_end = self.sample_boundaries[boundary_idx]
-                         if next_audio >= b_end:
-                             # Segment found: start_idx to i+1
-                             index_boundaries.append((start_idx, i+1))
-                             start_idx = i + 1
-                             boundary_idx += 1
-                             
-                    curr_audio = next_audio
-                
-                # Catch trailing if any (though loop should cover it)
-                if start_idx < len(indices) and len(index_boundaries) < len(self.sample_boundaries):
-                    index_boundaries.append((start_idx, len(indices)))
-            else:
-                # Single sample
-                index_boundaries.append((0, len(indices)))
+            duration = len(self._merged_audio) / sr  # Total duration (all instruments)
+            vq_duration = len(audio) / sr  # VQ-only duration
+            bitrate = size * 8 / vq_duration if vq_duration > 0 else 0
 
-            # Generate Instruments
+        # --- Compute VQ index boundaries (common, outside if/elif/else) ---
+        # Maps VQ boundary index → (index_start, index_end) in VQ_INDICES
+        vq_index_boundaries = []
+        vq_boundary_for_orig = {}
+
+        if has_any_vq and self.args.algo != 'raw' and self.sample_boundaries:
+            curr_audio = 0
+            boundary_idx = 0
+            start_idx = 0
+            
+            for i, cb_idx in enumerate(indices):
+                vec_len = len(codebook[cb_idx])
+                next_audio = curr_audio + vec_len
+                
+                if boundary_idx < len(self.sample_boundaries):
+                     _, b_end = self.sample_boundaries[boundary_idx]
+                     if next_audio >= b_end:
+                         vq_index_boundaries.append((start_idx, i+1))
+                         start_idx = i + 1
+                         boundary_idx += 1
+                         
+                curr_audio = next_audio
+            
+            if start_idx < len(indices) and len(vq_index_boundaries) < len(self.sample_boundaries):
+                vq_index_boundaries.append((start_idx, len(indices)))
+            
+            for vq_idx, orig_idx in enumerate(self._vq_orig_indices):
+                if vq_idx < len(vq_index_boundaries):
+                    vq_boundary_for_orig[orig_idx] = vq_idx
+
+        # --- Generate Instrument Preview WAVs (ALL instruments, original order) ---
+        # Runs for all modes: all-VQ, mixed, and all-RAW
+        if self.is_multi_sample and self._all_boundaries:
             import json
             instruments_dir = os.path.join(self.output_subdir, "instruments")
             os.makedirs(instruments_dir, exist_ok=True)
-            
             converted_files_info = []
             
-            print(f"      - Generating Instruments in: {instruments_dir}")
+            n_total = len(self._all_boundaries)
+            print(f"      - Generating {n_total} instrument previews in: {instruments_dir}")
             
-            for i, (start, end) in enumerate(index_boundaries):
-                # Valid range?
-                if start >= end: continue
-                
-                # Slice indices
-                sub_indices = indices[start:end]
-                
-                # Simulate
-                # Use 48kHz for high quality simulation
-                sim_audio = encoder.simulate_hardware_glitch(codebook, sub_indices, self.pokey_div, target_sr=48000)
-                
-                fname = f"{i+1:03d}.wav"
+            from pokey_vq.encoders.raw import RawEncoder
+            from pokey_vq.core.pokey_table import POKEY_VOLTAGE_TABLE
+            
+            for orig_idx in range(n_total):
+                fname = f"{orig_idx+1:03d}.wav"
                 out_path = os.path.join(instruments_dir, fname)
+                orig_name = self._all_names[orig_idx] if orig_idx < len(self._all_names) else f"sample_{orig_idx}"
+                is_raw = orig_idx < len(sample_modes) and sample_modes[orig_idx]
                 
-                if sim_audio is not None:
-                     audio_int16 = (sim_audio * 32767).astype(np.int16)
-                     scipy.io.wavfile.write(out_path, 48000, audio_int16)
+                idx_start = 0
+                idx_end = 0
                 
-                # Info entry
-                orig_name = self.sample_names[i] if i < len(self.sample_names) else f"sample_{i}"
-                if self.is_multi_sample:
-                     # Attempt to find full path from input_files matching basename?
-                     # self.input_files are absolute paths.
-                     # self.sample_names are basenames.
-                     # Let's try to match index if mapping is 1:1
-                     # scan_directory_for_audio might reorder? merge_samples returns names.
-                     # logic in builder load loop:
-                     # self.input_files = [...] (Abs paths)
-                     # merge_samples(self.input_files...) -> returns sorted/merged
-                     # Currently merge_samples in helpers.py likely preserves order of input list if passed list.
-                     # But builder does: for f in found: append.
-                     # So self.input_files is the list.
-                     # If merge_samples respects that, 1:1 map holds.
-                     
-                     # However, scan_directory might return recursive list.
-                     # self.sample_names came from merge_samples.
-                     # Let's hope it's aligned.
-                     # Ideally we store full paths in sample_names?
-                     # merge_samples implementation: return names as basenames usually.
-                     pass
-
+                if is_raw:
+                    # RAW instrument: quantize audio → POKEY voltage levels → ZOH → WAV
+                    a_start, a_end = self._all_boundaries[orig_idx]
+                    segment = self._merged_audio[a_start:a_end]
+                    use_ns = self.actual_rate >= 6000
+                    vol_indices = RawEncoder.quantize(segment, POKEY_VOLTAGE_TABLE,
+                                                     noise_shaping=use_ns)
+                    # Reconstruct via ZOH (matching VQ preview and real hardware)
+                    table_norm = POKEY_VOLTAGE_TABLE / POKEY_VOLTAGE_TABLE[-1]
+                    quantized = table_norm[vol_indices]  # [0, 1] range
+                    
+                    POKEY_CLOCK = 1773447
+                    period_int = int(POKEY_CLOCK / self.actual_rate)
+                    high_res = np.repeat(quantized, period_int)
+                    n_48k = int(len(high_res) * 48000 / POKEY_CLOCK)
+                    if n_48k > 0:
+                        sim_audio = scipy.signal.resample(high_res, n_48k).astype(np.float32)
+                        sim_audio = (sim_audio - 0.5) * 2.0  # [0,1] → [-1,1]
+                        audio_int16 = (sim_audio * 32767).astype(np.int16)
+                        scipy.io.wavfile.write(out_path, 48000, audio_int16)
+                else:
+                    # VQ instrument: simulate from VQ indices
+                    if orig_idx in vq_boundary_for_orig and encoder is not None:
+                        vq_idx = vq_boundary_for_orig[orig_idx]
+                        start, end = vq_index_boundaries[vq_idx]
+                        idx_start = start
+                        idx_end = end
+                        if start < end:
+                            sub_indices = indices[start:end]
+                            sim_audio = encoder.simulate_hardware_glitch(
+                                codebook, sub_indices, self.pokey_div, target_sr=48000)
+                            if sim_audio is not None:
+                                audio_int16 = (sim_audio * 32767).astype(np.int16)
+                                scipy.io.wavfile.write(out_path, 48000, audio_int16)
+                
                 converted_files_info.append({
-                    "original_file": orig_name, # Just basename for display? Request said "full path names to samples"
-                    # But sample_names only has basenames from merge_samples.
-                    # We need to recover full path if possible. 
-                    # If single file -> self.input_files[0]
-                    # If multi from folder -> we have self.input_files list.
-                    # Assumptions: The order in sample_names matches self.input_files (if merge_samples processes linearly)
+                    "original_file": orig_name,
                     "instrument_file": os.path.abspath(out_path),
-                    "index_start": int(start),
-                    "index_end": int(end)
+                    "index_start": int(idx_start),
+                    "index_end": int(idx_end),
+                    "mode": "RAW" if is_raw else "VQ"
                 })
             
-            # Enhance converted_info with full paths if possible
+            # Enhance with full paths
             if len(self.input_files) == len(converted_files_info):
                  for j in range(len(converted_files_info)):
                      converted_files_info[j]["original_path"] = self.input_files[j]
             
             # Create JSON
-            # Recalculate bitrate using actual exported size
             actual_size = getattr(self, 'actual_data_size', size)
+            vq_dur = vq_duration if has_any_vq and self.args.algo != 'raw' else 0.0
             actual_bitrate = actual_size * 8 / duration if duration > 0 else 0
             
             json_data = {
@@ -633,12 +708,12 @@ class PokeyVQBuilder:
                     "psnr_db": round(float(psnr), 2),
                     "lsd": round(float(lsd), 4),
                     "duration_seconds": round(float(duration), 2),
+                    "vq_duration_seconds": round(float(vq_dur), 2),
                     "state": "success"
                 },
                 "samples": converted_files_info
             }
             
-            # Make stats available as instance attribute for API consumers
             self.stats = json_data["stats"]
             
             json_path = os.path.join(self.output_subdir, "conversion_info.json")
@@ -646,31 +721,32 @@ class PokeyVQBuilder:
                 json.dump(json_data, f, indent=4)
             print(f"      - Saved Metadata: {json_path}")
 
-        # Quality Metrics (Already calculated above)
-        # min_len = min(len(audio), len(decoded))
-        # rmse = calculate_rmse(audio[:min_len], decoded[:min_len])
-        # psnr = calculate_psnr(audio[:min_len], decoded[:min_len])
-        # lsd = calculate_lsd(audio[:min_len], decoded[:min_len], sr=sr)
-        # duration = len(audio) / sr
-        # bitrate = size * 8 / duration
-
-        # Use actual data size if available
+        # --- Final Stats ---
+        if not has_any_vq:
+            # All-RAW: no VQ stats
+            duration = len(self._merged_audio) / sr
+            size = 0
+            rmse = psnr = lsd = 0.0
+            elapsed = 0.0
+        
         actual_size = getattr(self, 'actual_data_size', size)
         actual_bitrate = actual_size * 8 / duration if duration > 0 else 0
         
         print(f"\n  > Compression Results:")
-        print(f"    Size:    {actual_size:,} bytes")
-        print(f"    Bitrate: {actual_bitrate:.0f} bps")
-        print(f"    RMSE:    {rmse:.4f}")
-        print(f"    PSNR:    {psnr:.2f} dB")
-        print(f"    LSD:     {lsd:.4f}")
-        print(f"    Time:    {elapsed:.2f}s")
+        print(f"    Sample Data: {actual_size:,} bytes")
+        if has_any_vq:
+            print(f"    Bitrate: {actual_bitrate:.0f} bps (VQ only)")
+            print(f"    RMSE:    {rmse:.4f}")
+            print(f"    PSNR:    {psnr:.2f} dB")
+            print(f"    LSD:     {lsd:.4f}")
+            print(f"    Time:    {elapsed:.2f}s")
+        else:
+            print(f"    (All instruments RAW — no VQ compression stats)")
         print(f"    Output:  {os.path.basename(self.output_bin)}")
         print(f"    ASM:     [Split Files Created]")
 
-        if self.wav_output_path:
+        if self.wav_output_path and encoder is not None:
             print(f"    WAV:     {os.path.basename(self.wav_output_path)} (Simulating POKEY Hardware Glitch at 48000 Hz)")
-            # Use 48kHz target for simulation
             simulated_audio = encoder.simulate_hardware_glitch(
                 codebook, indices, self.pokey_div, target_sr=48000
             ) 
@@ -972,12 +1048,18 @@ class PokeyVQBuilder:
             print(f"Error writing ASM: {e}")
             
     def _export_data(self, codebook, stream_indices):
-        """Manual export for VQ Data."""
+        """Export VQ data (codebook/indices) and mixed SAMPLE_DIR + RAW_SAMPLES.
+        
+        After the compress() refactor:
+        - codebook/stream_indices contain VQ-only data (RAW instruments excluded)
+        - self.sample_boundaries = VQ-only boundaries
+        - self._all_boundaries = ALL instrument boundaries (original ordering)
+        - self._vq_orig_indices = maps VQ boundary index → original instrument index
+        """
         exporter = MADSExporter()
         
         # Select Table
         if self.args.channels == 1:
-             # Single Channel: Non-linear 16-level table
              table = POKEY_VOLTAGE_TABLE
              map_full = None
         elif self.args.voltage.lower() == 'on' and 'POKEY_VOLTAGE_TABLE_FULL' in globals():
@@ -986,16 +1068,98 @@ class PokeyVQBuilder:
         else:
              table = POKEY_VOLTAGE_TABLE_DUAL
              map_full = None
+        # Tracker mode: store raw 0-15 volumes (saves AND #$0F in IRQ handler)
+        # Standalone mode: store $10|vol (AUDC-ready bytes)
+        is_tracker = getattr(self.args, 'tracker', False)
+        audc_prebake = not is_tracker
              
-        # Export and capture actual data size
-        self.actual_data_size = exporter.export(self.output_asm, codebook, stream_indices, table, map_full, fast=(self.args.fast or (self.args.optimize == 'speed')), channels=self.args.channels)
+        # Export VQ blob/indices/LO/HI (VQ-only data)
+        self.actual_data_size = exporter.export(
+            self.output_asm, codebook, stream_indices, table, map_full,
+            fast=(self.args.fast or (self.args.optimize == 'speed')),
+            channels=self.args.channels,
+            audc_prebake=audc_prebake)
 
-
+        # Export SAMPLE_DIR + RAW_SAMPLES for ALL instruments
+        all_boundaries = getattr(self, '_all_boundaries', self.sample_boundaries)
+        all_names = getattr(self, '_all_names', self.sample_names)
+        vq_orig_indices = getattr(self, '_vq_orig_indices', list(range(len(all_boundaries))))
+        sample_modes = getattr(self.args, 'sample_modes', None)
+        has_multi = (self.is_multi_sample or getattr(self.args, 'pitch', False)
+                     or getattr(self.args, 'tracker', False)
+                     or self.player_mode == 'vq_samples')
         
-        # Export Sample Directory if multi-sample mode OR pitch/tracker (which depend on it)
-        if (self.is_multi_sample or getattr(self.args, 'pitch', False) or getattr(self.args, 'tracker', False) or self.player_mode == 'vq_samples') and self.sample_boundaries:
-            exporter.export_sample_directory(self.output_asm, self.sample_boundaries, stream_indices, codebook, sample_names=self.sample_names)
-            print(f"      - Exported SAMPLE_DIR.asm ({len(self.sample_boundaries)} samples)")
+        if has_multi and all_boundaries:
+            raw_labels = {}
+
+            # Generate RAW AUDC data for RAW instruments
+            if sample_modes and any(m for m in sample_modes):
+                merged_audio = getattr(self, '_merged_audio', None)
+                if merged_audio is not None:
+                    # Noise shaping: effective when Nyquist >> audible band
+                    use_ns = self.actual_rate >= 6000
+                    raw_labels = exporter.export_raw_samples(
+                        self.output_asm, all_boundaries,
+                        merged_audio, sample_modes,
+                        sample_names=all_names,
+                        audc_prebake=audc_prebake,
+                        noise_shaping=use_ns)
+                    n_raw = sum(1 for m in sample_modes if m)
+                    total_pages = sum(info[2] for info in raw_labels.values())
+                    raw_data_bytes = total_pages * 256
+                    self.actual_data_size += raw_data_bytes
+                    ns_str = " [noise-shaped]" if use_ns else ""
+                    print(f"      - Exported RAW_SAMPLES.asm ({n_raw} RAW instruments, {total_pages} pages, {raw_data_bytes} bytes){ns_str}")
+
+            # Pre-compute VQ stream offsets for VQ instruments
+            # Walk VQ-only indices to find stream byte positions per VQ boundary
+            vq_stream_starts = []
+            vq_stream_ends = []
+            
+            if self.sample_boundaries and len(stream_indices) > 0:
+                curr_audio = 0
+                boundary_idx = 0
+                vq_stream_starts.append(0)
+                
+                for i, cb_idx in enumerate(stream_indices):
+                    vec_len = len(codebook[cb_idx])
+                    next_audio = curr_audio + vec_len
+                    
+                    while boundary_idx < len(self.sample_boundaries):
+                        _, b_end = self.sample_boundaries[boundary_idx]
+                        if next_audio >= b_end:
+                            vq_stream_ends.append(i + 1)
+                            if boundary_idx + 1 < len(self.sample_boundaries):
+                                vq_stream_starts.append(i + 1)
+                            boundary_idx += 1
+                        else:
+                            break
+                    curr_audio = next_audio
+                
+                if len(vq_stream_ends) < len(self.sample_boundaries):
+                    vq_stream_ends.append(len(stream_indices))
+            
+            # Build per-instrument addressing: {orig_idx: (stream_start, stream_end)}
+            vq_stream_map = {}
+            for vq_idx, orig_idx in enumerate(vq_orig_indices):
+                if vq_idx < len(vq_stream_starts) and vq_idx < len(vq_stream_ends):
+                    vq_stream_map[orig_idx] = (vq_stream_starts[vq_idx], vq_stream_ends[vq_idx])
+
+            exporter.export_sample_directory_mixed(
+                self.output_asm, len(all_boundaries),
+                vq_stream_map=vq_stream_map,
+                raw_labels=raw_labels,
+                sample_modes=sample_modes,
+                sample_names=all_names)
+            print(f"      - Exported SAMPLE_DIR.asm ({len(all_boundaries)} instruments: "
+                  f"{len(vq_stream_map)} VQ + {len(raw_labels)} RAW)")
+        
+        # Generate RAW_SAMPLES.asm stub if none generated
+        raw_samples_path = os.path.join(os.path.dirname(self.output_asm), "RAW_SAMPLES.asm")
+        if not os.path.exists(raw_samples_path):
+            with open(raw_samples_path, 'w') as f:
+                f.write("; RAW_SAMPLES.asm - Page-aligned raw AUDC data for RAW instruments\n")
+                f.write("; (Empty - all instruments use VQ compression)\n")
 
     def _generate_config(self, build_cwd):
         """Generate VQ_CFG.asm in the build directory."""
@@ -1047,7 +1211,7 @@ class PokeyVQBuilder:
         if self.args.algo == 'raw':
             artifacts = ["RAW_DATA.asm", "VQ_CFG.asm"]
         else:
-            artifacts = ["VQ_LENS.asm", "VQ_LO.asm", "VQ_HI.asm", "VQ_BLOB.asm", "VQ_INDICES.asm", "VQ_CFG.asm"]
+            artifacts = ["VQ_LENS.asm", "VQ_LO.asm", "VQ_HI.asm", "VQ_BLOB.asm", "VQ_INDICES.asm", "VQ_CFG.asm", "RAW_SAMPLES.asm"]
         
         if self.args.channels == 1 and not (self.args.fast or self.args.optimize == 'speed'):
             artifacts.append("LUT_NIBBLES.asm")

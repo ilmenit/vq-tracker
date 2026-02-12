@@ -6,9 +6,9 @@
 
 ### The Innovation
 
-Playing samples on an Atari isn't new. Various players have demonstrated single-channel sample playback at reasonable quality. But playing **three independent channels simultaneously**, each with **real-time pitch control**, on a **stock 64KB Atari without extended memory** â€” that's the challenge this project tackles.
+Playing samples on an Atari isn't new. Various players have demonstrated single-channel sample playback at reasonable quality. But playing **four independent channels simultaneously**, each with **real-time pitch control**, on a **stock 64KB Atari without extended memory** â€” that's the challenge this project tackles.
 
-The magic behind this is **Vector Quantization (VQ)** compression. Your audio samples are compressed into a codebook of small waveform patterns. Instead of storing every sample individually, we store indices into this codebook. The Atari's 1.77 MHz 6502 CPU then streams these patterns in real-time while handling pitch shifting across three independent channels.
+The magic behind this is **Vector Quantization (VQ)** compression. Your audio samples are compressed into a codebook of small waveform patterns. Instead of storing every sample individually, we store indices into this codebook. The Atari's 1.77 MHz 6502 CPU then streams these patterns in real-time while handling pitch shifting across four independent channels.
 
 ### The Technical Challenge
 
@@ -16,13 +16,13 @@ The PAL Atari 8-bit runs at approximately **1.77 MHz** (1,773,447 Hz) with about
 
 The CPU must output audio samples at rates of 4,000â€“8,000 Hz (or higher for better quality). At 5,278 Hz, that's over **100 IRQ interrupts per frame**. Each IRQ must:
 
-- Output 3 audio samples to POKEY registers (one per channel)
-- Advance 3 pitch accumulators using 8.8 fixed-point arithmetic
+- Output 4 audio samples to POKEY registers (one per channel)
+- Advance 4 pitch accumulators using 8.8 fixed-point arithmetic
 - Handle vector boundary crossings when the compressed stream advances
 - Optionally apply volume scaling
 - All within roughly 100-300 cycles depending on settings
 
-When all three channels cross a vector boundary simultaneously (worst case), the IRQ handler must fetch new codebook pointers for each channel. This is where careful optimization becomes critical.
+When all four channels cross a vector boundary simultaneously (worst case), the IRQ handler must fetch new codebook pointers for each channel. This is where careful optimization becomes critical.
 
 
 **Our key constraint:** Everything runs from the base 64KB RAM. No extended memory, no cartridge ROM, no bank switching. This keeps the player compatible with all Atari XL/XE machines but limits total sample storage to what fits alongside the player code, song data, and codebook.
@@ -131,7 +131,7 @@ The pattern editor works like a classic tracker:
 
 **Song Structure:**
 - **Patterns** contain sequences of notes for a single channel
-- **Songlines** define which pattern plays on each of the 3 channels
+- **Songlines** define which pattern plays on each of the 4 channels
 - Patterns can be reused across songlines and channels
 
 ### 4. Build & Run
@@ -267,7 +267,7 @@ Click a songline to edit its patterns. Use arrow keys to navigate. Press Enter o
 
 #### Pattern Editor (Center/Bottom)
 
-The main composition area showing three channel columns:
+The main composition area showing four channel columns:
 
 ```
 Row â”‚ CH1 [Ptn 00]  â”‚ CH2 [Ptn 01]  â”‚ CH3 [Ptn 02]  â”‚
@@ -312,12 +312,6 @@ Each cell shows:
 | **Vec** | 2-16 | Vector size for VQ compression. Smaller = sharper attacks, more CPU. |
 | **Smooth** | 0-100 | Anti-aliasing amount. Higher = smoother but softer transients. |
 | **Enhance** | 0-100 | High-frequency boost to compensate for compression. |
-
-**Optimize Mode:**
-| Mode | Description |
-|------|-------------|
-| **Speed** | Larger IRQ code, faster execution (~63 cycles typical) |
-| **Size** | Smaller IRQ code, slower execution (~83 cycles typical) |
 
 **Buttons:**
 | Button | Action |
@@ -398,6 +392,92 @@ Lower Row (current octave):
 | Ctrl + V | Paste at cursor |
 
 ---
+---
+
+## VQ vs RAW Sample Encoding
+
+Each instrument can use one of two encoding modes, selectable via the checkbox next to its name in the instrument list.
+
+### VQ (Vector Quantization) — Compressed
+
+VQ divides each audio sample into small windows (typically 8 samples each) and replaces each window with the closest match from a shared **codebook** of 256 learned waveform patterns. On the Atari, the IRQ handler reads a 1-byte index, looks up the corresponding 8-byte codebook vector, and streams those bytes to POKEY. This gives roughly **8:1 compression** (with vec_size=8), meaning more instruments fit in the 64 KB RAM.
+
+**Tradeoff:** The codebook lookup costs extra CPU cycles per sample. For projects with many simultaneous channels or high sample rates, this can push past the CPU budget.
+
+### RAW (Uncompressed 4-bit PCM)
+
+RAW stores each audio sample as a single byte (4-bit POKEY volume level, 0-15). No codebook lookup is needed — the IRQ handler reads one byte and writes it directly to POKEY. This is the fastest possible playback path.
+
+**Tradeoff:** RAW uses 8x more memory than VQ (for vec_size=8). A 300ms kick drum at 15 kHz takes ~4.5 KB in RAW vs ~0.6 KB in VQ indices.
+
+RAW mode also supports **noise shaping**: a technique that pushes quantization noise from audible low frequencies to less-audible high frequencies. This is automatically enabled at POKEY rates above 6 kHz, making 4-bit RAW samples sound cleaner than you'd expect.
+
+### When to Use Each
+
+| | VQ | RAW |
+|---|---|---|
+| **Memory** | Small (8:1 compression) | Large (1 byte/sample) |
+| **CPU cost** | Higher (codebook lookup) | Lower (direct read) |
+| **Best for** | Long pads, melodic lines | Short drums, percussive hits |
+
+In practice, the best approach is to use the **OPTIMIZE** button, which analyzes your specific song and instruments to find the optimal mix.
+
+---
+
+## The OPTIMIZE Button
+
+The **Optimize** button in the Instruments panel analyzes your project and recommends VQ or RAW mode for each instrument.
+
+### What It Does
+
+1. **Measures instrument sizes** — calculates how much memory each instrument needs in both VQ and RAW formats at the current sample rate and vector size.
+
+2. **Simulates playback** — walks through every row of your song to find the worst-case moment where the most channels are active simultaneously. This determines the true peak CPU load.
+
+3. **Finds the best mix** — tries switching instruments to RAW mode (starting with the shortest ones that save the most CPU) while staying within the memory limit. If switching an instrument to RAW eliminates CPU overruns, it recommends RAW.
+
+4. **Shows indicators** — after optimization, **V** (VQ) or **R** (RAW) letters appear next to each instrument. Green means the current checkbox matches the recommendation. Red means you've overridden it.
+
+### Tips
+
+- Run Optimize after changing the sample rate, vector size, or memory limit.
+- Run Optimize after adding or removing instruments.
+- MOD import runs Optimize automatically.
+- You can manually override any recommendation by toggling the checkbox — the V/R indicators stay visible so you can see what the optimizer suggested.
+
+---
+
+## Importing MOD Files
+
+The tracker can import standard 4-channel Amiga ProTracker **.MOD** files.
+
+### What Gets Imported
+
+- **Instruments**: Each MOD sample becomes an instrument. The audio is saved as WAV and the instrument's `base_note` is set to C-3 (matching MOD conventions where sample period 428 = C-3).
+
+- **Patterns**: All MOD patterns are converted to native tracker format. Notes are mapped to the 3-octave range (C-1 to B-3). Volume column values are converted from MOD's 0-64 range to the tracker's 0-15 range.
+
+- **Song arrangement**: The MOD's pattern order becomes songlines. Speed/tempo commands in patterns are converted to per-songline speed values.
+
+### After Import
+
+After a successful import, the **optimizer runs automatically**, analyzing all imported instruments and setting their VQ/RAW modes based on the song's CPU requirements. You can then adjust settings and click CONVERT to proceed with building.
+
+### Limitations
+
+- MOD effect commands (portamento, vibrato, arpeggio, etc.) are not supported — only note, instrument, volume, and speed changes are imported.
+- MOD samples with loops are not looped — they play once and stop.
+- Very long MOD samples may exceed memory limits; consider using a lower sample rate or trimming in the sample editor.
+
+---
+
+## Memory Limit
+
+The **Limit** field in the instruments panel sets the maximum memory budget for sample data on the Atari (default: 35 KB). This includes both VQ data (codebook + index streams) and RAW sample pages.
+
+The OPTIMIZE button respects this limit when deciding which instruments to encode as RAW. If you increase the limit, more instruments can use RAW mode (better CPU, more memory). If you decrease it, the optimizer prefers VQ to save space.
+
+The practical maximum depends on your song data and player code size, but 35 KB is a safe default for most projects on a stock 64 KB Atari.
 
 ## CPU Optimization Guide
 
@@ -429,14 +509,14 @@ Vector size affects attack sharpness and boundary crossing frequency:
 
 Smaller vectors preserve transients but cause more frequent boundary crossings where the CPU must fetch new codebook entries.
 
-### Optimize Mode
+### VQ/RAW Mode per Instrument
 
-| Mode | IRQ Code | Typical Cycles | Worst Case | Use When |
-|------|----------|----------------|------------|----------|
-| **Speed** | ~200 bytes | 63 cycles | 125 cycles | Default choice |
-| Size | ~150 bytes | 83 cycles | 145 cycles | RAM is tight |
+Each instrument can be set to VQ (compressed) or RAW (uncompressed). RAW saves CPU cycles but uses more memory. Use the **Optimize** button to find the best mix, or manually set modes via the checkboxes in the instrument list.
 
-Speed mode unrolls loops for faster execution. Size mode uses loops to save RAM.
+| Mode | IRQ Cycles/Channel | Memory per Sample | Best For |
+|------|-------------------|-------------------|----------|
+| **VQ** | ~30 (non-boundary) | ~1/8 of original | Long samples, melodic lines |
+| **RAW** | ~24 (non-boundary) | Full size (page-aligned) | Short drums, percussion |
 
 ### Song Options Impact
 
@@ -678,7 +758,7 @@ $C000-$FFFF  OS ROM / hardware
 
 **Beta 1** (Current)
 - Initial public release
-- 3-channel polyphonic playback with pitch control
+- 4-channel polyphonic playback with pitch control
 - VQ compression with adjustable parameters
 - Pattern-based song editor
 - One-click build and run

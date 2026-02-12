@@ -17,8 +17,14 @@ logger = logging.getLogger("tracker.ops.editing")
 # =============================================================================
 
 def enter_note(semitone: int):
-    """Enter note at cursor. If cell was empty, stamp full brush (note+inst+vol).
-    If cell had existing note, only change the note."""
+    """Enter note at cursor.
+    
+    Coupled mode (default): always stamp note + instrument + volume.
+    Uncoupled mode: if cell had existing note, only change the note.
+    Empty cells always get the full stamp regardless of mode.
+    """
+    import ui_globals as G
+    
     note = (state.octave - 1) * 12 + semitone + 1
     if not (1 <= note <= MAX_NOTES):
         return
@@ -37,14 +43,17 @@ def enter_note(semitone: int):
     was_empty = (row.note == 0)
     row.note = note
 
-    # If cell was empty, stamp full brush (instrument + volume)
-    if was_empty:
+    # Stamp instrument + volume when:
+    # - Cell was empty (always), OR
+    # - Coupled mode is ON (classic tracker behavior)
+    if was_empty or G.coupled_entry:
         row.instrument = state.instrument
         row.volume = state.volume
 
-    # Preview note
-    if state.instrument < len(state.song.instruments):
-        inst = state.song.instruments[state.instrument]
+    # Preview note using the instrument that's actually on the row
+    preview_inst_idx = row.instrument
+    if preview_inst_idx < len(state.song.instruments):
+        inst = state.song.instruments[preview_inst_idx]
         if inst.is_loaded():
             state.audio.preview_note(state.channel, note, inst, row.volume)
 
@@ -202,6 +211,8 @@ def enter_digit_decimal(d: int):
 
 def set_cell_note(row: int, channel: int, note: int):
     """Set note at specific cell."""
+    import ui_globals as G
+    
     ptns = state.get_patterns()
     ptn = state.song.get_pattern(ptns[channel])
     if 0 <= row < ptn.length:
@@ -209,7 +220,7 @@ def set_cell_note(row: int, channel: int, note: int):
         cell = ptn.get_row(row)
         was_empty = (cell.note == 0)
         cell.note = note
-        if was_empty and note > 0:
+        if note > 0 and (was_empty or G.coupled_entry):
             cell.instrument = state.instrument
             cell.volume = state.volume
         state.song.modified = True
