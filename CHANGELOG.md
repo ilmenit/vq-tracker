@@ -52,6 +52,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **Simplified menus**: Removed "Import vq_converter..." and "Export .ASM..."
   menu items. The tracker workflow is now: compose → convert → build (.xex).
 
+- **Native File and Folder Selectors**: Removed ugly and non-intuitive custom
+  selectors. Now application is using system native selectors.
+
 ---
 
 ## [Beta 2] - 2025-02
