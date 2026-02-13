@@ -11,7 +11,6 @@ import sys
 import threading
 import queue
 import logging
-import io
 from contextlib import redirect_stdout, redirect_stderr
 from typing import Optional, List
 from dataclasses import dataclass, field
@@ -252,6 +251,31 @@ class VQConverter:
     def _queue_output(self, text: str):
         self.vq_state.output_queue.put(text)
     
+    def _make_stream(self):
+        """Create a file-like stream that queues output lines in real-time."""
+        q = self.vq_state.output_queue
+
+        class _QueueWriter:
+            """File-like object that sends each line to a Queue immediately."""
+            def __init__(self):
+                self._buf = ""
+
+            def write(self, text):
+                if not text:
+                    return 0
+                self._buf += text
+                while "\n" in self._buf:
+                    line, self._buf = self._buf.split("\n", 1)
+                    q.put(line + "\n")
+                return len(text)
+
+            def flush(self):
+                if self._buf:
+                    q.put(self._buf)
+                    self._buf = ""
+
+        return _QueueWriter()
+    
     def convert(self, input_files: List[str], sample_modes: Optional[List[int]] = None):
         """Start VQ conversion in a background thread.
         
@@ -356,13 +380,13 @@ class VQConverter:
                 sample_modes=self._sample_modes,
             )
             
-            # Capture builder's stdout/stderr
-            output_buffer = io.StringIO()
+            # Stream builder's stdout/stderr to the UI in real-time
+            stream = self._make_stream()
             return_code = 1
             builder = None
             
             try:
-                with redirect_stdout(output_buffer), redirect_stderr(output_buffer):
+                with redirect_stdout(stream), redirect_stderr(stream):
                     builder = PokeyVQBuilder(args)
                     return_code = builder.run()
             except SystemExit as e:
@@ -377,11 +401,7 @@ class VQConverter:
                 result.error_message = str(e)
                 return_code = 1
             finally:
-                captured = output_buffer.getvalue()
-                if captured:
-                    for line in captured.split('\n'):
-                        if line:
-                            self._queue_output(line + '\n')
+                stream.flush()
             
             if return_code != 0:
                 result.success = False

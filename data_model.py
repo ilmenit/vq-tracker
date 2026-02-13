@@ -4,7 +4,7 @@ from typing import List, Optional
 import numpy as np
 from constants import (MAX_CHANNELS, MAX_PATTERNS, MAX_ROWS, MAX_INSTRUMENTS,
                        MAX_SONGLINES, MAX_VOLUME, DEFAULT_SPEED, DEFAULT_LENGTH,
-                       PAL_HZ, MAX_NOTES, NOTE_OFF, FORMAT_VERSION,
+                       PAL_HZ, MAX_NOTES, NOTE_OFF, VOL_CHANGE, FORMAT_VERSION,
                        DEFAULT_START_ADDRESS, DEFAULT_MEMORY_CONFIG)
 from sample_editor.commands import SampleCommand
 
@@ -31,8 +31,8 @@ class Row:
         inst = d.get('i', 0)
         vol = d.get('v', MAX_VOLUME)
         # Clamp to valid ranges
-        # Note: NOTE_OFF (255) must be allowed through
-        if note != NOTE_OFF:
+        # Note: NOTE_OFF (255) and VOL_CHANGE (254) must be allowed through
+        if note not in (NOTE_OFF, VOL_CHANGE):
             note = max(0, min(MAX_NOTES, note))
         inst = max(0, min(MAX_INSTRUMENTS - 1, inst))  # 0-127
         vol = max(0, min(MAX_VOLUME, vol))
@@ -75,7 +75,7 @@ class Pattern:
     
     def transpose(self, semitones: int):
         for row in self.rows:
-            if row.note > 0 and row.note != NOTE_OFF:
+            if row.note > 0 and row.note not in (NOTE_OFF, VOL_CHANGE):
                 new_note = row.note + semitones
                 if 1 <= new_note <= MAX_NOTES:
                     row.note = new_note
@@ -245,7 +245,7 @@ class Song:
         for ptn_idx in patterns_in_use:
             pat = self.get_pattern(ptn_idx)
             for row in pat.rows[:pat.length]:
-                if row.note > 0 and row.note != NOTE_OFF:
+                if row.note > 0 and row.note not in (NOTE_OFF, VOL_CHANGE):
                     used.add(row.instrument)
         return used
     

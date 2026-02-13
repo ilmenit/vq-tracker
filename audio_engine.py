@@ -173,7 +173,7 @@ class AudioEngine:
         """Trigger notes for current row."""
         if not self.song:
             return
-        from constants import NOTE_OFF
+        from constants import NOTE_OFF, VOL_CHANGE
         for ch_idx in range(MAX_CHANNELS):
             if ch_idx >= len(self.patterns):
                 continue
@@ -182,6 +182,9 @@ class AudioEngine:
             if row.note == NOTE_OFF:
                 # Note-off: silence the channel
                 self.channels[ch_idx].active = False
+            elif row.note == VOL_CHANGE:
+                # Volume change only — no retrigger
+                self.channels[ch_idx].volume = row.volume
             elif row.note > 0:
                 inst = self.song.get_instrument(row.instrument)
                 if inst and inst.is_loaded():
@@ -338,13 +341,15 @@ class AudioEngine:
         with self.lock:
             if not song or songline >= len(song.songlines):
                 return
-            from constants import NOTE_OFF
+            from constants import NOTE_OFF, VOL_CHANGE
             sl = song.songlines[songline]
             for ch_idx in range(MAX_CHANNELS):
                 ptn = song.get_pattern(sl.patterns[ch_idx])
                 r = ptn.get_row_wrapped(row)
                 if r.note == NOTE_OFF:
                     self.channels[ch_idx].active = False
+                elif r.note == VOL_CHANGE:
+                    self.channels[ch_idx].volume = r.volume
                 elif r.note > 0:
                     inst = song.get_instrument(r.instrument)
                     if inst and inst.is_loaded():

@@ -304,6 +304,14 @@ def create_themes():
             dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (70, 85, 70))
             dpg.add_theme_color(dpg.mvThemeCol_Text, (150, 160, 150))
 
+    # Effects indicator - active (has effects)
+    with dpg.theme(tag="theme_fx_active"):
+        with dpg.theme_component(dpg.mvButton):
+            dpg.add_theme_color(dpg.mvThemeCol_Button, (35, 55, 80))
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (45, 70, 100))
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (55, 85, 120))
+            dpg.add_theme_color(dpg.mvThemeCol_Text, (160, 200, 255))
+
 
 def get_inst_theme(is_selected: bool, is_converted: bool) -> str:
     """Get theme for instrument button."""

@@ -439,6 +439,15 @@ def analyze_instruments(instruments, target_rate: int, vector_size: int,
             a.reason = "unused in song"
 
         if inst.is_loaded():
+            # Get effects-processed audio (Sustain, trim, etc.)
+            # processed_data is a lazy cache — may be None after effect edits
+            if inst.effects and inst.processed_data is None:
+                try:
+                    from sample_editor.pipeline import run_pipeline
+                    inst.processed_data = run_pipeline(
+                        inst.sample_data, inst.sample_rate, inst.effects)
+                except Exception:
+                    pass  # Fall back to raw sample_data below
             data = (inst.processed_data if inst.processed_data is not None
                     else inst.sample_data)
             sr = inst.sample_rate

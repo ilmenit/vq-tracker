@@ -8,6 +8,8 @@
 ; Phase 1 (PREPARE): IRQ enabled. Lookup pitch, sample pointers, and
 ;   first codebook vector (VQ) or raw start address (RAW).
 ; Phase 2 (COMMIT): Three sub-phases to avoid long IRQ blackouts:
+
+VOL_CHANGE_ASM = 61  ; volume-only event marker (no retrigger)
 ;   2A: Deactivate triggered channels (no SEI, atomic writes)
 ;   2B: Setup all variables (IRQs enabled, safe while channels inactive)
 ;   2C: Activate channels (brief SEI, ~40 cycles max)
@@ -76,7 +78,21 @@
     jmp @prep_done_0
 @prep_active_0:
     lda evt_note
-    bne @prep_note_0
+    beq @vol_skip_0           ; note=0 → skip
+    cmp #VOL_CHANGE_ASM          ; volume-only event?
+    bne @prep_note_0          ; no → normal note
+    ; Volume-only: update vol_shift, clear trigger (keep channel playing)
+.if VOLUME_CONTROL = 1
+    lda evt_vol
+    asl
+    asl
+    asl
+    asl
+    sta trk0_vol_shift
+.endif
+    lda #0
+    sta evt_trigger      ; prevent deactivate/reactivate
+@vol_skip_0:
     jmp @prep_done_0
 @prep_note_0:
     
@@ -162,7 +178,21 @@
     jmp @prep_done_1
 @prep_active_1:
     lda evt_note+1
-    bne @prep_note_1
+    beq @vol_skip_1           ; note=0 → skip
+    cmp #VOL_CHANGE_ASM          ; volume-only event?
+    bne @prep_note_1          ; no → normal note
+    ; Volume-only: update vol_shift, clear trigger (keep channel playing)
+.if VOLUME_CONTROL = 1
+    lda evt_vol+1
+    asl
+    asl
+    asl
+    asl
+    sta trk1_vol_shift
+.endif
+    lda #0
+    sta evt_trigger+1      ; prevent deactivate/reactivate
+@vol_skip_1:
     jmp @prep_done_1
 @prep_note_1:
     
@@ -246,7 +276,21 @@
     jmp @prep_done_2
 @prep_active_2:
     lda evt_note+2
-    bne @prep_note_2
+    beq @vol_skip_2           ; note=0 → skip
+    cmp #VOL_CHANGE_ASM          ; volume-only event?
+    bne @prep_note_2          ; no → normal note
+    ; Volume-only: update vol_shift, clear trigger (keep channel playing)
+.if VOLUME_CONTROL = 1
+    lda evt_vol+2
+    asl
+    asl
+    asl
+    asl
+    sta trk2_vol_shift
+.endif
+    lda #0
+    sta evt_trigger+2      ; prevent deactivate/reactivate
+@vol_skip_2:
     jmp @prep_done_2
 @prep_note_2:
     
@@ -330,7 +374,21 @@
     jmp @prep_done_3
 @prep_active_3:
     lda evt_note+3
-    bne @prep_note_3
+    beq @vol_skip_3           ; note=0 → skip
+    cmp #VOL_CHANGE_ASM          ; volume-only event?
+    bne @prep_note_3          ; no → normal note
+    ; Volume-only: update vol_shift, clear trigger (keep channel playing)
+.if VOLUME_CONTROL = 1
+    lda evt_vol+3
+    asl
+    asl
+    asl
+    asl
+    sta trk3_vol_shift
+.endif
+    lda #0
+    sta evt_trigger+3      ; prevent deactivate/reactivate
+@vol_skip_3:
     jmp @prep_done_3
 @prep_note_3:
     

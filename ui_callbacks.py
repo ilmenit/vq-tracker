@@ -245,6 +245,14 @@ def preview_instrument(sender, app_data, user_data):
             G.show_status(f"Instrument not loaded")
 
 
+def effects_inst_click(sender, app_data, user_data):
+    """Click on effects [E] button — select instrument and open sample editor."""
+    idx = user_data
+    state.instrument = idx
+    R.refresh_instruments()
+    on_edit_instrument()
+
+
 # =============================================================================
 # EDITOR CLICK HANDLERS
 # =============================================================================
@@ -870,7 +878,7 @@ def _do_replace_instrument(*args):
             return
         patterns = [ptn_idx]
 
-    from constants import NOTE_OFF
+    from constants import NOTE_OFF, VOL_CHANGE
 
     # Scan first to count matches before committing undo
     matches = []
@@ -879,7 +887,7 @@ def _do_replace_instrument(*args):
         for row in ptn.rows:
             if (row.instrument == from_idx
                     and row.note > 0
-                    and row.note != NOTE_OFF):
+                    and row.note not in (NOTE_OFF, VOL_CHANGE)):
                 matches.append(row)
 
     if not matches:
@@ -1054,7 +1062,7 @@ def on_global_mouse_click(sender, app_data):
     # Check song panel - just set focus, don't change row (buttons handle that)
     if dpg.does_item_exist("song_panel"):
         try:
-            pos = dpg.get_item_pos("song_panel")
+            pos = dpg.get_item_rect_min("song_panel")
             rect = dpg.get_item_rect_size("song_panel")
             if pos and rect:
                 if (pos[0] <= mouse_pos[0] <= pos[0] + rect[0] and
@@ -1069,7 +1077,7 @@ def on_global_mouse_click(sender, app_data):
     # Check editor panel - just set focus, don't change row (buttons handle that)
     if dpg.does_item_exist("editor_panel"):
         try:
-            pos = dpg.get_item_pos("editor_panel")
+            pos = dpg.get_item_rect_min("editor_panel")
             rect = dpg.get_item_rect_size("editor_panel")
             if pos and rect:
                 if (pos[0] <= mouse_pos[0] <= pos[0] + rect[0] and
@@ -1084,7 +1092,7 @@ def on_global_mouse_click(sender, app_data):
     # Check instruments panel
     if dpg.does_item_exist("inst_panel"):
         try:
-            pos = dpg.get_item_pos("inst_panel")
+            pos = dpg.get_item_rect_min("inst_panel")
             rect = dpg.get_item_rect_size("inst_panel")
             if pos and rect:
                 if (pos[0] <= mouse_pos[0] <= pos[0] + rect[0] and
@@ -1100,7 +1108,7 @@ def _is_mouse_over(panel_tag):
     if not dpg.does_item_exist(panel_tag):
         return False
     try:
-        pos = dpg.get_item_pos(panel_tag)
+        pos = dpg.get_item_rect_min(panel_tag)
         rect = dpg.get_item_rect_size(panel_tag)
         if not pos or not rect:
             return False
@@ -1334,7 +1342,9 @@ def calculate_visible_rows() -> int:
     """Calculate how many rows fit in the editor based on window height."""
     try:
         vp_height = dpg.get_viewport_height()
-        fixed_height = G.TOP_PANEL_HEIGHT + G.INPUT_ROW_HEIGHT + G.EDITOR_HEADER_HEIGHT + 60
+        # New layout: menu + CURRENT row + editor (full height) + status bar
+        # No TOP_PANEL_HEIGHT above the editor anymore
+        fixed_height = G.INPUT_ROW_HEIGHT + G.EDITOR_HEADER_HEIGHT + 60
         available = vp_height - fixed_height
         rows = available // ROW_HEIGHT - 4
         rows = max(1, min(G.MAX_VISIBLE_ROWS, rows))
@@ -1809,7 +1819,103 @@ def on_vq_convert_click(sender, app_data):
 # MOD IMPORT RESULT WINDOW
 # =============================================================================
 
+_MOD_OPTIONS_DLG = "mod_import_options"
 _MOD_IMPORT_DLG = "mod_import_result"
+
+
+def show_mod_import_options(path: str, features: dict):
+    """Show pre-import options dialog for MOD files."""
+    import dearpygui.dearpygui as dpg
+
+    if dpg.does_item_exist(_MOD_OPTIONS_DLG):
+        dpg.delete_item(_MOD_OPTIONS_DLG)
+
+    state.set_input_active(True)
+
+    vp_w = dpg.get_viewport_width()
+    vp_h = dpg.get_viewport_height()
+    w, h = 520, 330
+
+    title = features.get('title', os.path.basename(path))
+    vol_count = features.get('vol_slide_count', 0) + features.get('vol_set_count', 0)
+    loop_count = features.get('loop_count', 0)
+
+    def on_close():
+        state.set_input_active(False)
+        if dpg.does_item_exist(_MOD_OPTIONS_DLG):
+            dpg.delete_item(_MOD_OPTIONS_DLG)
+
+    def on_import():
+        options = {
+            'volume_control': dpg.get_value(f"{_MOD_OPTIONS_DLG}_vol"),
+            'extend_loops': dpg.get_value(f"{_MOD_OPTIONS_DLG}_loop"),
+        }
+        on_close()
+        from ops.file_ops import _do_import_mod
+        _do_import_mod(path, options)
+
+    with dpg.window(tag=_MOD_OPTIONS_DLG, label=f"Import: {title}",
+                    modal=True, width=w, height=h,
+                    pos=[(vp_w - w) // 2, (vp_h - h) // 2],
+                    no_resize=True, no_collapse=True, on_close=on_close):
+
+        dpg.add_text(f"Importing: {os.path.basename(path)}")
+        dpg.add_separator()
+        dpg.add_spacer(height=8)
+
+        # Volume control option
+        vol_default = vol_count > 0
+        dpg.add_checkbox(
+            tag=f"{_MOD_OPTIONS_DLG}_vol",
+            label="Enable per-row volume control",
+            default_value=vol_default,
+        )
+        if vol_count > 0:
+            dpg.add_text(
+                f"    {vol_count} volume effect(s) detected. Enables "
+                f"VOLUME_CONTROL in the",
+                color=(180, 180, 180))
+            dpg.add_text(
+                f"    ASM player (+2 cycles/ch/IRQ) and imports volume "
+                f"slide/set events.",
+                color=(180, 180, 180))
+        else:
+            dpg.add_text(
+                "    No volume effects detected. Can still be enabled "
+                "for manual use.",
+                color=(140, 140, 140))
+
+        dpg.add_spacer(height=8)
+
+        # Loop extension option
+        loop_default = loop_count > 0
+        dpg.add_checkbox(
+            tag=f"{_MOD_OPTIONS_DLG}_loop",
+            label="Extend looped instruments",
+            default_value=loop_default,
+        )
+        if loop_count > 0:
+            dpg.add_text(
+                f"    {loop_count} looped sample(s) detected. Unrolls loop "
+                f"regions using",
+                color=(180, 180, 180))
+            dpg.add_text(
+                f"    the Sustain effect so instruments play for their full "
+                f"duration.",
+                color=(180, 180, 180))
+        else:
+            dpg.add_text(
+                "    No looped samples detected.",
+                color=(140, 140, 140))
+
+        dpg.add_spacer(height=15)
+        dpg.add_separator()
+        dpg.add_spacer(height=8)
+
+        with dpg.group(horizontal=True):
+            dpg.add_spacer(width=280)
+            dpg.add_button(label="Import", width=100, callback=on_import)
+            dpg.add_button(label="Cancel", width=100, callback=on_close)
 
 
 def show_mod_import_result(import_log, success: bool):
@@ -1974,6 +2080,13 @@ def poll_vq_conversion():
                 from optimize import compute_raw_size
                 for inst in state.song.instruments:
                     if inst.is_loaded():
+                        if inst.effects and inst.processed_data is None:
+                            try:
+                                from sample_editor.pipeline import run_pipeline
+                                inst.processed_data = run_pipeline(
+                                    inst.sample_data, inst.sample_rate, inst.effects)
+                            except Exception:
+                                pass
                         data = inst.processed_data if inst.processed_data is not None else inst.sample_data
                         raw_sz = compute_raw_size(data, inst.sample_rate,
                                                   state.vq.settings.rate)

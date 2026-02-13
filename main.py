@@ -506,7 +506,7 @@ def main():
     logger.debug(f"Key config: {len(kc.bindings)} bindings from {kc.source}")
     
     # Initialize modules with cross-references
-    R.set_instrument_callbacks(C.preview_instrument, C.select_inst_click)
+    R.set_instrument_callbacks(C.preview_instrument, C.select_inst_click, C.effects_inst_click)
     C.init_callbacks(B.rebuild_editor_grid, B.show_confirm_centered)
     
     # Build UI

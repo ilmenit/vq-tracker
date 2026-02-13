@@ -27,7 +27,7 @@ from ops.file_ops import (
 )
 
 from ops.editing import (
-    enter_note, enter_note_off, clear_cell, clear_row, clear_and_up,
+    enter_note, enter_note_off, enter_vol_change, clear_cell, clear_row, clear_and_up,
     insert_row, delete_row, enter_digit, enter_digit_decimal,
     copy_cells, cut_cells, paste_cells,
     undo, redo,

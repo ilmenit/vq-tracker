@@ -283,6 +283,7 @@ def show_shortcuts():
         dpg.add_text("  Z-M, Q-P         Piano keys (2 octaves)")
         dpg.add_text("  2,3,5,6,7,9,0    Sharp notes (piano mode)")
         dpg.add_text("  ` (backtick)     Note OFF (silence)")
+        dpg.add_text("  ~ (tilde)        Volume change (V--)")
         dpg.add_text("  1                Note OFF (tracker mode)")
         dpg.add_text("  0-9, A-F         Hex mode: inst/vol")
         dpg.add_text("  Delete           Delete row (shift up)")

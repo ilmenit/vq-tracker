@@ -10,7 +10,7 @@ class of bugs caused by two parallel code paths diverging.
 import os
 import logging
 
-from constants import NOTE_OFF
+from constants import NOTE_OFF, VOL_CHANGE
 from state import state
 from file_io import (import_samples_multi,
                      next_sample_start_index, get_supported_extensions)
@@ -289,7 +289,7 @@ def reset_all_instruments(*args):
         state.instrument = 0
         for pattern in state.song.patterns:
             for row in pattern.rows:
-                if row.note > 0 and row.note != NOTE_OFF:
+                if row.note > 0 and row.note not in (NOTE_OFF, VOL_CHANGE):
                     row.instrument = 0
         state.vq.invalidate()
         ui.refresh_instruments()

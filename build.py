@@ -119,12 +119,12 @@ def validate_song(song: Song, check_samples: bool = True) -> ValidationResult:
             loc_row = f"Pattern {ptn_idx:02d}, Row {row_idx:02d}"
             
             # Check note value
-            if row.note != 0 and row.note != 255:  # 0=empty, 255=OFF
+            if row.note != 0 and row.note not in (255, 254):  # 0=empty, 255=OFF, 254=VOL_CHANGE
                 if row.note < 1 or row.note > MAX_NOTES:
                     result.add_error(loc_row, f"Note value {row.note} out of range (valid: 1-{MAX_NOTES})")
             
             # Check instrument
-            if row.note > 0 and row.note != 255:  # Has actual note
+            if row.note > 0 and row.note not in (255, 254):  # Has actual note
                 if row.instrument < 0:
                     result.add_error(loc_row, f"Instrument index {row.instrument} is negative")
                 elif row.instrument >= MAX_INSTRUMENTS:
@@ -454,6 +454,8 @@ def _encode_pattern_events(pattern: Pattern, pattern_idx: int, instruments: list
         # Handle NOTE_OFF (255 in GUI -> 0 in ASM for silence)
         if row.note == 255:  # NOTE_OFF
             note = 0  # ASM player treats note 0 as note-off
+        elif row.note == 254:  # VOL_CHANGE
+            note = 61  # ASM: volume-only event, no retrigger
         else:
             # Apply base_note pitch correction:
             # Samples are resampled to POKEY rate, so base_note should map to 1.0x pitch.
@@ -473,6 +475,8 @@ def _encode_pattern_events(pattern: Pattern, pattern_idx: int, instruments: list
         NOTE_NAMES = ['C-', 'C#', 'D-', 'D#', 'E-', 'F-', 'F#', 'G-', 'G#', 'A-', 'A#', 'B-']
         if note == 0:
             pitch_idx = -1  # N/A for note-off
+        elif note == 61:
+            pitch_idx = -1  # N/A for volume change
         else:
             # Show original GUI note for clarity
             gui_note = row.note
@@ -483,6 +487,8 @@ def _encode_pattern_events(pattern: Pattern, pattern_idx: int, instruments: list
         if output_func:
             if note == 0:
                 output_func(f"    Row {row_num:02d}: OFF inst={inst} vol={vol:2d}")
+            elif note == 61:
+                output_func(f"    Row {row_num:02d}: V-- vol={vol:2d}")
             else:
                 output_func(f"    Row {row_num:02d}: {gui_name} (gui={gui_note:2d} export={note:2d} idx={pitch_idx:2d} pitch={pitch_mult:.3f}x) inst={inst} vol={vol:2d}")
         logger.debug(f"  Row {row_num}: note={note}, inst={inst}, vol={vol}")
@@ -499,7 +505,7 @@ def _encode_pattern_events(pattern: Pattern, pattern_idx: int, instruments: list
             logger.debug(f"    -> Full event: ${row_num:02X} ${note|0x80:02X} ${inst|0x80:02X} ${vol:02X}")
             last_inst = inst
             last_vol = vol
-        elif inst != last_inst or vol != last_vol:
+        elif note == 61 or inst != last_inst or vol != last_vol:
             # Instrument or volume changed
             if vol != last_vol:
                 # Volume changed - must include inst byte too

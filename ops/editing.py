@@ -5,7 +5,7 @@ Cell editing, note entry, copy/paste, undo/redo.
 import logging
 
 from constants import (MAX_NOTES, MAX_VOLUME, MAX_INSTRUMENTS, NOTE_OFF,
-                       MAX_OCTAVES)
+                       VOL_CHANGE, MAX_OCTAVES)
 from state import state
 from ops.base import ui, save_undo, fmt
 
@@ -71,6 +71,29 @@ def enter_note_off():
     ptn = state.current_pattern()
     row = ptn.get_row(state.row)
     row.note = NOTE_OFF
+
+    from ops.navigation import move_cursor
+    move_cursor(state.step, 0)
+
+
+def enter_vol_change():
+    """Enter volume-change marker at cursor position.
+
+    Sets the note to VOL_CHANGE (V--) and stamps the current brush
+    volume.  Requires volume_control to be enabled on the song.
+    """
+    if not state.song.volume_control:
+        ui.show_status("Volume control is disabled — enable in Song Info")
+        return
+
+    save_undo("Enter volume change")
+    state.clear_pending()
+    state.selection.clear()
+
+    ptn = state.current_pattern()
+    row = ptn.get_row(state.row)
+    row.note = VOL_CHANGE
+    row.volume = state.volume
 
     from ops.navigation import move_cursor
     move_cursor(state.step, 0)
@@ -153,6 +176,9 @@ def enter_digit(d: int):
     else:  # Volume (1 hex digit)
         save_undo("Enter volume")
         row.volume = min(d & 0xF, MAX_VOLUME)
+        # Auto-insert VOL_CHANGE on empty rows
+        if row.note == 0 and state.song.volume_control:
+            row.note = VOL_CHANGE
         state.clear_pending()
         from ops.navigation import move_cursor
         move_cursor(state.step, 0)
@@ -192,6 +218,9 @@ def enter_digit_decimal(d: int):
         if state.pending_digit is not None and state.pending_col == 2:
             val = state.pending_digit * 10 + d
             row.volume = min(val, MAX_VOLUME)
+            # Auto-insert VOL_CHANGE on empty rows
+            if row.note == 0 and state.song.volume_control:
+                row.note = VOL_CHANGE
             state.clear_pending()
             from ops.navigation import move_cursor
             move_cursor(state.step, 0)
@@ -201,6 +230,9 @@ def enter_digit_decimal(d: int):
             state.pending_digit = d
             state.pending_col = 2
             row.volume = min(d, MAX_VOLUME)
+            # Auto-insert VOL_CHANGE on empty rows
+            if row.note == 0 and state.song.volume_control:
+                row.note = VOL_CHANGE
 
     ui.refresh_editor()
 

@@ -388,6 +388,10 @@ def handle_char(char: str):
     if char == '`' and state.column == 0:
         ops.enter_note_off(); return
 
+    # Volume-change via tilde (Shift+backtick)
+    if char == '~' and state.column == 0:
+        ops.enter_vol_change(); return
+
     # Note column
     if state.column == 0:
         if not G.piano_keys_mode and char_lower == '1':

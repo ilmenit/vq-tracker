@@ -5,6 +5,7 @@ MAX_CHANNELS = 4
 MAX_OCTAVES = 3  # 3 octaves (C-1 to B-3, indices 0-35)
 MAX_NOTES = MAX_OCTAVES * 12  # 36 notes
 NOTE_OFF = 255  # Special value for note-off (silence/stop)
+VOL_CHANGE = 254  # Special value for volume-only change (no retrigger)
 MAX_VOLUME = 15
 MAX_INSTRUMENTS = 128
 MAX_PATTERNS = 256
@@ -173,6 +174,8 @@ def note_to_str(note: int) -> str:
         return "---"
     if note == NOTE_OFF:
         return "OFF"
+    if note == VOL_CHANGE:
+        return "V--"
     if note > MAX_NOTES:
         note = MAX_NOTES
     idx = (note - 1) % 12

@@ -9,13 +9,15 @@ import ui_globals as G
 # Callbacks set by main module to avoid circular imports
 _preview_callback = None
 _select_callback = None
+_effects_callback = None
 
 
-def set_instrument_callbacks(preview_cb, select_cb):
+def set_instrument_callbacks(preview_cb, select_cb, effects_cb=None):
     """Set callbacks for instrument list buttons."""
-    global _preview_callback, _select_callback
+    global _preview_callback, _select_callback, _effects_callback
     _preview_callback = preview_cb
     _select_callback = select_cb
+    _effects_callback = effects_cb
 
 
 def refresh_all():
@@ -256,6 +258,25 @@ def refresh_instruments():
                             dpg.add_text(f"Reason: {a.reason}")
                             dpg.add_text(f"RAW: {format_size(a.raw_size_aligned)}, VQ: {format_size(a.vq_size)}")
                 
+                # Effects indicator button (opens sample editor)
+                has_fx = bool(inst.effects)
+                fx_label = "E" if has_fx else " "
+                fx_btn = dpg.add_button(label=fx_label, width=20, height=20,
+                                        callback=_effects_callback or _select_callback,
+                                        user_data=i)
+                if has_fx:
+                    dpg.bind_item_theme(fx_btn, "theme_fx_active")
+                with dpg.tooltip(fx_btn):
+                    if has_fx:
+                        n = len(inst.effects)
+                        dpg.add_text(f"{n} effect(s) applied", color=(180, 220, 255))
+                        for fx in inst.effects[:5]:
+                            dpg.add_text(f"  {fx.type}", color=(140, 160, 180))
+                        dpg.add_text("Click to open Sample Editor")
+                    else:
+                        dpg.add_text("No effects", color=(120, 120, 120))
+                        dpg.add_text("Click to open Sample Editor")
+                
                 # Instrument name button (clickable to select)
                 name = inst.name[:20] if inst.name else "(unnamed)"
                 
@@ -437,7 +458,7 @@ def refresh_editor():
                     dpg.configure_item(inst_tag, label=inst_str)
                     
                     # Check for invalid instrument reference (has note but inst doesn't exist)
-                    has_invalid_inst = (r.note > 0 and r.note != 255 and 
+                    has_invalid_inst = (r.note > 0 and r.note not in (255, 254) and 
                                        r.instrument >= len(state.song.instruments))
                     
                     if has_invalid_inst and not is_cursor:
@@ -512,7 +533,7 @@ def quick_validate_song():
     
     Returns (error_count, warning_count, first_issue_msg)
     """
-    from constants import MAX_ROWS, MAX_NOTES, MAX_VOLUME, NOTE_OFF
+    from constants import MAX_ROWS, MAX_NOTES, MAX_VOLUME, NOTE_OFF, VOL_CHANGE
     
     errors = 0
     warnings = 0
@@ -539,7 +560,7 @@ def quick_validate_song():
             
             # Check note
             if row.note != 0 and row.note != NOTE_OFF:
-                if row.note < 1 or row.note > MAX_NOTES:
+                if row.note != VOL_CHANGE and (row.note < 1 or row.note > MAX_NOTES):
                     errors += 1
                     if not first_issue:
                         first_issue = f"Ptn {ptn_idx} Row {row_idx}: invalid note {row.note}"
@@ -554,7 +575,7 @@ def quick_validate_song():
     used_instruments = set()
     for pattern in song.patterns:
         for row in pattern.rows[:pattern.length]:
-            if row.note > 0 and row.note != NOTE_OFF:
+            if row.note > 0 and row.note not in (NOTE_OFF, VOL_CHANGE):
                 used_instruments.add(row.instrument)
     
     # Check instrument references

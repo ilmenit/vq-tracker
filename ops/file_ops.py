@@ -285,10 +285,17 @@ def import_mod(*args):
         allow_multi=False,
     )
     if paths:
-        _do_import_mod(paths[0])
+        # Quick-scan for features, then show options dialog
+        from mod_import import scan_mod_features
+        features = scan_mod_features(paths[0])
+        if features.get('error'):
+            ui.show_error("Import Error", features['error'])
+            return
+        from ui_callbacks import show_mod_import_options
+        show_mod_import_options(paths[0], features)
 
 
-def _do_import_mod(path: str):
+def _do_import_mod(path: str, options: dict = None):
     """Import a .MOD file, replacing the current song."""
     if not path:
         return
@@ -309,7 +316,7 @@ def _do_import_mod(path: str):
     # Import MOD — writes WAV samples to work_dir.samples
     # Do NOT clear_all first: if import fails, old song's files stay intact.
     # The new WAVs overwrite any same-numbered old files; leftovers are harmless.
-    song, import_log = import_mod_file(path, file_io.work_dir)
+    song, import_log = import_mod_file(path, file_io.work_dir, options)
     if song:
         # Success — clear VQ/build (now invalid), adopt new song
         file_io.work_dir.clear_vq_output()
