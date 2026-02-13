@@ -5,7 +5,7 @@ from constants import (MAX_CHANNELS, MAX_VOLUME, MAX_ROWS, ROW_HEIGHT, COL_CH,
                        COL_NOTE, COL_INST, COL_VOL, COL_DIM,
                        VQ_RATES, VQ_RATE_DEFAULT, VQ_VECTOR_SIZES, VQ_VECTOR_DEFAULT,
                        VQ_SMOOTHNESS_VALUES, VQ_SMOOTHNESS_DEFAULT,
-                       MEMORY_LIMIT_DEFAULT_KB, MEMORY_LIMIT_MIN_KB, MEMORY_LIMIT_MAX_KB)
+                       MEMORY_CONFIG_NAMES, DEFAULT_MEMORY_CONFIG)
 from state import state
 from ui_dialogs import show_about, show_shortcuts
 import ops
@@ -506,6 +506,45 @@ def build_top_row():
                     dpg.add_text("Clear all song data and start fresh.")
                     dpg.add_text("Instruments are kept.")
             
+            # Target settings row: Start Address + Memory
+            with dpg.group(horizontal=True):
+                dpg.add_text("Start: $")
+                start_inp = dpg.add_input_text(tag="start_address_input",
+                                   default_value=f"{state.song.start_address:04X}",
+                                   hexadecimal=True, uppercase=True,
+                                   width=50, callback=C.on_start_address_change)
+                with dpg.tooltip(start_inp):
+                    dpg.add_text("Code Start Address (hex)", color=(255, 255, 150))
+                    dpg.add_separator()
+                    dpg.add_text("ORG address for player code.")
+                    dpg.add_text("Lower = more room for data.")
+                    dpg.add_spacer(height=3)
+                    dpg.add_text("$2000 = safe default (8 KB)", color=(150, 200, 150))
+                    dpg.add_text("$0800 = aggressive (+6 KB)")
+                    dpg.add_text("Range: $0800 - $3F00")
+                with dpg.item_handler_registry() as h:
+                    dpg.add_item_activated_handler(callback=G.on_input_focus)
+                    dpg.add_item_deactivated_handler(callback=G.on_input_blur)
+                dpg.bind_item_handler_registry(start_inp, h)
+                
+                dpg.add_spacer(width=10)
+                dpg.add_text("Memory:")
+                mem_combo = dpg.add_combo(tag="memory_config_combo",
+                                         items=MEMORY_CONFIG_NAMES,
+                                         default_value=state.song.memory_config,
+                                         width=90, callback=C.on_memory_config_change)
+                with dpg.tooltip(mem_combo):
+                    dpg.add_text("Target Memory Size", color=(255, 255, 150))
+                    dpg.add_separator()
+                    dpg.add_text("64 KB = no ext. RAM (current)")
+                    dpg.add_text("128 KB = 130XE (4 banks)")
+                    dpg.add_text("320 KB = 16 banks")
+                    dpg.add_text("576 KB = 32 banks")
+                    dpg.add_text("1088 KB = 64 banks")
+                    dpg.add_spacer(height=3)
+                    dpg.add_text("Extended RAM stores samples in", color=(150, 200, 150))
+                    dpg.add_text("$4000-$7FFF bank window.", color=(150, 200, 150))
+            
             # BUILD & RUN button
             dpg.add_spacer(height=5)
             with dpg.group(horizontal=True):
@@ -871,33 +910,23 @@ def build_bottom_row():
                     dpg.add_text("  - Frequency optimization for POKEY")
                     dpg.add_spacer(height=3)
                     dpg.add_text("Recommended: ON", color=(150, 200, 150))
-            
-            # Second row: memory limit
-            with dpg.group(horizontal=True):
-                dpg.add_text("Limit:")
-                dpg.add_input_int(tag="vq_memory_limit_input",
-                                  default_value=MEMORY_LIMIT_DEFAULT_KB,
-                                  min_value=MEMORY_LIMIT_MIN_KB,
-                                  max_value=MEMORY_LIMIT_MAX_KB,
-                                  min_clamped=True, max_clamped=True,
-                                  width=55, step=0,
-                                  callback=C.on_memory_limit_change)
+                
+                dpg.add_spacer(width=8)
+                dpg.add_checkbox(tag="vq_used_only_cb", label="Used Samples",
+                                 default_value=False,
+                                 callback=C.on_used_only_change)
                 with dpg.tooltip(dpg.last_item()):
-                    dpg.add_text("Sample Data Memory Limit", color=(255, 255, 150))
+                    dpg.add_text("Convert Used Samples Only", color=(255, 255, 150))
                     dpg.add_separator()
-                    dpg.add_text("Maximum memory for sample data (KB).")
-                    dpg.add_text("Used by OPTIMIZE to suggest RAW vs VQ.")
+                    dpg.add_text("When checked, CONVERT and OPTIMIZE")
+                    dpg.add_text("only process instruments that are")
+                    dpg.add_text("actually used in the current song.")
                     dpg.add_spacer(height=3)
-                    dpg.add_text("Atari memory map:", color=(200, 200, 255))
-                    dpg.add_text("  Main RAM: ~40 KB available")
-                    dpg.add_text("  With ROM area: up to 48 KB")
-                    dpg.add_text("  Player + song overhead: 3-8 KB")
+                    dpg.add_text("Unused instruments are skipped,")
+                    dpg.add_text("saving conversion time and memory.")
                     dpg.add_spacer(height=3)
-                    dpg.add_text(f"Range: {MEMORY_LIMIT_MIN_KB}-{MEMORY_LIMIT_MAX_KB} KB", color=(150, 150, 150))
-                    dpg.add_text("Bank-switched memory not yet supported.", color=(150, 150, 150))
-                    dpg.add_spacer(height=3)
-                    dpg.add_text(f"Default: {MEMORY_LIMIT_DEFAULT_KB} KB", color=(150, 200, 150))
-                dpg.add_text("KB", color=COL_DIM)
+                    dpg.add_text("Tip: enable after finalizing your", color=(150, 200, 150))
+                    dpg.add_text("song arrangement.", color=(150, 200, 150))
             
             dpg.add_spacer(height=3)
             

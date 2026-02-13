@@ -615,6 +615,45 @@ def on_keyboard_control_toggle(sender, value):
         G.show_status("Keyboard control disabled (saves cycles, play-once mode)")
 
 
+def on_start_address_change(sender, value):
+    """Called when start address hex input changes."""
+    from constants import MIN_START_ADDRESS, MAX_START_ADDRESS
+    try:
+        addr = int(value, 16)
+        addr = max(MIN_START_ADDRESS, min(MAX_START_ADDRESS, addr))
+        # Align to page boundary
+        addr = addr & 0xFF00
+        state.song.start_address = addr
+        state.song.modified = True
+        # Update display to show clamped/aligned value
+        if dpg.does_item_exist("start_address_input"):
+            dpg.set_value("start_address_input", f"{addr:04X}")
+        # Budget changed — clear stale optimize suggestions
+        if hasattr(state, '_optimize_result'):
+            state._optimize_result = None
+        R.refresh_instruments()
+        G.update_title()
+    except ValueError:
+        pass
+
+
+def on_memory_config_change(sender, value):
+    """Called when memory config combo changes."""
+    from constants import MEMORY_CONFIG_NAMES
+    if value in MEMORY_CONFIG_NAMES:
+        state.song.memory_config = value
+        state.song.modified = True
+        # Budget changed — clear stale optimize suggestions
+        if hasattr(state, '_optimize_result'):
+            state._optimize_result = None
+        R.refresh_instruments()
+        G.update_title()
+        if value == "64 KB":
+            G.show_status("64 KB mode: all data in main memory")
+        else:
+            G.show_status(f"{value} mode: samples in extended RAM banks")
+
+
 def on_edit_instrument(*args):
     """Open the sample editor for the currently selected instrument."""
     from sample_editor.ui_editor import open_editor
@@ -1343,19 +1382,17 @@ def on_vq_setting_change(sender, app_data):
     invalidate_vq_conversion()
 
 
-def on_memory_limit_change(sender, app_data):
-    """Called when memory limit field changes."""
-    from constants import MEMORY_LIMIT_MIN_KB, MEMORY_LIMIT_MAX_KB
+
+def on_used_only_change(sender, app_data):
+    """Called when 'Used Samples' checkbox changes."""
+    state.vq.settings.used_only = app_data
     
-    # Clamp value
-    kb = max(MEMORY_LIMIT_MIN_KB, min(MEMORY_LIMIT_MAX_KB, int(app_data)))
-    state.vq.settings.memory_limit = kb * 1024
-    
-    # Clear optimize suggestions (budget changed)
+    # Clear optimize suggestions (scope changed)
     if hasattr(state, '_optimize_result'):
         state._optimize_result = None
     
-    R.refresh_instruments()
+    # Invalidate conversion (different set of instruments)
+    invalidate_vq_conversion()
 
 
 def on_vq_use_converted_change(sender, app_data):
@@ -1415,6 +1452,9 @@ def _load_converted_samples():
     
     Note: Uses update_path=False to preserve sample_path pointing to original.
     This allows toggling back to original samples later.
+    
+    Skips instruments that were not converted (used_only mode) so their
+    original sample_data is preserved.
     """
     import logging
     logger = logging.getLogger(__name__)
@@ -1441,8 +1481,15 @@ def _load_converted_samples():
     
     loaded_count = 0
     error_count = 0
+    skipped_count = 0
     
     for i, inst in enumerate(state.song.instruments):
+        # Skip instruments that weren't actually converted (dummy WAVs)
+        if _vq_used_indices is not None and i not in _vq_used_indices:
+            skipped_count += 1
+            logger.debug(f"  Inst {i} ({inst.name}): skipped (unused)")
+            continue
+        
         if i < num_wavs:
             wav_path = state.vq.result.converted_wavs[i]
             logger.info(f"  Inst {i} ({inst.name}): {wav_path}")
@@ -1464,8 +1511,13 @@ def _load_converted_samples():
         else:
             logger.warning(f"  Inst {i} ({inst.name}): No converted WAV (only {num_wavs} WAVs)")
     
+    status = f"Loaded {loaded_count} converted samples"
+    if skipped_count:
+        status += f" ({skipped_count} unused skipped)"
+    if error_count:
+        status += f" ({error_count} errors)"
     if loaded_count > 0:
-        G.show_status(f"Loaded {loaded_count} converted samples" + (f" ({error_count} errors)" if error_count else ""))
+        G.show_status(status)
 
 
 def invalidate_vq_conversion():
@@ -1494,6 +1546,10 @@ def invalidate_vq_conversion():
     # Clear optimize suggestions (they're based on old settings)
     if hasattr(state, '_optimize_result'):
         state._optimize_result = None
+    
+    # Clear used-indices tracking from previous conversion
+    global _vq_used_indices
+    _vq_used_indices = None
     
     # Update CONVERT UI
     if dpg.does_item_exist("vq_size_label"):
@@ -1554,11 +1610,17 @@ def update_build_button_state():
 
 
 
-def _prepare_conversion_files(instruments) -> tuple:
+def _prepare_conversion_files(instruments, used_indices=None) -> tuple:
     """Prepare input files for VQ conversion, writing processed WAVs where needed.
     
     Always reads original audio from disk (sample_path), never from sample_data
     which may contain VQ-converted audio when use_converted is active.
+    
+    Args:
+        instruments: List of Instrument objects
+        used_indices: If not None, set of instrument indices that are used in
+                      the song. Unused instruments get a tiny dummy WAV so
+                      indices stay aligned but conversion is effectively free.
     
     Returns (input_files, proc_files, error_msg).
     error_msg is non-empty if a file is missing.
@@ -1568,7 +1630,17 @@ def _prepare_conversion_files(instruments) -> tuple:
     
     input_files = []
     proc_files = []
+    dummy_path = None
+    
     for i, inst in enumerate(instruments):
+        # If used_only filtering is active and this instrument is unused,
+        # provide a tiny dummy WAV so the index stays aligned
+        if used_indices is not None and i not in used_indices:
+            if dummy_path is None:
+                dummy_path = _get_dummy_wav_path()
+            input_files.append(dummy_path)
+            continue
+        
         working_path = inst.sample_path
         if not working_path or not os.path.exists(working_path):
             return None, [], (
@@ -1599,6 +1671,22 @@ def _prepare_conversion_files(instruments) -> tuple:
     return input_files, proc_files, ""
 
 
+def _get_dummy_wav_path() -> str:
+    """Create (once) a tiny 4-sample silent WAV for unused instrument slots."""
+    import wave
+    import runtime as rt
+    dummy_dir = os.path.join(rt.get_app_dir(), ".tmp")
+    os.makedirs(dummy_dir, exist_ok=True)
+    dummy_path = os.path.join(dummy_dir, "_dummy_silent.wav")
+    if not os.path.exists(dummy_path):
+        with wave.open(dummy_path, 'wb') as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(44100)
+            wf.writeframes(b'\x00\x00' * 4)
+    return dummy_path
+
+
 def on_optimize_click(sender, app_data):
     """Analyze instruments and apply optimal RAW/VQ per instrument."""
     import ui_refresh as R
@@ -1614,21 +1702,45 @@ def on_optimize_click(sender, app_data):
         show_error("No Audio", "Instruments have no audio data loaded.")
         return
     
+    # Determine which instruments to consider
+    used_indices = None
+    if state.vq.settings.used_only:
+        used_indices = state.song.get_used_instrument_indices()
+    
+    # Determine banking mode and memory budget
+    from constants import MEMORY_CONFIGS, compute_memory_budget
+    use_banking = state.song.memory_config != "64 KB"
+    budget = compute_memory_budget(
+        start_address=state.song.start_address,
+        memory_config=state.song.memory_config,
+        n_songlines=len(state.song.songlines),
+        n_patterns=len(state.song.patterns),
+        pattern_lengths=[p.length for p in state.song.patterns],
+        n_instruments=len(state.song.instruments),
+        vector_size=state.vq.settings.vector_size,
+    )
+    banking_budget = budget if use_banking else 0
+    
     # Run the optimizer
     result = analyze_instruments(
         instruments=state.song.instruments,
         target_rate=state.vq.settings.rate,
         vector_size=state.vq.settings.vector_size,
-        memory_budget=state.vq.settings.memory_limit,
+        memory_budget=budget,
         vq_result=state.vq.result if state.vq.converted else None,
         song=state.song,
         volume_control=state.song.volume_control,
         system_hz=state.song.system,
+        used_indices=used_indices,
+        use_banking=use_banking,
+        banking_budget=banking_budget,
     )
     
     # Apply suggestions directly to instrument checkboxes
     n_changed = 0
     for a in result.analyses:
+        if a.skipped:
+            continue  # Don't change unused instruments
         if a.index < len(state.song.instruments):
             inst = state.song.instruments[a.index]
             new_use_vq = not a.suggest_raw
@@ -1665,7 +1777,20 @@ def on_vq_convert_click(sender, app_data):
         show_error("No Instruments", "Add instruments before converting.")
         return
     
-    input_files, proc_files, error = _prepare_conversion_files(state.song.instruments)
+    # Determine which instruments to process
+    used_indices = None
+    if state.vq.settings.used_only:
+        used_indices = state.song.get_used_instrument_indices()
+        if not used_indices:
+            show_error("No Used Instruments",
+                       "No instruments are referenced in the song.\n"
+                       "Add notes to patterns first, or uncheck 'Used Samples'.")
+            return
+        logger.debug(f"Used Samples mode: {len(used_indices)} of "
+                     f"{len(state.song.instruments)} instruments used")
+    
+    input_files, proc_files, error = _prepare_conversion_files(
+        state.song.instruments, used_indices=used_indices)
     if input_files is None:
         show_error("Missing File", error)
         return
@@ -1673,8 +1798,9 @@ def on_vq_convert_click(sender, app_data):
     logger.debug(f"Starting conversion with {len(input_files)} files")
     
     # Track proc files for cleanup after conversion
-    global _vq_proc_files
+    global _vq_proc_files, _vq_used_indices
     _vq_proc_files = proc_files
+    _vq_used_indices = used_indices
     
     show_vq_conversion_window(input_files)
 
@@ -1745,6 +1871,7 @@ def show_mod_import_result(import_log, success: bool):
 # Global reference to converter for polling
 _vq_converter = None
 _vq_proc_files = []
+_vq_used_indices = None  # Set of instrument indices that were converted (None = all)
 
 
 def show_vq_conversion_window(input_files: list):
@@ -1775,7 +1902,12 @@ def show_vq_conversion_window(input_files: list):
                     width=w, height=h, pos=[(vp_w - w) // 2, (vp_h - h) // 2],
                     no_resize=False, no_collapse=True, on_close=on_close):
         
-        dpg.add_text(f"Converting {len(input_files)} instrument(s)...")
+        if _vq_used_indices is not None:
+            n_used = len(_vq_used_indices)
+            n_total = len(input_files)
+            dpg.add_text(f"Converting {n_used} of {n_total} instrument(s) (Used Samples mode)...")
+        else:
+            dpg.add_text(f"Converting {len(input_files)} instrument(s)...")
         dpg.add_separator()
         dpg.add_spacer(height=5)
         

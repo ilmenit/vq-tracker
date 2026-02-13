@@ -38,7 +38,7 @@ _instance = None  # singleton
 
 # Effect toolbar groups (label, [keys])
 _TOOLBAR_GROUPS = [
-    ("Edit",       ['trim', 'reverse']),
+    ("Edit",       ['trim', 'reverse', 'sustain']),
     ("Amplitude",  ['gain', 'normalize', 'adsr']),
     ("Modulation", ['tremolo', 'vibrato', 'pitch_env']),
     ("Effects",    ['overdrive', 'echo', 'octave']),
@@ -58,6 +58,8 @@ _EFFECT_TIPS = {
     'overdrive': "Soft-clip distortion via tanh waveshaping.",
     'echo':      "Feed-forward delay with adjustable repeats.",
     'octave':    "Transpose by whole octaves via resampling.",
+    'sustain':   "Repeat a selected region to extend sustain.\n"
+                 "Set loop points by clicking the waveform when selected.",
 }
 
 # Parameter panel definitions per effect type
@@ -121,6 +123,16 @@ PARAM_DEFS = {
     'octave': [
         ('octaves', 'Octaves', -3.0, 3.0, -1.0, '%.0f', True,
          "Transpose by whole octaves (-1 = down one octave)."),
+    ],
+    'sustain': [
+        ('start_ms', 'Start (ms)', 0.0, 10000.0, 0.0, '%.1f', False,
+         "Loop region start. Left-click waveform to set visually."),
+        ('end_ms', 'End (ms)', 0.0, 10000.0, 0.0, '%.1f', False,
+         "Loop region end (0 = end of sample). Right-click waveform to set."),
+        ('repeats', 'Repeats', 1.0, 64.0, 2.0, '%.0f', True,
+         "How many times the selected region plays (2 = original + 1 copy)."),
+        ('crossfade_ms', 'Crossfade (ms)', 0.0, 500.0, 5.0, '%.1f', False,
+         "Blend between loop copies to prevent clicks. 0 = hard cut."),
     ],
 }
 
@@ -444,7 +456,7 @@ class SampleEditor:
         self._update_markers()
 
     def _sync_trim_from_markers(self):
-        """If the selected effect is trim, update params from markers."""
+        """If the selected effect uses markers (trim/sustain), update params."""
         inst = self._get_inst()
         if not inst:
             return
@@ -452,7 +464,7 @@ class SampleEditor:
         if idx < 0 or idx >= len(inst.effects):
             return
         cmd = inst.effects[idx]
-        if cmd.type != 'trim':
+        if cmd.type not in ('trim', 'sustain'):
             return
 
         if not self._undo_saved:
@@ -642,8 +654,8 @@ class SampleEditor:
             if not cmd.enabled:
                 dpg.add_text("  (disabled)", color=(200, 100, 100))
 
-        # Special hint for trim
-        if cmd.type == 'trim':
+        # Special hint for trim/sustain (marker-based effects)
+        if cmd.type in ('trim', 'sustain'):
             dpg.add_text(
                 "  Tip: Left-click waveform = start, "
                 "Right-click = end",
@@ -655,8 +667,8 @@ class SampleEditor:
             dpg.add_text("  (no adjustable parameters)",
                          parent=parent, color=_COL_HINT)
         else:
-            # For trim: compute max from input audio duration
-            trim_max_ms = self._dim_duration * 1000.0 if cmd.type == 'trim' else 0
+            # For trim/sustain: compute max from input audio duration
+            trim_max_ms = self._dim_duration * 1000.0 if cmd.type in ('trim', 'sustain') else 0
 
             for pdef in params_def:
                 pkey = pdef[0]
@@ -666,8 +678,8 @@ class SampleEditor:
                 is_int = pdef[6]
                 tip = pdef[7] if len(pdef) > 7 else ""
 
-                # Override max for trim sliders
-                if cmd.type == 'trim' and trim_max_ms > 0:
+                # Override max for trim/sustain time sliders
+                if cmd.type in ('trim', 'sustain') and trim_max_ms > 0 and pkey in ('start_ms', 'end_ms'):
                     pmax = trim_max_ms
 
                 val = cmd.params.get(pkey, pdefault)
@@ -731,6 +743,8 @@ class SampleEditor:
         # instead of being left-aligned at x=0
         is_trim = (0 <= self.selected < len(effects)
                    and effects[self.selected].type == 'trim')
+        uses_markers = (0 <= self.selected < len(effects)
+                        and effects[self.selected].type in ('trim', 'sustain'))
         if is_trim:
             cmd = effects[self.selected]
             trim_start_s = cmd.params.get('start_ms', 0) / 1000.0
@@ -745,12 +759,13 @@ class SampleEditor:
         self._bold_duration = dur
         dpg.set_value(f"{TAG}_duration", f"{dur:.3f}s")
 
-        # For trim: show the input waveform timescale and sync markers
+        # For trim/sustain: show the input waveform timescale and sync markers
         display_dur = dur
-        if is_trim:
+        if uses_markers:
+            cmd = effects[self.selected]
             dim_dur = (len(dim_audio) / inst.sample_rate
                        if len(dim_audio) > 0 else 0)
-            display_dur = dim_dur
+            display_dur = max(dim_dur, dur)
             self._marker_start = cmd.params.get('start_ms', 0) / 1000.0
             end_ms = cmd.params.get('end_ms', 0)
             self._marker_end = (end_ms / 1000.0 if end_ms > 0

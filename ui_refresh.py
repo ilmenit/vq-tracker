@@ -221,9 +221,16 @@ def refresh_instruments():
                 # Optimize suggestion indicator (next to checkbox)
                 if opt_result and i < len(opt_result.analyses):
                     a = opt_result.analyses[i]
-                    # Show whether current setting matches optimizer's suggestion
-                    matches = (inst.use_vq == (not a.suggest_raw))
-                    if a.suggest_raw:
+                    if a.skipped:
+                        # Unused instrument in "Used Samples" mode
+                        ind = dpg.add_text("-", color=(100, 100, 110))
+                        with dpg.tooltip(ind):
+                            dpg.add_text("Unused in song", color=(150, 150, 150))
+                            dpg.add_text("Not included in CONVERT/OPTIMIZE.")
+                            dpg.add_text("Add notes using this instrument")
+                            dpg.add_text("or uncheck 'Used Samples'.")
+                    elif a.suggest_raw:
+                        matches = not inst.use_vq  # RAW suggested, checkbox unchecked = match
                         if matches:
                             ind = dpg.add_text("R", color=(100, 255, 100))
                         else:
@@ -237,6 +244,7 @@ def refresh_instruments():
                             if a.cpu_saving > 0.5:
                                 dpg.add_text(f"CPU saving: {a.cpu_saving:.1f} cyc/IRQ")
                     else:
+                        matches = inst.use_vq  # VQ suggested, checkbox checked = match
                         if matches:
                             ind = dpg.add_text("V", color=(200, 200, 100))
                         else:
@@ -470,6 +478,10 @@ def update_controls():
         dpg.set_value("screen_control_cb", state.song.screen_control)
     if dpg.does_item_exist("keyboard_control_cb"):
         dpg.set_value("keyboard_control_cb", state.song.keyboard_control)
+    if dpg.does_item_exist("start_address_input"):
+        dpg.set_value("start_address_input", f"{state.song.start_address:04X}")
+    if dpg.does_item_exist("memory_config_combo"):
+        dpg.set_value("memory_config_combo", state.song.memory_config)
     # Show/hide volume in CURRENT section based on volume_control setting
     if dpg.does_item_exist("current_vol_group"):
         dpg.configure_item("current_vol_group", show=state.song.volume_control)
@@ -489,8 +501,8 @@ def update_controls():
         dpg.set_value("vq_smooth_combo", str(state.vq.settings.smoothness))
     if dpg.does_item_exist("vq_enhance_cb"):
         dpg.set_value("vq_enhance_cb", state.vq.settings.enhance)
-    if dpg.does_item_exist("vq_memory_limit_input"):
-        dpg.set_value("vq_memory_limit_input", state.vq.settings.memory_limit // 1024)
+    if dpg.does_item_exist("vq_used_only_cb"):
+        dpg.set_value("vq_used_only_cb", state.vq.settings.used_only)
     
     G.update_title()
 

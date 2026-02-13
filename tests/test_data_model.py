@@ -207,15 +207,12 @@ class TestInstrument(unittest.TestCase):
 
     def test_serialization_roundtrip(self):
         i = Instrument(name="Bass", sample_path="/tmp/bass.wav",
-                       original_sample_path="/home/user/bass.wav",
                        base_note=13, sample_rate=22050)
         d = i.to_dict()
         i2 = Instrument.from_dict(d)
         self.assertEqual(i2.name, "Bass")
         # sample_path is persisted (needed by undo system for audio re-attachment)
         self.assertEqual(i2.sample_path, "/tmp/bass.wav")
-        # original_sample_path is runtime-only, not persisted
-        self.assertEqual(i2.original_sample_path, "")
         self.assertEqual(i2.base_note, 13)
         self.assertEqual(i2.sample_rate, 22050)
         self.assertIsNone(i2.sample_data)  # Audio not serialized

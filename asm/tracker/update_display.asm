@@ -48,14 +48,14 @@ update_display:
 ; ==========================================================================
 byte_to_dec:
     ldx #0                      ; Tens counter
-@btd_loop:
+udsp_btd_loop:
     cmp #10
-    bcc @btd_done               ; Less than 10? Done
+    bcc udsp_btd_done           ; Less than 10? Done
     sec
     sbc #10                     ; Subtract 10
     inx                         ; Increment tens
-    bne @btd_loop               ; Always branches (X never 0 here)
-@btd_done:
+    bne udsp_btd_loop           ; Always branches (X never 0 here)
+udsp_btd_done:
     ; A = ones digit (0-9)
     ; X = tens digit (0-9)
     clc

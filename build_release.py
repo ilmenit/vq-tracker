@@ -271,16 +271,50 @@ def create_distribution(exe_path: str):
         warnings.append("  âš  asm/ folder missing - BUILD will not work!")
     
     # 3. Copy bin/ folder (REQUIRED for BUILD - contains MADS)
+    #    Only include binaries for the current platform
     if os.path.isdir("bin"):
-        shutil.copytree("bin", os.path.join(release_dir, "bin"))
-        # Count MADS executables
-        mads_count = 0
-        for root, dirs, files in os.walk("bin"):
-            mads_count += len([f for f in files if f.startswith('mads')])
-        copied_items.append(f"  âœ“ bin/ ({mads_count} MADS executables)")
+        dest_bin = os.path.join(release_dir, "bin")
+        os.makedirs(dest_bin, exist_ok=True)
+        
+        # Copy README if present
+        bin_readme = os.path.join("bin", "README.md")
+        if os.path.isfile(bin_readme):
+            shutil.copy2(bin_readme, os.path.join(dest_bin, "README.md"))
+        
+        # Determine which platform dirs to include
+        machine = platform.machine().lower()
+        if system == "Windows":
+            plat_dirs = ["windows_x86_64"]
+        elif system == "Darwin":
+            # Include both macOS architectures for universal distribution
+            plat_dirs = ["macos_aarch64", "macos_x86_64"]
+        elif system == "Linux":
+            plat_dirs = ["linux_x86_64"]
+        else:
+            plat_dirs = []
+        
+        bin_file_count = 0
+        for plat_dir in plat_dirs:
+            src = os.path.join("bin", plat_dir)
+            if os.path.isdir(src):
+                dst = os.path.join(dest_bin, plat_dir)
+                shutil.copytree(src, dst)
+                for f in os.listdir(dst):
+                    fp = os.path.join(dst, f)
+                    if os.path.isfile(fp) and not f.startswith('.'):
+                        bin_file_count += 1
+                        # Ensure executables have +x on Unix
+                        if system != "Windows":
+                            os.chmod(fp, 0o755)
+        
+        all_plat_dirs = [d for d in os.listdir("bin") if os.path.isdir(os.path.join("bin", d))]
+        skipped = [d for d in all_plat_dirs if d not in plat_dirs]
+        copied_items.append(f"  \u2714 bin/ ({bin_file_count} files for {system})")
+        if skipped:
+            copied_items.append(f"    Skipped other platforms: {', '.join(skipped)}")
     else:
-        warnings.append("  âš  bin/ folder missing - BUILD will not work!")
-    
+        warnings.append("  \u26a0 bin/ folder missing - BUILD will not work!")
+
     # 4. Copy samples/ folder (OPTIONAL - example samples for users)
     if os.path.isdir("samples"):
         shutil.copytree("samples", os.path.join(release_dir, "samples"))

@@ -7,8 +7,10 @@
 ;
 ; Phase 1 (PREPARE): IRQ enabled. Lookup pitch, sample pointers, and
 ;   first codebook vector (VQ) or raw start address (RAW).
-; Phase 2 (COMMIT): IRQ disabled (SEI). Copy prepared values to
-;   IRQ-rate variables + write SMC for VQ/RAW boundary dispatch.
+; Phase 2 (COMMIT): Three sub-phases to avoid long IRQ blackouts:
+;   2A: Deactivate triggered channels (no SEI, atomic writes)
+;   2B: Setup all variables (IRQs enabled, safe while channels inactive)
+;   2C: Activate channels (brief SEI, ~40 cycles max)
 ; ==========================================================================
 
     ; =========================================================================
@@ -70,9 +72,13 @@
     
     ; --- Prepare Channel 0 ---
     lda evt_trigger
-    beq @prep_done_0
+    bne @prep_active_0
+    jmp @prep_done_0
+@prep_active_0:
     lda evt_note
-    beq @prep_done_0
+    bne @prep_note_0
+    jmp @prep_done_0
+@prep_note_0:
     
     sec
     sbc #1
@@ -96,9 +102,23 @@
     
     lda SAMPLE_MODE,x           ; 0=VQ, non-zero=RAW
     sta prep0_mode
+.ifdef USE_BANKING
+    lda SAMPLE_PORTB,x
+    sta prep0_portb
+    lda SAMPLE_BANK_SEQ_OFF,x
+    sta prep0_seq_off
+    lda SAMPLE_N_BANKS,x
+    sta prep0_n_banks
+    lda prep0_mode               ; reload mode (banking reads clobbered A)
+.endif
     bne @prep0_raw
     
     ; VQ: look up first codebook vector from index stream
+.ifdef USE_BANKING
+    sei                          ; protect bank switch from IRQ
+    lda prep0_portb
+    sta PORTB
+.endif
     lda prep0_stream_lo
     sta trk_ptr
     lda prep0_stream_hi
@@ -106,6 +126,11 @@
     ldy #0
     lda (trk_ptr),y
     tay
+.ifdef USE_BANKING
+    lda #PORTB_MAIN
+    sta PORTB                    ; restore main RAM
+    cli
+.endif
     lda VQ_LO,y
     sta prep0_vq_lo
     lda VQ_HI,y
@@ -133,9 +158,13 @@
 
     ; --- Prepare Channel 1 ---
     lda evt_trigger+1
-    beq @prep_done_1
+    bne @prep_active_1
+    jmp @prep_done_1
+@prep_active_1:
     lda evt_note+1
-    beq @prep_done_1
+    bne @prep_note_1
+    jmp @prep_done_1
+@prep_note_1:
     
     sec
     sbc #1
@@ -159,8 +188,22 @@
     
     lda SAMPLE_MODE,x
     sta prep1_mode
+.ifdef USE_BANKING
+    lda SAMPLE_PORTB,x
+    sta prep1_portb
+    lda SAMPLE_BANK_SEQ_OFF,x
+    sta prep1_seq_off
+    lda SAMPLE_N_BANKS,x
+    sta prep1_n_banks
+    lda prep1_mode
+.endif
     bne @prep1_raw
     
+.ifdef USE_BANKING
+    sei
+    lda prep1_portb
+    sta PORTB
+.endif
     lda prep1_stream_lo
     sta trk_ptr
     lda prep1_stream_hi
@@ -168,6 +211,11 @@
     ldy #0
     lda (trk_ptr),y
     tay
+.ifdef USE_BANKING
+    lda #PORTB_MAIN
+    sta PORTB
+    cli
+.endif
     lda VQ_LO,y
     sta prep1_vq_lo
     lda VQ_HI,y
@@ -194,9 +242,13 @@
 
     ; --- Prepare Channel 2 ---
     lda evt_trigger+2
-    beq @prep_done_2
+    bne @prep_active_2
+    jmp @prep_done_2
+@prep_active_2:
     lda evt_note+2
-    beq @prep_done_2
+    bne @prep_note_2
+    jmp @prep_done_2
+@prep_note_2:
     
     sec
     sbc #1
@@ -220,8 +272,22 @@
     
     lda SAMPLE_MODE,x
     sta prep2_mode
+.ifdef USE_BANKING
+    lda SAMPLE_PORTB,x
+    sta prep2_portb
+    lda SAMPLE_BANK_SEQ_OFF,x
+    sta prep2_seq_off
+    lda SAMPLE_N_BANKS,x
+    sta prep2_n_banks
+    lda prep2_mode
+.endif
     bne @prep2_raw
     
+.ifdef USE_BANKING
+    sei
+    lda prep2_portb
+    sta PORTB
+.endif
     lda prep2_stream_lo
     sta trk_ptr
     lda prep2_stream_hi
@@ -229,6 +295,11 @@
     ldy #0
     lda (trk_ptr),y
     tay
+.ifdef USE_BANKING
+    lda #PORTB_MAIN
+    sta PORTB
+    cli
+.endif
     lda VQ_LO,y
     sta prep2_vq_lo
     lda VQ_HI,y
@@ -255,9 +326,13 @@
 
     ; --- Prepare Channel 3 ---
     lda evt_trigger+3
-    beq @prep_done_3
+    bne @prep_active_3
+    jmp @prep_done_3
+@prep_active_3:
     lda evt_note+3
-    beq @prep_done_3
+    bne @prep_note_3
+    jmp @prep_done_3
+@prep_note_3:
     
     sec
     sbc #1
@@ -281,8 +356,22 @@
     
     lda SAMPLE_MODE,x
     sta prep3_mode
+.ifdef USE_BANKING
+    lda SAMPLE_PORTB,x
+    sta prep3_portb
+    lda SAMPLE_BANK_SEQ_OFF,x
+    sta prep3_seq_off
+    lda SAMPLE_N_BANKS,x
+    sta prep3_n_banks
+    lda prep3_mode
+.endif
     bne @prep3_raw
     
+.ifdef USE_BANKING
+    sei
+    lda prep3_portb
+    sta PORTB
+.endif
     lda prep3_stream_lo
     sta trk_ptr
     lda prep3_stream_hi
@@ -290,6 +379,11 @@
     ldy #0
     lda (trk_ptr),y
     tay
+.ifdef USE_BANKING
+    lda #PORTB_MAIN
+    sta PORTB
+    cli
+.endif
     lda VQ_LO,y
     sta prep3_vq_lo
     lda VQ_HI,y
@@ -315,47 +409,109 @@
 @prep_done_3:
 
     ; =========================================================================
-    ; PHASE 2: COMMIT (IRQ disabled)
     ; =========================================================================
-    
-    sei                         ; *** IRQ DISABLED ***
-    
-    ; --- Commit Channel 0 ---
+    ; PHASE 2: COMMIT (Restructured for minimal SEI window)
+    ; =========================================================================
+    ; Three sub-phases to avoid long IRQ blackouts:
+    ;   2A: DEACTIVATE triggered channels (no SEI — atomic single-byte writes)
+    ;   2B: SETUP all variables (IRQs enabled — channels are inactive)
+    ;   2C: ACTIVATE channels (brief SEI — ~40 cycles max)
+    ;
+    ; Why this is safe: once trkN_active=0, the IRQ handler jumps to
+    ; chN_skip immediately, never touching any channel state or SMC
+    ; locations. So writing pitch/stream/SMC/banking with IRQs enabled
+    ; is completely safe while the channel is deactivated.
+    ; =========================================================================
+
+    ; =========================================================================
+    ; PHASE 2A: DEACTIVATE triggered channels
+    ; =========================================================================
+    ; Single-byte STA to trkN_active is atomic on 6502.
+    ; No SEI needed — the IRQ handler sees active=0 and skips the channel.
+    ; Note-off channels are fully handled here (deactivate + silence).
+
     lda evt_trigger
-    bne @do_commit_0
-    jmp @commit_done_0
-@do_commit_0:
-    lda evt_note
-    bne @commit_note_0
-    
+    beq @deact_done_0
     lda #0
     sta trk0_active
+    lda evt_note
+    bne @deact_done_0
+    ; Note-off: silence and clear trigger (no setup/activate needed)
     lda #SILENCE
     sta AUDC1
-    jmp @commit_done_0
-    
-@commit_note_0:
     lda #0
-    sta trk0_active
+    sta evt_trigger             ; clear trigger so phases 2B/2C skip it
+@deact_done_0:
+
+    lda evt_trigger+1
+    beq @deact_done_1
+    lda #0
+    sta trk1_active
+    lda evt_note+1
+    bne @deact_done_1
+    lda #SILENCE
+    sta AUDC2
+    lda #0
+    sta evt_trigger+1
+@deact_done_1:
+
+    lda evt_trigger+2
+    beq @deact_done_2
+    lda #0
+    sta trk2_active
+    lda evt_note+2
+    bne @deact_done_2
+    lda #SILENCE
+    sta AUDC3
+    lda #0
+    sta evt_trigger+2
+@deact_done_2:
+
+    lda evt_trigger+3
+    beq @deact_done_3
+    lda #0
+    sta trk3_active
+    lda evt_note+3
+    bne @deact_done_3
+    lda #SILENCE
+    sta AUDC4
+    lda #0
+    sta evt_trigger+3
+@deact_done_3:
+
+    ; =========================================================================
+    ; PHASE 2B: SETUP (IRQs enabled — channels are inactive)
+    ; =========================================================================
+    ; All triggered note-on channels have trkN_active=0, so the IRQ handler
+    ; completely skips them. We can safely write to all channel variables
+    ; and SMC locations without SEI.
+
+    ; --- Setup Channel 0 ---
+    lda evt_trigger
+    bne @setup_active_0
+    jmp @setup_done_0
+@setup_active_0:
+
+    lda #0
     sta trk0_vector_offset
     
     ; Pitch setup
     lda prep0_pitch_hi
     cmp #$01
-    bne @ch0_commit_pitch
+    bne @ch0_setup_pitch
     lda prep0_pitch_lo
-    bne @ch0_commit_pitch
+    bne @ch0_setup_pitch
 .if VOLUME_CONTROL = 1
     lda evt_vol
     cmp #15
-    bne @ch0_commit_pitch
+    bne @ch0_setup_pitch
 .endif
     
-    lda #OPCODE_BMI             ; no-pitch dispatch
-    sta ch0_dispatch
-    jmp @ch0_commit_stream
+    lda #0
+    sta prep0_has_pitch       ; flag: no pitch
+    jmp @ch0_setup_stream
     
-@ch0_commit_pitch:
+@ch0_setup_pitch:
     lda #0
     sta trk0_pitch_frac
     sta trk0_pitch_int
@@ -363,10 +519,10 @@
     sta trk0_pitch_step
     lda prep0_pitch_hi
     sta trk0_pitch_step+1
-    lda #OPCODE_BPL             ; pitch dispatch
-    sta ch0_dispatch
+    lda #$FF
+    sta prep0_has_pitch       ; flag: has pitch
     
-@ch0_commit_stream:
+@ch0_setup_stream:
     lda prep0_stream_lo
     sta trk0_stream_ptr
     lda prep0_stream_hi
@@ -384,81 +540,71 @@
     sta trk0_vol_shift
 .endif
 
-    ; SMC setup: VQ or RAW boundary dispatch
-    ; SMC: configure IRQ boundary dispatch for VQ or RAW mode
+    ; SMC: set tick handler based on mode (VQ/RAW) and pitch
+    lda prep0_has_pitch
+    bne @ch0_smc_pitch
+    ; No-pitch dispatch
     lda prep0_mode
-    bne @ch0_smc_raw
+    bne @ch0_smc_np_raw
+    lda #<ch0_vq_no_pitch
+    ldx #>ch0_vq_no_pitch
+    jmp @ch0_smc_store
+@ch0_smc_np_raw:
+    lda #<ch0_raw_no_pitch
+    ldx #>ch0_raw_no_pitch
+    jmp @ch0_smc_store
+@ch0_smc_pitch:
+    ; Pitch dispatch
+    lda prep0_mode
+    bne @ch0_smc_p_raw
+    lda #<ch0_vq_pitch
+    ldx #>ch0_vq_pitch
+    jmp @ch0_smc_store
+@ch0_smc_p_raw:
+    lda #<ch0_raw_pitch
+    ldx #>ch0_raw_pitch
+@ch0_smc_store:
+    sta ch0_tick_jmp
+    stx ch0_tick_jmp+1
     
-    ; VQ mode SMC
-    lda #MIN_VECTOR
-    sta ch0_boundary_cmp
-    lda #OPCODE_BCS
-    sta ch0_boundary_br
-    lda #<ch0_vq_boundary
-    sta ch0_boundary_jmp
-    lda #>ch0_vq_boundary
-    sta ch0_boundary_jmp+1
-    lda #<ch0_vq_pitch_chk
-    sta ch0_pitch_jmp
-    lda #>ch0_vq_pitch_chk
-    sta ch0_pitch_jmp+1
-    jmp @ch0_activate
-    
-@ch0_smc_raw:
-    ; RAW mode SMC
-    lda #$00
-    sta ch0_boundary_cmp
-    lda #OPCODE_BEQ
-    sta ch0_boundary_br
-    lda #<ch0_raw_boundary
-    sta ch0_boundary_jmp
-    lda #>ch0_raw_boundary
-    sta ch0_boundary_jmp+1
-    lda #<ch0_raw_pitch_chk
-    sta ch0_pitch_jmp
-    lda #>ch0_raw_pitch_chk
-    sta ch0_pitch_jmp+1
-    
-@ch0_activate:
-    lda #$FF
-    sta trk0_active
-@commit_done_0:
+@ch0_setup_bank:
+.ifdef USE_BANKING
+    lda prep0_portb
+    sta ch0_bank
+    lda prep0_seq_off
+    sta ch0_bank_seq_idx
+    lda prep0_n_banks
+    sec
+    sbc #1
+    sta ch0_banks_left
+.endif
+@setup_done_0:
 
-    ; --- Commit Channel 1 ---
+    ; --- Setup Channel 1 ---
     lda evt_trigger+1
-    bne @do_commit_1
-    jmp @commit_done_1
-@do_commit_1:
-    lda evt_note+1
-    bne @commit_note_1
-    
+    bne @setup_active_1
+    jmp @setup_done_1
+@setup_active_1:
+
     lda #0
-    sta trk1_active
-    lda #SILENCE
-    sta AUDC2
-    jmp @commit_done_1
-    
-@commit_note_1:
-    lda #0
-    sta trk1_active
     sta trk1_vector_offset
     
     lda prep1_pitch_hi
     cmp #$01
-    bne @ch1_commit_pitch
+    bne @ch1_setup_pitch
     lda prep1_pitch_lo
-    bne @ch1_commit_pitch
+    bne @ch1_setup_pitch
 .if VOLUME_CONTROL = 1
     lda evt_vol+1
     cmp #15
-    bne @ch1_commit_pitch
+    bne @ch1_setup_pitch
 .endif
     
-    lda #OPCODE_BMI
-    sta ch1_dispatch
-    jmp @ch1_commit_stream
+    lda #0
+    sta prep1_has_pitch       ; flag: no pitch
+    jmp @ch1_setup_stream
     
-@ch1_commit_pitch:
+@ch1_setup_pitch:
     lda #0
     sta trk1_pitch_frac
     sta trk1_pitch_int
@@ -466,10 +612,10 @@
     sta trk1_pitch_step
     lda prep1_pitch_hi
     sta trk1_pitch_step+1
-    lda #OPCODE_BPL
-    sta ch1_dispatch
+    lda #$FF
+    sta prep1_has_pitch       ; flag: has pitch
     
-@ch1_commit_stream:
+@ch1_setup_stream:
     lda prep1_stream_lo
     sta trk1_stream_ptr
     lda prep1_stream_hi
@@ -487,78 +633,71 @@
     sta trk1_vol_shift
 .endif
 
-    ; SMC: configure IRQ boundary dispatch for VQ or RAW mode
+    ; SMC: set tick handler based on mode (VQ/RAW) and pitch
+    lda prep1_has_pitch
+    bne @ch1_smc_pitch
+    ; No-pitch dispatch
     lda prep1_mode
-    bne @ch1_smc_raw
+    bne @ch1_smc_np_raw
+    lda #<ch1_vq_no_pitch
+    ldx #>ch1_vq_no_pitch
+    jmp @ch1_smc_store
+@ch1_smc_np_raw:
+    lda #<ch1_raw_no_pitch
+    ldx #>ch1_raw_no_pitch
+    jmp @ch1_smc_store
+@ch1_smc_pitch:
+    ; Pitch dispatch
+    lda prep1_mode
+    bne @ch1_smc_p_raw
+    lda #<ch1_vq_pitch
+    ldx #>ch1_vq_pitch
+    jmp @ch1_smc_store
+@ch1_smc_p_raw:
+    lda #<ch1_raw_pitch
+    ldx #>ch1_raw_pitch
+@ch1_smc_store:
+    sta ch1_tick_jmp
+    stx ch1_tick_jmp+1
     
-    lda #MIN_VECTOR
-    sta ch1_boundary_cmp
-    lda #OPCODE_BCS
-    sta ch1_boundary_br
-    lda #<ch1_vq_boundary
-    sta ch1_boundary_jmp
-    lda #>ch1_vq_boundary
-    sta ch1_boundary_jmp+1
-    lda #<ch1_vq_pitch_chk
-    sta ch1_pitch_jmp
-    lda #>ch1_vq_pitch_chk
-    sta ch1_pitch_jmp+1
-    jmp @ch1_activate
-    
-@ch1_smc_raw:
-    lda #$00
-    sta ch1_boundary_cmp
-    lda #OPCODE_BEQ
-    sta ch1_boundary_br
-    lda #<ch1_raw_boundary
-    sta ch1_boundary_jmp
-    lda #>ch1_raw_boundary
-    sta ch1_boundary_jmp+1
-    lda #<ch1_raw_pitch_chk
-    sta ch1_pitch_jmp
-    lda #>ch1_raw_pitch_chk
-    sta ch1_pitch_jmp+1
-    
-@ch1_activate:
-    lda #$FF
-    sta trk1_active
-@commit_done_1:
+@ch1_setup_bank:
+.ifdef USE_BANKING
+    lda prep1_portb
+    sta ch1_bank
+    lda prep1_seq_off
+    sta ch1_bank_seq_idx
+    lda prep1_n_banks
+    sec
+    sbc #1
+    sta ch1_banks_left
+.endif
+@setup_done_1:
 
-    ; --- Commit Channel 2 ---
+    ; --- Setup Channel 2 ---
     lda evt_trigger+2
-    bne @do_commit_2
-    jmp @commit_done_2
-@do_commit_2:
-    lda evt_note+2
-    bne @commit_note_2
-    
+    bne @setup_active_2
+    jmp @setup_done_2
+@setup_active_2:
+
     lda #0
-    sta trk2_active
-    lda #SILENCE
-    sta AUDC3
-    jmp @commit_done_2
-    
-@commit_note_2:
-    lda #0
-    sta trk2_active
     sta trk2_vector_offset
     
     lda prep2_pitch_hi
     cmp #$01
-    bne @ch2_commit_pitch
+    bne @ch2_setup_pitch
     lda prep2_pitch_lo
-    bne @ch2_commit_pitch
+    bne @ch2_setup_pitch
 .if VOLUME_CONTROL = 1
     lda evt_vol+2
     cmp #15
-    bne @ch2_commit_pitch
+    bne @ch2_setup_pitch
 .endif
     
-    lda #OPCODE_BMI
-    sta ch2_dispatch
-    jmp @ch2_commit_stream
+    lda #0
+    sta prep2_has_pitch       ; flag: no pitch
+    jmp @ch2_setup_stream
     
-@ch2_commit_pitch:
+@ch2_setup_pitch:
     lda #0
     sta trk2_pitch_frac
     sta trk2_pitch_int
@@ -566,10 +705,10 @@
     sta trk2_pitch_step
     lda prep2_pitch_hi
     sta trk2_pitch_step+1
-    lda #OPCODE_BPL
-    sta ch2_dispatch
+    lda #$FF
+    sta prep2_has_pitch       ; flag: has pitch
     
-@ch2_commit_stream:
+@ch2_setup_stream:
     lda prep2_stream_lo
     sta trk2_stream_ptr
     lda prep2_stream_hi
@@ -587,77 +726,71 @@
     sta trk2_vol_shift
 .endif
 
+    ; SMC: set tick handler based on mode (VQ/RAW) and pitch
+    lda prep2_has_pitch
+    bne @ch2_smc_pitch
+    ; No-pitch dispatch
     lda prep2_mode
-    bne @ch2_smc_raw
+    bne @ch2_smc_np_raw
+    lda #<ch2_vq_no_pitch
+    ldx #>ch2_vq_no_pitch
+    jmp @ch2_smc_store
+@ch2_smc_np_raw:
+    lda #<ch2_raw_no_pitch
+    ldx #>ch2_raw_no_pitch
+    jmp @ch2_smc_store
+@ch2_smc_pitch:
+    ; Pitch dispatch
+    lda prep2_mode
+    bne @ch2_smc_p_raw
+    lda #<ch2_vq_pitch
+    ldx #>ch2_vq_pitch
+    jmp @ch2_smc_store
+@ch2_smc_p_raw:
+    lda #<ch2_raw_pitch
+    ldx #>ch2_raw_pitch
+@ch2_smc_store:
+    sta ch2_tick_jmp
+    stx ch2_tick_jmp+1
     
-    lda #MIN_VECTOR
-    sta ch2_boundary_cmp
-    lda #OPCODE_BCS
-    sta ch2_boundary_br
-    lda #<ch2_vq_boundary
-    sta ch2_boundary_jmp
-    lda #>ch2_vq_boundary
-    sta ch2_boundary_jmp+1
-    lda #<ch2_vq_pitch_chk
-    sta ch2_pitch_jmp
-    lda #>ch2_vq_pitch_chk
-    sta ch2_pitch_jmp+1
-    jmp @ch2_activate
-    
-@ch2_smc_raw:
-    lda #$00
-    sta ch2_boundary_cmp
-    lda #OPCODE_BEQ
-    sta ch2_boundary_br
-    lda #<ch2_raw_boundary
-    sta ch2_boundary_jmp
-    lda #>ch2_raw_boundary
-    sta ch2_boundary_jmp+1
-    lda #<ch2_raw_pitch_chk
-    sta ch2_pitch_jmp
-    lda #>ch2_raw_pitch_chk
-    sta ch2_pitch_jmp+1
-    
-@ch2_activate:
-    lda #$FF
-    sta trk2_active
-@commit_done_2:
+@ch2_setup_bank:
+.ifdef USE_BANKING
+    lda prep2_portb
+    sta ch2_bank
+    lda prep2_seq_off
+    sta ch2_bank_seq_idx
+    lda prep2_n_banks
+    sec
+    sbc #1
+    sta ch2_banks_left
+.endif
+@setup_done_2:
 
-    ; --- Commit Channel 3 ---
+    ; --- Setup Channel 3 ---
     lda evt_trigger+3
-    bne @do_commit_3
-    jmp @commit_done_3
-@do_commit_3:
-    lda evt_note+3
-    bne @commit_note_3
-    
+    bne @setup_active_3
+    jmp @setup_done_3
+@setup_active_3:
+
     lda #0
-    sta trk3_active
-    lda #SILENCE
-    sta AUDC4
-    jmp @commit_done_3
-    
-@commit_note_3:
-    lda #0
-    sta trk3_active
     sta trk3_vector_offset
     
     lda prep3_pitch_hi
     cmp #$01
-    bne @ch3_commit_pitch
+    bne @ch3_setup_pitch
     lda prep3_pitch_lo
-    bne @ch3_commit_pitch
+    bne @ch3_setup_pitch
 .if VOLUME_CONTROL = 1
     lda evt_vol+3
     cmp #15
-    bne @ch3_commit_pitch
+    bne @ch3_setup_pitch
 .endif
     
-    lda #OPCODE_BMI
-    sta ch3_dispatch
-    jmp @ch3_commit_stream
+    lda #0
+    sta prep3_has_pitch       ; flag: no pitch
+    jmp @ch3_setup_stream
     
-@ch3_commit_pitch:
+@ch3_setup_pitch:
     lda #0
     sta trk3_pitch_frac
     sta trk3_pitch_int
@@ -665,10 +798,10 @@
     sta trk3_pitch_step
     lda prep3_pitch_hi
     sta trk3_pitch_step+1
-    lda #OPCODE_BPL
-    sta ch3_dispatch
+    lda #$FF
+    sta prep3_has_pitch       ; flag: has pitch
     
-@ch3_commit_stream:
+@ch3_setup_stream:
     lda prep3_stream_lo
     sta trk3_stream_ptr
     lda prep3_stream_hi
@@ -686,43 +819,81 @@
     sta trk3_vol_shift
 .endif
 
+    ; SMC: set tick handler based on mode (VQ/RAW) and pitch
+    lda prep3_has_pitch
+    bne @ch3_smc_pitch
+    ; No-pitch dispatch
     lda prep3_mode
-    bne @ch3_smc_raw
+    bne @ch3_smc_np_raw
+    lda #<ch3_vq_no_pitch
+    ldx #>ch3_vq_no_pitch
+    jmp @ch3_smc_store
+@ch3_smc_np_raw:
+    lda #<ch3_raw_no_pitch
+    ldx #>ch3_raw_no_pitch
+    jmp @ch3_smc_store
+@ch3_smc_pitch:
+    ; Pitch dispatch
+    lda prep3_mode
+    bne @ch3_smc_p_raw
+    lda #<ch3_vq_pitch
+    ldx #>ch3_vq_pitch
+    jmp @ch3_smc_store
+@ch3_smc_p_raw:
+    lda #<ch3_raw_pitch
+    ldx #>ch3_raw_pitch
+@ch3_smc_store:
+    sta ch3_tick_jmp
+    stx ch3_tick_jmp+1
     
-    lda #MIN_VECTOR
-    sta ch3_boundary_cmp
-    lda #OPCODE_BCS
-    sta ch3_boundary_br
-    lda #<ch3_vq_boundary
-    sta ch3_boundary_jmp
-    lda #>ch3_vq_boundary
-    sta ch3_boundary_jmp+1
-    lda #<ch3_vq_pitch_chk
-    sta ch3_pitch_jmp
-    lda #>ch3_vq_pitch_chk
-    sta ch3_pitch_jmp+1
-    jmp @ch3_activate
-    
-@ch3_smc_raw:
-    lda #$00
-    sta ch3_boundary_cmp
-    lda #OPCODE_BEQ
-    sta ch3_boundary_br
-    lda #<ch3_raw_boundary
-    sta ch3_boundary_jmp
-    lda #>ch3_raw_boundary
-    sta ch3_boundary_jmp+1
-    lda #<ch3_raw_pitch_chk
-    sta ch3_pitch_jmp
-    lda #>ch3_raw_pitch_chk
-    sta ch3_pitch_jmp+1
-    
-@ch3_activate:
+@ch3_setup_bank:
+.ifdef USE_BANKING
+    lda prep3_portb
+    sta ch3_bank
+    lda prep3_seq_off
+    sta ch3_bank_seq_idx
+    lda prep3_n_banks
+    sec
+    sbc #1
+    sta ch3_banks_left
+.endif
+@setup_done_3:
+
+    ; =========================================================================
+    ; PHASE 2C: ACTIVATE (brief SEI — ~40 cycles max)
+    ; =========================================================================
+    ; All setup is complete. Now activate the channels atomically so they
+    ; all start on the same IRQ. The SEI window is at most ~40 cycles
+    ; (4 channels × ~10 cycles each), well within any IRQ period.
+
+    sei                         ; *** IRQ DISABLED (brief) ***
+
+    lda evt_trigger
+    beq @activate_done_0
+    lda #$FF
+    sta trk0_active
+@activate_done_0:
+
+    lda evt_trigger+1
+    beq @activate_done_1
+    lda #$FF
+    sta trk1_active
+@activate_done_1:
+
+    lda evt_trigger+2
+    beq @activate_done_2
+    lda #$FF
+    sta trk2_active
+@activate_done_2:
+
+    lda evt_trigger+3
+    beq @activate_done_3
     lda #$FF
     sta trk3_active
-@commit_done_3:
+@activate_done_3:
 
     cli                         ; *** IRQ RE-ENABLED ***
+
     
     ; =========================================================================
     ; ADVANCE LOCAL ROWS - Per-channel pattern position (4 channels)

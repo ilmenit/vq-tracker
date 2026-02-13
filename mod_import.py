@@ -441,12 +441,13 @@ def mod_to_song(mod: dict, log: ImportLog) -> Song:
         log.info("  No effects used")
 
     if pattern_breaks:
-        log.warn(f"{len(pattern_breaks)} Pattern Break(s) — "
-                 f"rows after break cleared in imported patterns")
+        log.info(f"{len(pattern_breaks)} Pattern Break(s) — "
+                 f"patterns truncated at break row")
         for pat_idx, row_idx, dest in pattern_breaks:
             if dest > 0:
                 log.info(f"    Pattern {pat_idx} row {row_idx}: break to "
-                         f"row {dest} of next pattern (dest row ignored)")
+                         f"row {dest} of next pattern (dest row ignored, "
+                         f"pattern truncated to {row_idx + 1} rows)")
     if position_jumps:
         log.warn(f"{len(position_jumps)} Position Jump(s) — "
                  f"song order may differ from original")
@@ -467,8 +468,11 @@ def mod_to_song(mod: dict, log: ImportLog) -> Song:
     # --- Convert patterns ---
     log.section("Patterns")
 
-    break_map = {}  # pat_idx → earliest break row
+    break_map = {}  # pat_idx → earliest break row (Dxx or Bxx)
     for pat_idx, row_idx, _ in pattern_breaks:
+        if pat_idx not in break_map or row_idx < break_map[pat_idx]:
+            break_map[pat_idx] = row_idx
+    for pat_idx, row_idx, _ in position_jumps:
         if pat_idx not in break_map or row_idx < break_map[pat_idx]:
             break_map[pat_idx] = row_idx
 
@@ -538,6 +542,15 @@ def mod_to_song(mod: dict, log: ImportLog) -> Song:
                         if effect_data == 0:
                             row.note = NOTE_OFF
 
+        # Set pattern length based on earliest break point (Dxx/Bxx).
+        # MOD patterns are always 64 rows in the file, but Dxx (Pattern Break)
+        # and Bxx (Position Jump) end the pattern early. The break row itself
+        # plays, so effective length = break_row + 1.
+        effective_length = min(break_row + 1, DEFAULT_LENGTH)
+        for p in tracker_pats:
+            p.length = effective_length
+            p.rows = p.rows[:effective_length]
+
         # All 4 channel patterns must fit — don't add partial sets
         if len(song.patterns) + MAX_CHANNELS > MAX_PATTERNS:
             log.warn(f"Pattern limit ({MAX_PATTERNS}) reached at MOD pattern "
@@ -578,8 +591,15 @@ def mod_to_song(mod: dict, log: ImportLog) -> Song:
     # --- Build songlines with per-position speed tracking ---
     log.section("Song")
 
+    # Build map of which MOD patterns have Bxx (Position Jump) on any row
+    pat_jump_map = {}  # pat_idx → (row, dest_position)
+    for pat_idx, row_idx, dest in position_jumps:
+        if pat_idx not in pat_jump_map or row_idx < pat_jump_map[pat_idx][0]:
+            pat_jump_map[pat_idx] = (row_idx, dest)
+
     current_speed = song.speed
     bpm_count = 0
+    song_end_pos = None  # Will be set if Bxx truncates the song
 
     for pos_idx, mod_pat_num in enumerate(mod['pattern_order']):
         base = mod_pat_num * MAX_CHANNELS
@@ -602,6 +622,22 @@ def mod_to_song(mod: dict, log: ImportLog) -> Song:
 
         sl = Songline(patterns=patterns, speed=current_speed)
         song.songlines.append(sl)
+
+        # Check if this position's pattern has a Bxx (Position Jump).
+        # Bxx jumps to a different song position after this pattern.
+        # If it jumps backward (loop) or to the current position, the song
+        # effectively ends here — positions after would never be reached.
+        if mod_pat_num in pat_jump_map:
+            _, dest_pos = pat_jump_map[mod_pat_num]
+            if dest_pos <= pos_idx:
+                song_end_pos = pos_idx
+                log.info(f"  Position {pos_idx}: Bxx jumps to position "
+                         f"{dest_pos} (loop) — song truncated here")
+                break
+
+    # Truncate songlines if a backward Bxx was found
+    if song_end_pos is not None and len(song.songlines) > song_end_pos + 1:
+        song.songlines = song.songlines[:song_end_pos + 1]
 
     log.info(f"Song: {len(song.songlines)} positions, "
              f"initial speed {song.speed}")

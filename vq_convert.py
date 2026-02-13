@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 
 import runtime
 from constants import (VQ_RATE_DEFAULT, VQ_VECTOR_DEFAULT, VQ_SMOOTHNESS_DEFAULT,
-                       VQ_VECTOR_SIZES, MEMORY_LIMIT_DEFAULT_KB)
+                       VQ_VECTOR_SIZES)
 
 # Valid vector sizes (must be even for ASM nibble-packing)
 VALID_VECTOR_SIZES = {2, 4, 8, 16}
@@ -141,7 +141,8 @@ class VQSettings:
     vector_size: int = VQ_VECTOR_DEFAULT
     smoothness: int = VQ_SMOOTHNESS_DEFAULT
     enhance: bool = True
-    memory_limit: int = MEMORY_LIMIT_DEFAULT_KB * 1024  # Bytes
+    memory_limit: int = 0  # DEPRECATED — computed from song settings now. Kept for load compat.
+    used_only: bool = False  # Only convert/optimize instruments used in song
     
     def __post_init__(self):
         if self.vector_size not in VALID_VECTOR_SIZES:

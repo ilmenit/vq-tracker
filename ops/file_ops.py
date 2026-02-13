@@ -145,7 +145,8 @@ def _restore_editor_state(editor_state: EditorState):
     state.vq.settings.vector_size = editor_state.vq_vector_size
     state.vq.settings.smoothness = editor_state.vq_smoothness
     state.vq.settings.enhance = editor_state.vq_enhance
-    state.vq.settings.memory_limit = editor_state.vq_memory_limit_kb * 1024
+    # memory_limit removed — now auto-computed from start_address + memory_config
+    state.vq.settings.used_only = editor_state.vq_used_only
     state.vq.invalidate()
 
 
@@ -161,7 +162,7 @@ def _reset_editor_state():
 def _trigger_auto_conversion():
     """Auto-trigger VQ conversion after loading a project.
 
-    Uses sample_path (extracted files in work_dir) rather than original_sample_path,
+    Uses sample_path (extracted files in work_dir) for sample loading,
     since the original files may no longer exist on the user's disk.
     Writes processed WAVs for instruments with effects.
     """
@@ -171,11 +172,17 @@ def _trigger_auto_conversion():
     from ui_callbacks import _prepare_conversion_files, show_vq_conversion_window
     import ui_callbacks
 
-    input_files, proc_files, error = _prepare_conversion_files(state.song.instruments)
+    used_indices = None
+    if state.vq.settings.used_only:
+        used_indices = state.song.get_used_instrument_indices()
+    
+    input_files, proc_files, error = _prepare_conversion_files(
+        state.song.instruments, used_indices=used_indices)
     if not input_files:
         return
 
     ui_callbacks._vq_proc_files = proc_files
+    ui_callbacks._vq_used_indices = used_indices
     show_vq_conversion_window(input_files)
 
 
@@ -240,7 +247,7 @@ def _build_editor_state() -> EditorState:
         vq_vector_size=state.vq.vector_size,
         vq_smoothness=state.vq.smoothness,
         vq_enhance=state.vq.settings.enhance,
-        vq_memory_limit_kb=state.vq.settings.memory_limit // 1024,
+        vq_used_only=state.vq.settings.used_only,
     )
 
 
@@ -339,18 +346,42 @@ def _auto_optimize():
     if not loaded:
         return
     
+    # Determine which instruments to consider
+    used_indices = None
+    if state.vq.settings.used_only:
+        used_indices = state.song.get_used_instrument_indices()
+    
+    # Determine banking mode and memory budget
+    from constants import compute_memory_budget
+    use_banking = state.song.memory_config != "64 KB"
+    budget = compute_memory_budget(
+        start_address=state.song.start_address,
+        memory_config=state.song.memory_config,
+        n_songlines=len(state.song.songlines),
+        n_patterns=len(state.song.patterns),
+        pattern_lengths=[p.length for p in state.song.patterns],
+        n_instruments=len(state.song.instruments),
+        vector_size=state.vq.settings.vector_size,
+    )
+    banking_budget = budget if use_banking else 0
+    
     result = analyze_instruments(
         instruments=state.song.instruments,
         target_rate=state.vq.settings.rate,
         vector_size=state.vq.settings.vector_size,
-        memory_budget=state.vq.settings.memory_limit,
+        memory_budget=budget,
         song=state.song,
         volume_control=state.song.volume_control,
         system_hz=state.song.system,
+        used_indices=used_indices,
+        use_banking=use_banking,
+        banking_budget=banking_budget,
     )
     
     n_changed = 0
     for a in result.analyses:
+        if a.skipped:
+            continue
         if a.index < len(state.song.instruments):
             inst = state.song.instruments[a.index]
             new_use_vq = not a.suggest_raw

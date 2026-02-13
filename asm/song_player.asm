@@ -65,7 +65,10 @@
 ; ==========================================================================
 ; CODE START
 ; ==========================================================================
-    ORG $2000
+    .ifndef START_ADDRESS
+        START_ADDRESS = $2000   ; Default if not set by SONG_CFG
+    .endif
+    ORG START_ADDRESS
 
 ; ==========================================================================
 ; CONSTANTS
@@ -73,6 +76,10 @@
 SILENCE     = $10               ; AUDC value for silence (volume-only, vol=0)
 COL_STOPPED = $00               ; Background color when stopped (black)
 COL_PLAYING = $74               ; Background color when playing (blue)
+
+.ifdef USE_BANKING
+PORTB_MAIN  = $FE               ; PORTB: main RAM visible, OS ROM disabled
+.endif
 
 ; ==========================================================================
 ; DISPLAY LIST AND TEXT
@@ -468,11 +475,26 @@ nmi_stub:
 ; ==========================================================================
 ; INCLUDE IRQ HANDLER
 ; ==========================================================================
+.ifdef USE_BANKING
+    icl "tracker/tracker_irq_banked.asm"
+.else
     icl "tracker/tracker_irq_speed.asm"
+.endif
 
 ; ==========================================================================
 ; INCLUDE DATA TABLES
 ; ==========================================================================
+
+.ifdef USE_BANKING
+; --- Banking Mode: code ends here, data at $8000 ---
+; Code must not reach bank window ($4000)
+    .if * > $4000
+        .error "Code exceeds $4000 bank window! Lower start address."
+    .endif
+    
+    ORG $8000                   ; Data above bank window (always main RAM)
+.endif
+
     icl "pitch/pitch_tables.asm"
 
     icl "pitch/VOLUME_SCALE.asm"
@@ -484,9 +506,17 @@ nmi_stub:
     icl "SAMPLE_DIR.asm"        ; SAMPLE_START/END + SAMPLE_MODE tables
     icl "VQ_LO.asm"
     icl "VQ_HI.asm"
-    icl "VQ_BLOB.asm"
+    icl "VQ_BLOB.asm"           ; Codebook data (always in main RAM)
+
+.ifdef USE_BANKING
+    ; Banking mode: indices and raw data are in extended memory banks.
+    ; Include bank configuration tables instead.
+    icl "BANK_CFG.asm"          ; SAMPLE_PORTB, SAMPLE_BANK_SEQ, etc.
+.else
+    ; 64KB mode: all sample data inline in main memory.
     icl "VQ_INDICES.asm"
     icl "RAW_SAMPLES.asm"       ; Page-aligned RAW AUDC data (may be empty)
+.endif
 
 ; ==========================================================================
 ; STAGING AREA - Regular memory (used at row rate only, not IRQ rate)
@@ -501,6 +531,7 @@ prep0_end_hi:     .byte 0
 prep0_vq_lo:      .byte 0
 prep0_vq_hi:      .byte 0
 prep0_mode:       .byte 0     ; 0=VQ, non-zero=RAW
+prep0_has_pitch:  .byte 0     ; 0=no pitch, $FF=has pitch
 ; Channel 1 staging
 prep1_pitch_lo:   .byte 0
 prep1_pitch_hi:   .byte 0
@@ -511,6 +542,7 @@ prep1_end_hi:     .byte 0
 prep1_vq_lo:      .byte 0
 prep1_vq_hi:      .byte 0
 prep1_mode:       .byte 0
+prep1_has_pitch:  .byte 0
 ; Channel 2 staging
 prep2_pitch_lo:   .byte 0
 prep2_pitch_hi:   .byte 0
@@ -521,6 +553,7 @@ prep2_end_hi:     .byte 0
 prep2_vq_lo:      .byte 0
 prep2_vq_hi:      .byte 0
 prep2_mode:       .byte 0
+prep2_has_pitch:  .byte 0
 ; Channel 3 staging
 prep3_pitch_lo:   .byte 0
 prep3_pitch_hi:   .byte 0
@@ -531,6 +564,7 @@ prep3_end_hi:     .byte 0
 prep3_vq_lo:      .byte 0
 prep3_vq_hi:      .byte 0
 prep3_mode:       .byte 0
+prep3_has_pitch:  .byte 0
 
 ; ==========================================================================
 ; VOLUME CONTROL VARIABLES (not in zero-page)
@@ -542,6 +576,78 @@ prep2_vol:        .byte $F0
 prep3_vol:        .byte $F0
 trk2_vol_shift:   .byte $F0    ; Channel 2 volume (pre-shifted)
 trk3_vol_shift:   .byte $F0    ; Channel 3 volume (pre-shifted)
+.endif
+
+; ==========================================================================
+; BANKING VARIABLES (extended memory mode only)
+; ==========================================================================
+.ifdef USE_BANKING
+; Per-channel bank tracking (cold path — accessed at boundary rate ~17ms)
+ch0_bank_seq_idx: .byte 0     ; Index into SAMPLE_BANK_SEQ for current bank
+ch0_banks_left:   .byte 0     ; Remaining bank crossings (0 = in last bank)
+ch1_bank_seq_idx: .byte 0
+ch1_banks_left:   .byte 0
+ch2_bank_seq_idx: .byte 0
+ch2_banks_left:   .byte 0
+ch3_bank_seq_idx: .byte 0
+ch3_banks_left:   .byte 0
+
+; Staging for bank setup during note trigger (process_row)
+prep0_portb:      .byte PORTB_MAIN
+prep1_portb:      .byte PORTB_MAIN
+prep2_portb:      .byte PORTB_MAIN
+prep3_portb:      .byte PORTB_MAIN
+prep0_seq_off:    .byte 0     ; Offset into SAMPLE_BANK_SEQ
+prep1_seq_off:    .byte 0
+prep2_seq_off:    .byte 0
+prep3_seq_off:    .byte 0
+prep0_n_banks:    .byte 1     ; Number of banks (for banks_left = n-1)
+prep1_n_banks:    .byte 1
+prep2_n_banks:    .byte 1
+prep3_n_banks:    .byte 1
+.endif
+
+; ==========================================================================
+; ASSEMBLY VALIDATION
+; ==========================================================================
+
+.ifdef USE_BANKING
+    ; --- Banking mode validation ---
+    
+    ; VQ_BLOB must be in main RAM ($8000+) — codebook is accessed without banking
+    .if VQ_BLOB < $8000
+        .error "VQ_BLOB must be at $8000+ (above bank window) in banking mode."
+    .endif
+    
+    ; Data (tables + song + codebook + banking vars) must fit below $C000
+    .if * > $C000
+        .error "Data overflow! Tables+song+codebook exceed $C000 in banking mode."
+    .endif
+    
+    ; Verify REQUIRED_BANKS is defined (comes from BANK_CFG.asm)
+    .ifndef REQUIRED_BANKS
+        .error "REQUIRED_BANKS not defined. BANK_CFG.asm missing or empty."
+    .endif
+    
+    ; Verify bank configuration tables exist
+    .ifndef SAMPLE_BANK_SEQ
+        .error "SAMPLE_BANK_SEQ not defined. BANK_CFG.asm incomplete."
+    .endif
+    
+.else
+    ; --- 64KB mode validation ---
+    
+    .if * > $C000
+        .error "Memory overflow! Reduce samples or lower start address."
+    .endif
+    
+.endif
+
+; Common: verify SAMPLE_COUNT matches expectations
+.ifdef SAMPLE_COUNT
+    .if SAMPLE_COUNT > 127
+        .error "Too many instruments (max 127)."
+    .endif
 .endif
 
 ; ==========================================================================

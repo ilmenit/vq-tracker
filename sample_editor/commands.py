@@ -207,6 +207,66 @@ def apply_octave(audio, sr, params):
     return audio[idx] * (1 - frac) + audio[idx_next] * frac
 
 
+def apply_sustain(audio, sr, params):
+    """Repeat a selected region to extend sustain.
+
+    Takes the fragment between start_ms and end_ms and places it
+    *repeats* times in sequence, preserving audio before and after
+    the selection.  A short crossfade smooths the seams between
+    repeats to avoid clicks.
+    """
+    n = len(audio)
+    if n == 0:
+        return audio.copy()
+
+    start = int(params.get('start_ms', 0) * sr / 1000)
+    end_ms = params.get('end_ms', 0)
+    end = n if end_ms <= 0 else int(end_ms * sr / 1000)
+    start = max(0, min(start, n))
+    end = max(start, min(end, n))
+
+    repeats = int(np.clip(params.get('repeats', 2), 1, 64))
+    xfade_ms = np.clip(params.get('crossfade_ms', 5.0), 0.0, 500.0)
+    xfade_samp = min(int(xfade_ms * sr / 1000), (end - start) // 2)
+
+    region = audio[start:end].copy()
+    reg_len = len(region)
+    if reg_len == 0 or repeats <= 1:
+        return audio.copy()
+
+    pre = audio[:start]
+    post = audio[end:]
+
+    # Build repeated region with optional crossfade between copies
+    if xfade_samp > 0 and reg_len > xfade_samp * 2:
+        # Crossfade: overlap end of one copy with start of next
+        body_len = reg_len - xfade_samp  # non-overlapping portion per repeat
+        total_len = body_len * repeats + xfade_samp
+        repeated = np.zeros(total_len, dtype=np.float32)
+
+        fade_out = np.linspace(1.0, 0.0, xfade_samp, dtype=np.float32)
+        fade_in = np.linspace(0.0, 1.0, xfade_samp, dtype=np.float32)
+
+        for i in range(repeats):
+            offset = i * body_len
+            if i == 0:
+                # First copy: full region
+                repeated[offset:offset + reg_len] += region
+            else:
+                # Crossfade zone: blend end of previous with start of current
+                xf_start = offset
+                xf_end = offset + xfade_samp
+                repeated[xf_start:xf_end] *= fade_out
+                repeated[xf_start:xf_end] += region[:xfade_samp] * fade_in
+                # Rest of the region after crossfade
+                repeated[xf_end:offset + reg_len] += region[xfade_samp:]
+    else:
+        # No crossfade: simple concatenation
+        repeated = np.tile(region, repeats)
+
+    return np.concatenate([pre, repeated, post])
+
+
 # =============================================================================
 # Registries
 # =============================================================================
@@ -223,6 +283,7 @@ COMMAND_APPLY: Dict[str, Callable] = {
     'overdrive': apply_overdrive,
     'echo':      apply_echo,
     'octave':    apply_octave,
+    'sustain':   apply_sustain,
 }
 
 COMMAND_DEFAULTS: Dict[str, dict] = {
@@ -238,6 +299,8 @@ COMMAND_DEFAULTS: Dict[str, dict] = {
     'overdrive': {'drive': 4.0},
     'echo':      {'delay_ms': 120.0, 'decay': 0.5, 'count': 3},
     'octave':    {'octaves': -1},
+    'sustain':   {'start_ms': 0.0, 'end_ms': 0.0, 'repeats': 2,
+                  'crossfade_ms': 5.0},
 }
 
 COMMAND_LABELS: Dict[str, str] = {
@@ -246,7 +309,7 @@ COMMAND_LABELS: Dict[str, str] = {
     'adsr': 'ADSR Envelope', 'tremolo': 'Tremolo',
     'vibrato': 'Vibrato',    'pitch_env': 'Pitch Envelope',
     'overdrive': 'Overdrive','echo': 'Echo',
-    'octave': 'Octave',
+    'octave': 'Octave',    'sustain': 'Sustain',
 }
 
 # Toolbar button labels (short)
@@ -256,12 +319,12 @@ COMMAND_TOOLBAR: Dict[str, str] = {
     'adsr': 'ADSR',   'tremolo': 'Trem',
     'vibrato': 'Vib',  'pitch_env': 'Pitch',
     'overdrive': 'OD', 'echo': 'Echo',
-    'octave': 'Octa',
+    'octave': 'Octa', 'sustain': 'Sust',
 }
 
 # Toolbar button order with group spacing
 TOOLBAR_ORDER = [
-    'trim', 'reverse', None,       # editing (None = spacer)
+    'trim', 'reverse', 'sustain', None,       # editing (None = spacer)
     'gain', 'normalize', 'adsr', None,  # amplitude
     'tremolo', 'vibrato', 'pitch_env', None,  # modulation
     'overdrive', 'echo', 'octave',  # effects
@@ -298,4 +361,7 @@ def get_summary(cmd: SampleCommand) -> str:
     elif t == 'octave':
         o = p.get('octaves', -1)
         return f"{o:+d} oct"
+    elif t == 'sustain':
+        end_str = f"{p.get('end_ms', 0):.0f}" if p.get('end_ms', 0) > 0 else "end"
+        return f"{p.get('start_ms', 0):.0f}–{end_str} ms ×{p.get('repeats', 2)}"
     return ""

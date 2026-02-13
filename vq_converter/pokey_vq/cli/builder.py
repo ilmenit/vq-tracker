@@ -1068,10 +1068,11 @@ class PokeyVQBuilder:
         else:
              table = POKEY_VOLTAGE_TABLE_DUAL
              map_full = None
-        # Tracker mode: store raw 0-15 volumes (saves AND #$0F in IRQ handler)
-        # Standalone mode: store $10|vol (AUDC-ready bytes)
-        is_tracker = getattr(self.args, 'tracker', False)
-        audc_prebake = not is_tracker
+        # Always prebake $10 (AUDC volume-only mode bit) into sample data.
+        # The IRQ handler uses conditional assembly:
+        #   VOLUME_CONTROL=0: direct STA to AUDC (no ORA needed, saves 2 cycles/ch)
+        #   VOLUME_CONTROL=1: AND #$0F to strip bit before volume lookup
+        audc_prebake = True
              
         # Export VQ blob/indices/LO/HI (VQ-only data)
         self.actual_data_size = exporter.export(

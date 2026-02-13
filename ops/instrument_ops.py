@@ -69,12 +69,8 @@ def replace_instrument(*args):
 
     inst = state.song.instruments[state.instrument]
 
-    # Start from the directory of the instrument's original source file
+    # Start from the last browsed directory
     start_dir = _last_browse_dir()
-    if inst.original_sample_path:
-        parent = os.path.dirname(inst.original_sample_path)
-        if os.path.isdir(parent):
-            start_dir = parent
 
     import native_dialog
     paths = native_dialog.open_files(
@@ -185,7 +181,6 @@ def _on_replace_file_selected(paths):
     inst = state.song.instruments[state.instrument]
     inst.name = new_inst.name
     inst.sample_path = new_inst.sample_path
-    inst.original_sample_path = new_inst.original_sample_path
     inst.sample_data = new_inst.sample_data
     inst.sample_rate = new_inst.sample_rate
     inst.invalidate_cache()  # Clear processed audio cache (sample changed)
@@ -211,7 +206,7 @@ def _import_paths(paths: list, undo_desc: str):
     """Import a list of audio file paths as instruments.
 
     This is the ONE place where "audio files → song instruments" happens.
-    All field initialization (name, sample_path, original_sample_path,
+    All field initialization (name, sample_path,
     sample_data) is done by import_samples_multi in file_io.py.
     This function only handles: undo, adding to song, error reporting, UI.
     """
@@ -236,7 +231,7 @@ def _import_paths(paths: list, undo_desc: str):
             state.instrument = idx
         else:
             failed += 1
-            logger.warning(f"Import failed: {inst.original_sample_path or inst.name}: {msg}")
+            logger.warning(f"Import failed: {inst.name}: {msg}")
 
     if count > 0:
         state.vq.invalidate()

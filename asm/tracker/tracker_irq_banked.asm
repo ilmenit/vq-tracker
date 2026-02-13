@@ -1,15 +1,37 @@
 ; ==========================================================================
-; TRACKER IRQ HANDLER - SPEED OPTIMIZED (4-channel, Mixed RAW/VQ)
+; TRACKER IRQ HANDLER - BANKED (4-channel, Mixed RAW/VQ, Extended Memory)
 ; ==========================================================================
-; Non-banking variant. Same optimized dispatch as the banked handler:
-; single SMC JMP per channel, combined RAW pitch accumulator.
+; Optimized variant with unified mode+pitch dispatch (single SMC JMP).
+;
+; RAW optimization: the pitch accumulator adds step_hi directly to
+; vector_offset, with carry detecting page (256-byte) boundaries.
+; This eliminates pitch_int as a middleman for RAW channels, saving
+; ~25 cycles per active RAW channel per IRQ (~100 cycles for 4ch).
+;
+; Layout: each channel's RAW pitch handler is placed immediately
+; before chN_skip so the common (no page cross) path falls through
+; with zero branch/jump overhead.
+;
+; SMC per channel (set by process_row.asm):
+;   chN_bank     - PORTB value for sample bank
+;   chN_tick_jmp - JMP target: one of 4 mode+pitch handlers
+;
+; Handler targets:
+;   chN_raw_pitch    - RAW with pitch (placed before chN_skip)
+;   chN_raw_no_pitch - RAW without pitch
+;   chN_vq_pitch     - VQ with pitch
+;   chN_vq_no_pitch  - VQ without pitch
 ;
 ; Cycle counts (common non-boundary path per channel, VOLUME_CONTROL=0):
-;   RAW pitch, no page cross: ~19 cycles (no bank switch overhead)
-;   RAW no-pitch, no wrap:    ~22 cycles
-;   VQ no-pitch, no boundary: ~28 cycles
+;   RAW pitch, no page cross: ~25 cycles (was ~50)
+;   RAW no-pitch, no wrap:    ~28 cycles (was ~41)
+;   VQ no-pitch, no boundary: ~34 cycles (unchanged)
 ;   Inactive channel:          8 cycles
 ; ==========================================================================
+
+.ifndef USE_BANKING
+    .error "tracker_irq_banked.asm requires USE_BANKING to be defined"
+.endif
 
 ; Masks for modulo operation (MIN_VECTOR - 1)
 .if MIN_VECTOR = 2
@@ -36,6 +58,9 @@
 .ifndef OPCODE_BEQ
     OPCODE_BEQ = $F0
 .endif
+.ifndef PORTB_MAIN
+    PORTB_MAIN = $FE
+.endif
 
 Tracker_IRQ:
     sta irq_save_a
@@ -55,6 +80,11 @@ Tracker_IRQ:
     jmp ch0_skip
 ch0_active:
     
+    ; --- Bank switch + Output sample ---
+ch0_bank = *+1
+    ldx #PORTB_MAIN              ; SMC: patched to instrument's PORTB
+    stx PORTB
+    
     ldy trk0_vector_offset
 .if VOLUME_CONTROL = 1
     lda (trk0_sample_ptr),y
@@ -68,9 +98,11 @@ ch0_active:
     sta AUDC1
 .endif
     
+    ; --- Unified mode+pitch dispatch ---
 ch0_tick_jmp = *+1
-    jmp ch0_raw_pitch
+    jmp ch0_raw_pitch            ; SMC: one of 4 handler targets
 
+    ; --- VQ no-pitch ---
 ch0_vq_no_pitch:
     inc trk0_vector_offset
     lda trk0_vector_offset
@@ -78,6 +110,7 @@ ch0_vq_no_pitch:
     bcs ch0_vq_boundary
     jmp ch0_skip
 
+    ; --- VQ pitch ---
 ch0_vq_pitch:
     clc
     lda trk0_pitch_frac
@@ -117,6 +150,20 @@ ch0_vq_pitch:
     sta trk0_stream_ptr
     bcc ch0_vq_p_nc
     inc trk0_stream_ptr+1
+    lda trk0_stream_ptr+1
+    cmp #$80
+    bcc ch0_vq_p_nc
+    lda ch0_banks_left
+    bne *+5
+    jmp ch0_end
+    lda #$40
+    sta trk0_stream_ptr+1
+    inc ch0_bank_seq_idx
+    ldy ch0_bank_seq_idx
+    lda SAMPLE_BANK_SEQ,y
+    sta ch0_bank
+    sta PORTB
+    dec ch0_banks_left
 ch0_vq_p_nc:
     txa
     and #VECTOR_MASK
@@ -125,14 +172,32 @@ ch0_vq_p_nc:
 ch0_vq_pitch_done:
     jmp ch0_skip
 
+    ; --- VQ boundary (no-pitch path crossed MIN_VECTOR) ---
 ch0_vq_boundary:
     lda #0
     sta trk0_vector_offset
     inc trk0_stream_ptr
     bne ch0_check_end
     inc trk0_stream_ptr+1
+    lda trk0_stream_ptr+1
+    cmp #$80
+    bcc ch0_check_end
+    lda ch0_banks_left
+    bne *+5
+    jmp ch0_end
+    lda #$40
+    sta trk0_stream_ptr+1
+    inc ch0_bank_seq_idx
+    ldx ch0_bank_seq_idx
+    lda SAMPLE_BANK_SEQ,x
+    sta ch0_bank
+    sta PORTB
+    dec ch0_banks_left
+    jmp ch0_load_vector
 
 ch0_check_end:
+    lda ch0_banks_left
+    bne ch0_load_vector
     lda trk0_stream_ptr+1
     cmp trk0_stream_end+1
     bcc ch0_load_vector
@@ -158,11 +223,13 @@ ch0_end:
     sta AUDC1
     jmp ch0_skip
 
+    ; --- RAW no-pitch ---
 ch0_raw_no_pitch:
-    inc trk0_vector_offset
-    beq ch0_raw_np_page
-    jmp ch0_skip
+    inc trk0_vector_offset       ; 5
+    beq ch0_raw_np_page          ; 2 (not taken 255/256)
+    jmp ch0_skip                 ; 3
 
+    ; --- RAW page cross (shared by no-pitch and pitch) ---
 ch0_raw_np_page:
     inc trk0_sample_ptr+1
     jmp ch0_raw_page_check
@@ -170,21 +237,38 @@ ch0_raw_p_page:
     inc trk0_sample_ptr+1
 ch0_raw_page_check:
     lda trk0_sample_ptr+1
-    cmp trk0_stream_end+1
+    cmp #$80
+    bcs ch0_raw_bank_cross
+    ldx ch0_banks_left          ; X test, preserves A=sample_ptr+1
+    bne ch0_raw_page_ok
+    cmp trk0_stream_end+1        ; A still = sample_ptr+1
     bcc ch0_raw_page_ok
     jmp ch0_end
+ch0_raw_bank_cross:
+    lda ch0_banks_left
+    bne *+5
+    jmp ch0_end
+    lda #$40
+    sta trk0_sample_ptr+1
+    inc ch0_bank_seq_idx
+    ldx ch0_bank_seq_idx
+    lda SAMPLE_BANK_SEQ,x
+    sta ch0_bank
+    sta PORTB
+    dec ch0_banks_left
 ch0_raw_page_ok:
     jmp ch0_skip
 
+    ; --- RAW pitch (HOT PATH — falls through to ch0_skip!) ---
 ch0_raw_pitch:
-    clc
-    lda trk0_pitch_frac
-    adc trk0_pitch_step
-    sta trk0_pitch_frac
-    lda trk0_vector_offset
-    adc trk0_pitch_step+1
-    sta trk0_vector_offset
-    bcs ch0_raw_p_page
+    clc                          ; 2
+    lda trk0_pitch_frac          ; 3
+    adc trk0_pitch_step          ; 3
+    sta trk0_pitch_frac          ; 3
+    lda trk0_vector_offset       ; 3
+    adc trk0_pitch_step+1        ; 3  (+carry from frac)
+    sta trk0_vector_offset       ; 3
+    bcs ch0_raw_p_page           ; 2  (not taken → fall through!)
 
 ch0_skip:
 
@@ -195,6 +279,9 @@ ch0_skip:
     bne ch1_active
     jmp ch1_skip
 ch1_active:
+ch1_bank = *+1
+    ldx #PORTB_MAIN
+    stx PORTB
     ldy trk1_vector_offset
 .if VOLUME_CONTROL = 1
     lda (trk1_sample_ptr),y
@@ -256,6 +343,20 @@ ch1_vq_pitch:
     sta trk1_stream_ptr
     bcc ch1_vq_p_nc
     inc trk1_stream_ptr+1
+    lda trk1_stream_ptr+1
+    cmp #$80
+    bcc ch1_vq_p_nc
+    lda ch1_banks_left
+    bne *+5
+    jmp ch1_end
+    lda #$40
+    sta trk1_stream_ptr+1
+    inc ch1_bank_seq_idx
+    ldy ch1_bank_seq_idx
+    lda SAMPLE_BANK_SEQ,y
+    sta ch1_bank
+    sta PORTB
+    dec ch1_banks_left
 ch1_vq_p_nc:
     txa
     and #VECTOR_MASK
@@ -270,7 +371,24 @@ ch1_vq_boundary:
     inc trk1_stream_ptr
     bne ch1_check_end
     inc trk1_stream_ptr+1
+    lda trk1_stream_ptr+1
+    cmp #$80
+    bcc ch1_check_end
+    lda ch1_banks_left
+    bne *+5
+    jmp ch1_end
+    lda #$40
+    sta trk1_stream_ptr+1
+    inc ch1_bank_seq_idx
+    ldx ch1_bank_seq_idx
+    lda SAMPLE_BANK_SEQ,x
+    sta ch1_bank
+    sta PORTB
+    dec ch1_banks_left
+    jmp ch1_load_vector
 ch1_check_end:
+    lda ch1_banks_left
+    bne ch1_load_vector
     lda trk1_stream_ptr+1
     cmp trk1_stream_end+1
     bcc ch1_load_vector
@@ -298,6 +416,7 @@ ch1_raw_no_pitch:
     inc trk1_vector_offset
     beq ch1_raw_np_page
     jmp ch1_skip
+
 ch1_raw_np_page:
     inc trk1_sample_ptr+1
     jmp ch1_raw_page_check
@@ -305,9 +424,25 @@ ch1_raw_p_page:
     inc trk1_sample_ptr+1
 ch1_raw_page_check:
     lda trk1_sample_ptr+1
-    cmp trk1_stream_end+1
+    cmp #$80
+    bcs ch1_raw_bank_cross
+    ldx ch1_banks_left          ; X test, preserves A=sample_ptr+1
+    bne ch1_raw_page_ok
+    cmp trk1_stream_end+1        ; A still = sample_ptr+1
     bcc ch1_raw_page_ok
     jmp ch1_end
+ch1_raw_bank_cross:
+    lda ch1_banks_left
+    bne *+5
+    jmp ch1_end
+    lda #$40
+    sta trk1_sample_ptr+1
+    inc ch1_bank_seq_idx
+    ldx ch1_bank_seq_idx
+    lda SAMPLE_BANK_SEQ,x
+    sta ch1_bank
+    sta PORTB
+    dec ch1_banks_left
 ch1_raw_page_ok:
     jmp ch1_skip
 
@@ -330,6 +465,9 @@ ch1_skip:
     bne ch2_active
     jmp ch2_skip
 ch2_active:
+ch2_bank = *+1
+    ldx #PORTB_MAIN
+    stx PORTB
     ldy trk2_vector_offset
 .if VOLUME_CONTROL = 1
     lda (trk2_sample_ptr),y
@@ -391,6 +529,20 @@ ch2_vq_pitch:
     sta trk2_stream_ptr
     bcc ch2_vq_p_nc
     inc trk2_stream_ptr+1
+    lda trk2_stream_ptr+1
+    cmp #$80
+    bcc ch2_vq_p_nc
+    lda ch2_banks_left
+    bne *+5
+    jmp ch2_end
+    lda #$40
+    sta trk2_stream_ptr+1
+    inc ch2_bank_seq_idx
+    ldy ch2_bank_seq_idx
+    lda SAMPLE_BANK_SEQ,y
+    sta ch2_bank
+    sta PORTB
+    dec ch2_banks_left
 ch2_vq_p_nc:
     txa
     and #VECTOR_MASK
@@ -405,7 +557,24 @@ ch2_vq_boundary:
     inc trk2_stream_ptr
     bne ch2_check_end
     inc trk2_stream_ptr+1
+    lda trk2_stream_ptr+1
+    cmp #$80
+    bcc ch2_check_end
+    lda ch2_banks_left
+    bne *+5
+    jmp ch2_end
+    lda #$40
+    sta trk2_stream_ptr+1
+    inc ch2_bank_seq_idx
+    ldx ch2_bank_seq_idx
+    lda SAMPLE_BANK_SEQ,x
+    sta ch2_bank
+    sta PORTB
+    dec ch2_banks_left
+    jmp ch2_load_vector
 ch2_check_end:
+    lda ch2_banks_left
+    bne ch2_load_vector
     lda trk2_stream_ptr+1
     cmp trk2_stream_end+1
     bcc ch2_load_vector
@@ -433,6 +602,7 @@ ch2_raw_no_pitch:
     inc trk2_vector_offset
     beq ch2_raw_np_page
     jmp ch2_skip
+
 ch2_raw_np_page:
     inc trk2_sample_ptr+1
     jmp ch2_raw_page_check
@@ -440,9 +610,25 @@ ch2_raw_p_page:
     inc trk2_sample_ptr+1
 ch2_raw_page_check:
     lda trk2_sample_ptr+1
-    cmp trk2_stream_end+1
+    cmp #$80
+    bcs ch2_raw_bank_cross
+    ldx ch2_banks_left          ; X test, preserves A=sample_ptr+1
+    bne ch2_raw_page_ok
+    cmp trk2_stream_end+1        ; A still = sample_ptr+1
     bcc ch2_raw_page_ok
     jmp ch2_end
+ch2_raw_bank_cross:
+    lda ch2_banks_left
+    bne *+5
+    jmp ch2_end
+    lda #$40
+    sta trk2_sample_ptr+1
+    inc ch2_bank_seq_idx
+    ldx ch2_bank_seq_idx
+    lda SAMPLE_BANK_SEQ,x
+    sta ch2_bank
+    sta PORTB
+    dec ch2_banks_left
 ch2_raw_page_ok:
     jmp ch2_skip
 
@@ -465,6 +651,9 @@ ch2_skip:
     bne ch3_active
     jmp ch3_skip
 ch3_active:
+ch3_bank = *+1
+    ldx #PORTB_MAIN
+    stx PORTB
     ldy trk3_vector_offset
 .if VOLUME_CONTROL = 1
     lda (trk3_sample_ptr),y
@@ -526,6 +715,20 @@ ch3_vq_pitch:
     sta trk3_stream_ptr
     bcc ch3_vq_p_nc
     inc trk3_stream_ptr+1
+    lda trk3_stream_ptr+1
+    cmp #$80
+    bcc ch3_vq_p_nc
+    lda ch3_banks_left
+    bne *+5
+    jmp ch3_end
+    lda #$40
+    sta trk3_stream_ptr+1
+    inc ch3_bank_seq_idx
+    ldy ch3_bank_seq_idx
+    lda SAMPLE_BANK_SEQ,y
+    sta ch3_bank
+    sta PORTB
+    dec ch3_banks_left
 ch3_vq_p_nc:
     txa
     and #VECTOR_MASK
@@ -540,7 +743,24 @@ ch3_vq_boundary:
     inc trk3_stream_ptr
     bne ch3_check_end
     inc trk3_stream_ptr+1
+    lda trk3_stream_ptr+1
+    cmp #$80
+    bcc ch3_check_end
+    lda ch3_banks_left
+    bne *+5
+    jmp ch3_end
+    lda #$40
+    sta trk3_stream_ptr+1
+    inc ch3_bank_seq_idx
+    ldx ch3_bank_seq_idx
+    lda SAMPLE_BANK_SEQ,x
+    sta ch3_bank
+    sta PORTB
+    dec ch3_banks_left
+    jmp ch3_load_vector
 ch3_check_end:
+    lda ch3_banks_left
+    bne ch3_load_vector
     lda trk3_stream_ptr+1
     cmp trk3_stream_end+1
     bcc ch3_load_vector
@@ -568,6 +788,7 @@ ch3_raw_no_pitch:
     inc trk3_vector_offset
     beq ch3_raw_np_page
     jmp ch3_skip
+
 ch3_raw_np_page:
     inc trk3_sample_ptr+1
     jmp ch3_raw_page_check
@@ -575,9 +796,25 @@ ch3_raw_p_page:
     inc trk3_sample_ptr+1
 ch3_raw_page_check:
     lda trk3_sample_ptr+1
-    cmp trk3_stream_end+1
+    cmp #$80
+    bcs ch3_raw_bank_cross
+    ldx ch3_banks_left          ; X test, preserves A=sample_ptr+1
+    bne ch3_raw_page_ok
+    cmp trk3_stream_end+1        ; A still = sample_ptr+1
     bcc ch3_raw_page_ok
     jmp ch3_end
+ch3_raw_bank_cross:
+    lda ch3_banks_left
+    bne *+5
+    jmp ch3_end
+    lda #$40
+    sta trk3_sample_ptr+1
+    inc ch3_bank_seq_idx
+    ldx ch3_bank_seq_idx
+    lda SAMPLE_BANK_SEQ,x
+    sta ch3_bank
+    sta PORTB
+    dec ch3_banks_left
 ch3_raw_page_ok:
     jmp ch3_skip
 
@@ -594,8 +831,11 @@ ch3_raw_pitch:
 ch3_skip:
 
     ; =========================================================================
-    ; EXIT
+    ; EXIT - Restore PORTB to main RAM
     ; =========================================================================
+    lda #PORTB_MAIN
+    sta PORTB
+
     ldy irq_save_y
     ldx irq_save_x
     lda irq_save_a

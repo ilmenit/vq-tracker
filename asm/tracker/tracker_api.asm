@@ -42,20 +42,26 @@ Tracker_PlayNote:
     sta trk0_pitch_step+1
     
 .if VOLUME_CONTROL = 1
-    lda #$10
-    sta ch0_dispatch
+    lda #<ch0_vq_pitch
+    sta ch0_tick_jmp
+    lda #>ch0_vq_pitch
+    sta ch0_tick_jmp+1
 .else
     lda trk0_pitch_step+1
     cmp #$01
     bne @ch0_api_pitch
     lda trk0_pitch_step
     bne @ch0_api_pitch
-    lda #$30
-    bne @ch0_api_set_dispatch
+    ; No pitch: step = 1.0
+    lda #<ch0_vq_no_pitch
+    ldx #>ch0_vq_no_pitch
+    jmp @ch0_api_set_dispatch
 @ch0_api_pitch:
-    lda #$10
+    lda #<ch0_vq_pitch
+    ldx #>ch0_vq_pitch
 @ch0_api_set_dispatch:
-    sta ch0_dispatch
+    sta ch0_tick_jmp
+    stx ch0_tick_jmp+1
 .endif
     
     lda #0
@@ -89,19 +95,7 @@ Tracker_PlayNote:
     lda VQ_HI,y
     sta trk0_sample_ptr+1
     
-    ; Reset boundary SMC to VQ mode (may have been set to RAW by process_row)
-    lda #MIN_VECTOR
-    sta ch0_boundary_cmp
-    lda #OPCODE_BCS
-    sta ch0_boundary_br
-    lda #<ch0_vq_boundary
-    sta ch0_boundary_jmp
-    lda #>ch0_vq_boundary
-    sta ch0_boundary_jmp+1
-    lda #<ch0_vq_pitch_chk
-    sta ch0_pitch_jmp
-    lda #>ch0_vq_pitch_chk
-    sta ch0_pitch_jmp+1
+    ; tick_jmp already set above (VQ mode only in API)
     
     lda #$FF
     sta trk0_active
@@ -123,20 +117,26 @@ Tracker_PlayNote:
     sta trk1_pitch_step+1
     
 .if VOLUME_CONTROL = 1
-    lda #$10
-    sta ch1_dispatch
+    lda #<ch1_vq_pitch
+    sta ch1_tick_jmp
+    lda #>ch1_vq_pitch
+    sta ch1_tick_jmp+1
 .else
     lda trk1_pitch_step+1
     cmp #$01
     bne @ch1_api_pitch
     lda trk1_pitch_step
     bne @ch1_api_pitch
-    lda #$30
-    bne @ch1_api_set_dispatch
+    ; No pitch: step = 1.0
+    lda #<ch1_vq_no_pitch
+    ldx #>ch1_vq_no_pitch
+    jmp @ch1_api_set_dispatch
 @ch1_api_pitch:
-    lda #$10
+    lda #<ch1_vq_pitch
+    ldx #>ch1_vq_pitch
 @ch1_api_set_dispatch:
-    sta ch1_dispatch
+    sta ch1_tick_jmp
+    stx ch1_tick_jmp+1
 .endif
     
     lda #0
@@ -170,19 +170,7 @@ Tracker_PlayNote:
     lda VQ_HI,y
     sta trk1_sample_ptr+1
     
-    ; Reset boundary SMC to VQ mode (may have been set to RAW by process_row)
-    lda #MIN_VECTOR
-    sta ch1_boundary_cmp
-    lda #OPCODE_BCS
-    sta ch1_boundary_br
-    lda #<ch1_vq_boundary
-    sta ch1_boundary_jmp
-    lda #>ch1_vq_boundary
-    sta ch1_boundary_jmp+1
-    lda #<ch1_vq_pitch_chk
-    sta ch1_pitch_jmp
-    lda #>ch1_vq_pitch_chk
-    sta ch1_pitch_jmp+1
+    ; tick_jmp already set above (VQ mode only in API)
     
     lda #$FF
     sta trk1_active
@@ -204,20 +192,26 @@ Tracker_PlayNote:
     sta trk2_pitch_step+1
     
 .if VOLUME_CONTROL = 1
-    lda #$10
-    sta ch2_dispatch
+    lda #<ch2_vq_pitch
+    sta ch2_tick_jmp
+    lda #>ch2_vq_pitch
+    sta ch2_tick_jmp+1
 .else
     lda trk2_pitch_step+1
     cmp #$01
     bne @ch2_api_pitch
     lda trk2_pitch_step
     bne @ch2_api_pitch
-    lda #$30
-    bne @ch2_api_set_dispatch
+    ; No pitch: step = 1.0
+    lda #<ch2_vq_no_pitch
+    ldx #>ch2_vq_no_pitch
+    jmp @ch2_api_set_dispatch
 @ch2_api_pitch:
-    lda #$10
+    lda #<ch2_vq_pitch
+    ldx #>ch2_vq_pitch
 @ch2_api_set_dispatch:
-    sta ch2_dispatch
+    sta ch2_tick_jmp
+    stx ch2_tick_jmp+1
 .endif
     
     lda #0
@@ -251,19 +245,7 @@ Tracker_PlayNote:
     lda VQ_HI,y
     sta trk2_sample_ptr+1
     
-    ; Reset boundary SMC to VQ mode (may have been set to RAW by process_row)
-    lda #MIN_VECTOR
-    sta ch2_boundary_cmp
-    lda #OPCODE_BCS
-    sta ch2_boundary_br
-    lda #<ch2_vq_boundary
-    sta ch2_boundary_jmp
-    lda #>ch2_vq_boundary
-    sta ch2_boundary_jmp+1
-    lda #<ch2_vq_pitch_chk
-    sta ch2_pitch_jmp
-    lda #>ch2_vq_pitch_chk
-    sta ch2_pitch_jmp+1
+    ; tick_jmp already set above (VQ mode only in API)
     
     lda #$FF
     sta trk2_active
@@ -285,20 +267,26 @@ Tracker_PlayNote:
     sta trk3_pitch_step+1
     
 .if VOLUME_CONTROL = 1
-    lda #$10
-    sta ch3_dispatch
+    lda #<ch3_vq_pitch
+    sta ch3_tick_jmp
+    lda #>ch3_vq_pitch
+    sta ch3_tick_jmp+1
 .else
     lda trk3_pitch_step+1
     cmp #$01
     bne @ch3_api_pitch
     lda trk3_pitch_step
     bne @ch3_api_pitch
-    lda #$30
-    bne @ch3_api_set_dispatch
+    ; No pitch: step = 1.0
+    lda #<ch3_vq_no_pitch
+    ldx #>ch3_vq_no_pitch
+    jmp @ch3_api_set_dispatch
 @ch3_api_pitch:
-    lda #$10
+    lda #<ch3_vq_pitch
+    ldx #>ch3_vq_pitch
 @ch3_api_set_dispatch:
-    sta ch3_dispatch
+    sta ch3_tick_jmp
+    stx ch3_tick_jmp+1
 .endif
     
     lda #0
@@ -332,19 +320,7 @@ Tracker_PlayNote:
     lda VQ_HI,y
     sta trk3_sample_ptr+1
     
-    ; Reset boundary SMC to VQ mode (may have been set to RAW by process_row)
-    lda #MIN_VECTOR
-    sta ch3_boundary_cmp
-    lda #OPCODE_BCS
-    sta ch3_boundary_br
-    lda #<ch3_vq_boundary
-    sta ch3_boundary_jmp
-    lda #>ch3_vq_boundary
-    sta ch3_boundary_jmp+1
-    lda #<ch3_vq_pitch_chk
-    sta ch3_pitch_jmp
-    lda #>ch3_vq_pitch_chk
-    sta ch3_pitch_jmp+1
+    ; tick_jmp already set above (VQ mode only in API)
     
     lda #$FF
     sta trk3_active

@@ -81,9 +81,10 @@ Tracker_IRQ:
 .endif
 
 @ch0_advance:
-ch0_dispatch = *
-    bmi @ch0_pitch
+ch0_tick_jmp = *+1
+    jmp ch0_vq_no_pitch
 
+ch0_vq_no_pitch:
     inc trk0_vector_offset
     lda trk0_vector_offset
     cmp #MIN_VECTOR
@@ -121,7 +122,7 @@ ch0_dispatch = *
     sta AUDC1
     bpl @skip_ch0
 
-@ch0_pitch:
+ch0_vq_pitch:
     clc
     lda trk0_pitch_frac
     adc trk0_pitch_step
@@ -220,9 +221,10 @@ ch0_dispatch = *
 .endif
 
 @ch1_advance:
-ch1_dispatch = *
-    bmi @ch1_pitch
+ch1_tick_jmp = *+1
+    jmp ch1_vq_no_pitch
 
+ch1_vq_no_pitch:
     inc trk1_vector_offset
     lda trk1_vector_offset
     cmp #MIN_VECTOR
@@ -260,7 +262,7 @@ ch1_dispatch = *
     sta AUDC2
     bpl @skip_ch1
 
-@ch1_pitch:
+ch1_vq_pitch:
     clc
     lda trk1_pitch_frac
     adc trk1_pitch_step
@@ -359,9 +361,10 @@ ch1_dispatch = *
 .endif
 
 @ch2_advance:
-ch2_dispatch = *
-    bmi @ch2_pitch
+ch2_tick_jmp = *+1
+    jmp ch2_vq_no_pitch
 
+ch2_vq_no_pitch:
     inc trk2_vector_offset
     lda trk2_vector_offset
     cmp #MIN_VECTOR
@@ -399,7 +402,7 @@ ch2_dispatch = *
     sta AUDC3
     bpl @skip_ch2
 
-@ch2_pitch:
+ch2_vq_pitch:
     clc
     lda trk2_pitch_frac
     adc trk2_pitch_step
@@ -498,9 +501,10 @@ ch2_dispatch = *
 .endif
 
 @ch3_advance:
-ch3_dispatch = *
-    bmi @ch3_pitch
+ch3_tick_jmp = *+1
+    jmp ch3_vq_no_pitch
 
+ch3_vq_no_pitch:
     inc trk3_vector_offset
     lda trk3_vector_offset
     cmp #MIN_VECTOR
@@ -538,7 +542,7 @@ ch3_dispatch = *
     sta AUDC4
     bpl @skip_ch3
 
-@ch3_pitch:
+ch3_vq_pitch:
     clc
     lda trk3_pitch_frac
     adc trk3_pitch_step
@@ -599,3 +603,13 @@ ch3_dispatch = *
     ldx irq_save_x
     ldy irq_save_y
     rti
+
+; RAW label aliases (size handler is VQ-only; needed for process_row.asm assembly)
+ch0_raw_no_pitch = ch0_vq_no_pitch
+ch0_raw_pitch    = ch0_vq_pitch
+ch1_raw_no_pitch = ch1_vq_no_pitch
+ch1_raw_pitch    = ch1_vq_pitch
+ch2_raw_no_pitch = ch2_vq_no_pitch
+ch2_raw_pitch    = ch2_vq_pitch
+ch3_raw_no_pitch = ch3_vq_no_pitch
+ch3_raw_pitch    = ch3_vq_pitch
