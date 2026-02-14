@@ -312,6 +312,10 @@ def create_themes():
             dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (55, 85, 120))
             dpg.add_theme_color(dpg.mvThemeCol_Text, (160, 200, 255))
 
+    # === CELL COLOR PALETTES ===
+    from cell_colors import create_cell_color_themes
+    create_cell_color_themes()
+
 
 def get_inst_theme(is_selected: bool, is_converted: bool) -> str:
     """Get theme for instrument button."""

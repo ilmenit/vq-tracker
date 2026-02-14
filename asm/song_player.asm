@@ -495,18 +495,24 @@ nmi_stub:
     ORG $8000                   ; Data above bank window (always main RAM)
 .endif
 
+_DATA_START_ = *
     icl "pitch/pitch_tables.asm"
+_AFTER_PITCH_ = *
 
     icl "pitch/VOLUME_SCALE.asm"
+_AFTER_VOLSCALE_ = *
 
 ; ==========================================================================
 ; INCLUDE SONG AND SAMPLE DATA
 ; ==========================================================================
     icl "SONG_DATA.asm"
+_AFTER_SONG_ = *
     icl "SAMPLE_DIR.asm"        ; SAMPLE_START/END + SAMPLE_MODE tables
+_AFTER_SAMPLEDIR_ = *
     icl "VQ_LO.asm"
     icl "VQ_HI.asm"
     icl "VQ_BLOB.asm"           ; Codebook data (always in main RAM)
+_AFTER_VQ_ = *
 
 .ifdef USE_BANKING
     ; Banking mode: indices and raw data are in extended memory banks.
@@ -620,8 +626,16 @@ prep3_n_banks:    .byte 1
     .endif
     
     ; Data (tables + song + codebook + banking vars) must fit below $C000
+    ; Report section sizes to help diagnose overflow
     .if * > $C000
-        .error "Data overflow! Tables+song+codebook exceed $C000 in banking mode."
+        ; Determine which section pushed us over
+        .if _AFTER_SONG_ > $C000
+            .error "SONG_DATA too large for banking mode! Song data alone exceeds $C000. Reduce patterns or songlines."
+        .elseif _AFTER_VQ_ > $C000
+            .error "Data overflow after VQ tables! Pitch+Volume+Song+VQ exceed $C000. Reduce song data or VQ codebook."
+        .else
+            .error "Data overflow! All data sections combined exceed $C000. Reduce song data, patterns, or instruments."
+        .endif
     .endif
     
     ; Verify REQUIRED_BANKS is defined (comes from BANK_CFG.asm)
@@ -638,7 +652,11 @@ prep3_n_banks:    .byte 1
     ; --- 64KB mode validation ---
     
     .if * > $C000
-        .error "Memory overflow! Reduce samples or lower start address."
+        .if _AFTER_SONG_ > $C000
+            .error "SONG_DATA too large! Song data alone exceeds $C000. Reduce patterns or use extended memory."
+        .else
+            .error "Memory overflow! All data exceeds $C000. Reduce samples, use VQ, or switch to extended memory."
+        .endif
     .endif
     
 .endif

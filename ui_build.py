@@ -171,12 +171,72 @@ def show_settings_dialog(*args):
     state.set_input_active(True)
     vp_w = dpg.get_viewport_width()
     vp_h = dpg.get_viewport_height()
-    w, h = 340, 290
+    w, h = 580, 480
 
     def on_close():
         state.set_input_active(False)
+        G.save_config()
         if dpg.does_item_exist(_SETTINGS_DLG):
             dpg.delete_item(_SETTINGS_DLG)
+
+    def _on_palette_change(sender, value, user_data):
+        col_type = user_data  # "note", "inst", "vol", or "ptn"
+        if col_type == "note":
+            G.note_palette = value
+        elif col_type == "inst":
+            G.inst_palette = value
+        elif col_type == "vol":
+            G.vol_palette = value
+        elif col_type == "ptn":
+            G.ptn_palette = value
+        G.save_config()
+        # Update preview strip
+        _update_preview(col_type, value)
+        # Refresh editors to show new colors
+        import ui_refresh as ui
+        ui.refresh_editor()
+        ui.refresh_song_editor()
+        ui.refresh_all_pattern_combos()
+        ui.refresh_all_instrument_combos()
+
+    def _update_preview(col_type, palette_name):
+        """Update the 16-number preview strip for a palette row."""
+        for i in range(16):
+            tag = f"{_SETTINGS_DLG}_prev_{col_type}_{i}"
+            if dpg.does_item_exist(tag):
+                if palette_name == "None":
+                    dpg.configure_item(tag, color=(160, 160, 160))
+                else:
+                    from cell_colors import PALETTES
+                    colors = PALETTES.get(palette_name)
+                    if colors and i < len(colors):
+                        dpg.configure_item(tag, color=colors[i])
+
+    def _add_palette_row(label, default, user_data, tooltip_text):
+        """Add a palette combo + preview row inside a table."""
+        with dpg.table_row():
+            # Column 1: label
+            with dpg.table_cell():
+                dpg.add_text(f"{label}:", color=(180, 180, 180))
+            # Column 2: combo
+            with dpg.table_cell():
+                c = dpg.add_combo(items=PALETTE_NAMES, default_value=default,
+                                  width=110, callback=_on_palette_change,
+                                  user_data=user_data)
+                with dpg.tooltip(c):
+                    dpg.add_text(tooltip_text)
+            # Column 3: preview strip
+            with dpg.table_cell():
+                from cell_colors import PALETTES
+                colors = PALETTES.get(default, [(160, 160, 160)] * 16)
+                with dpg.group(horizontal=True):
+                    for i in range(16):
+                        lbl = f"{i:X}" if state.hex_mode else f"{i}"
+                        col = colors[i] if default != "None" else (160, 160, 160)
+                        dpg.add_text(lbl, tag=f"{_SETTINGS_DLG}_prev_{user_data}_{i}",
+                                     color=col)
+
+    from cell_colors import PALETTE_NAMES
 
     with dpg.window(tag=_SETTINGS_DLG, label="Settings", modal=True,
                     width=w, height=h,
@@ -222,7 +282,31 @@ def show_settings_dialog(*args):
             dpg.add_text("ON: entering a note stamps instrument + volume.")
             dpg.add_text("OFF: only changes the note (edit mask).")
 
-        dpg.add_spacer(height=15)
+        dpg.add_spacer(height=10)
+        dpg.add_separator()
+        dpg.add_spacer(height=6)
+
+        # Cell Colors section
+        dpg.add_text("CELL COLORS", color=(200, 200, 100))
+        dpg.add_spacer(height=4)
+
+        with dpg.table(header_row=False, borders_innerH=False,
+                        borders_outerH=False, borders_innerV=False,
+                        borders_outerV=False, pad_outerX=True):
+            dpg.add_table_column(width_fixed=True, init_width_or_weight=80)
+            dpg.add_table_column(width_fixed=True, init_width_or_weight=120)
+            dpg.add_table_column(width_stretch=True)
+
+            _add_palette_row("Note",       G.note_palette, "note",
+                             "Color notes by pitch (C through B)")
+            _add_palette_row("Instrument", G.inst_palette, "inst",
+                             "Color by instrument number (mod 16)")
+            _add_palette_row("Volume",     G.vol_palette, "vol",
+                             "Color by volume level (0-15)")
+            _add_palette_row("Pattern",    G.ptn_palette, "ptn",
+                             "Color pattern numbers in Song grid and combos")
+
+        dpg.add_spacer(height=10)
         dpg.add_separator()
         dpg.add_spacer(height=8)
         with dpg.group(horizontal=True):
@@ -419,7 +503,7 @@ def rebuild_editor_grid():
                                      callback=C.editor_header_click, user_data=(ch, COL_NOTE))
                 dpg.bind_item_theme(hdr, f"theme_header_ch{ch}")
                 with dpg.tooltip(hdr):
-                    dpg.add_text(f"Channel {ch+1} — Note", color=COL_CH[ch])
+                    dpg.add_text(f"Channel {ch+1} - Note", color=COL_CH[ch])
                     dpg.add_separator()
                     dpg.add_text("Click to move cursor here.")
                     dpg.add_text("Enter notes with keyboard:")
@@ -430,7 +514,7 @@ def rebuild_editor_grid():
                                      callback=C.editor_header_click, user_data=(ch, COL_INST))
                 dpg.bind_item_theme(hdr, f"theme_header_ch{ch}")
                 with dpg.tooltip(hdr):
-                    dpg.add_text(f"Channel {ch+1} — Instrument", color=COL_CH[ch])
+                    dpg.add_text(f"Channel {ch+1} - Instrument", color=COL_CH[ch])
                     dpg.add_separator()
                     dpg.add_text("Click to move cursor here.")
                     dpg.add_text("Use [ ] keys to change.")
@@ -439,7 +523,7 @@ def rebuild_editor_grid():
                                          callback=C.editor_header_click, user_data=(ch, COL_VOL))
                     dpg.bind_item_theme(hdr, f"theme_header_ch{ch}")
                     with dpg.tooltip(hdr):
-                        dpg.add_text(f"Channel {ch+1} — Volume", color=COL_CH[ch])
+                        dpg.add_text(f"Channel {ch+1} - Volume", color=COL_CH[ch])
                         dpg.add_separator()
                         dpg.add_text("Click to move cursor here.")
                         dpg.add_text("F = max, 0 = silent.")
@@ -724,6 +808,10 @@ def build_main_area():
                             dpg.add_text("Clear all song data. Instruments kept.")
                         dpg.add_spacer(width=5)
                         dpg.add_text(tag="build_status_label", default_value="", color=COL_DIM)
+
+                    # VU meters: 4 vertical bars at bottom of SONG INFO
+                    dpg.add_spacer(height=4)
+                    dpg.add_drawlist(tag="vu_drawlist", width=-1, height=55)
             
             dpg.add_spacer(height=2)
             
@@ -873,3 +961,15 @@ def build_ui():
         dpg.add_spacer(height=2)
         build_main_area()
         build_status_bar()
+    _bind_panel_focus_handlers()
+
+
+def _bind_panel_focus_handlers():
+    """Bind focus detection to panels.
+    
+    Note: DPG child_windows don't support mvClickedHandler, so panel
+    focus switching is handled by on_global_mouse_click() in ui_callbacks.py
+    using is_item_hovered(). This function exists as a hook for any future
+    panel-specific handlers that DO work on child_windows.
+    """
+    pass  # Focus detection via global mouse handler

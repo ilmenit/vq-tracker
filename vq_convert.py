@@ -161,7 +161,9 @@ class VQResult:
     """Result of VQ conversion."""
     success: bool = False
     output_dir: Optional[str] = None
-    vq_data_size: int = 0        # Actual binary size for Atari (from builder.stats)
+    vq_data_size: int = 0        # Total binary size for Atari (VQ + RAW combined)
+    vq_only_size: int = 0        # VQ portion only (blob + indices + tables)
+    raw_only_size: int = 0       # RAW portion only (page-aligned sample data)
     converted_wavs: List[str] = field(default_factory=list)
     error_message: str = ""
     # Per-instrument sizes (populated after conversion)
@@ -419,6 +421,8 @@ class VQConverter:
                     # Get stats directly from builder instance
                     if builder and builder.stats:
                         result.vq_data_size = builder.stats.get('size_bytes', 0)
+                        result.vq_only_size = builder.stats.get('vq_size_bytes', 0)
+                        result.raw_only_size = builder.stats.get('raw_size_bytes', 0)
                     
                     result.success = True
                     self.vq_state.output_dir = result.output_dir
@@ -426,7 +430,12 @@ class VQConverter:
                     self._queue_output(f"SUCCESS: Conversion complete!\n")
                     self._queue_output(f"Output: {result.output_dir}\n")
                     if result.vq_data_size > 0:
-                        self._queue_output(f"Atari data: {format_size(result.vq_data_size)}\n")
+                        self._queue_output(f"Atari data: {format_size(result.vq_data_size)}")
+                        if result.vq_only_size > 0 and result.raw_only_size > 0:
+                            self._queue_output(
+                                f" (VQ: {format_size(result.vq_only_size)}"
+                                f", RAW: {format_size(result.raw_only_size)})")
+                        self._queue_output("\n")
                     self._queue_output(f"Preview WAVs: {len(result.converted_wavs)} files\n")
                 else:
                     result.success = False

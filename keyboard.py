@@ -11,33 +11,28 @@ import ops
 import ui_refresh as R
 import ui_globals as G
 import key_config
+import dpg_keys
 
-# ── Key-to-character mapping (note input & hex entry — NOT configurable) ─────
-KEY_MAP = {
-    dpg.mvKey_A: 'a', dpg.mvKey_B: 'b', dpg.mvKey_C: 'c', dpg.mvKey_D: 'd',
-    dpg.mvKey_E: 'e', dpg.mvKey_F: 'f', dpg.mvKey_G: 'g', dpg.mvKey_H: 'h',
-    dpg.mvKey_I: 'i', dpg.mvKey_J: 'j', dpg.mvKey_K: 'k', dpg.mvKey_L: 'l',
-    dpg.mvKey_M: 'm', dpg.mvKey_N: 'n', dpg.mvKey_O: 'o', dpg.mvKey_P: 'p',
-    dpg.mvKey_Q: 'q', dpg.mvKey_R: 'r', dpg.mvKey_S: 's', dpg.mvKey_T: 't',
-    dpg.mvKey_U: 'u', dpg.mvKey_V: 'v', dpg.mvKey_W: 'w', dpg.mvKey_X: 'x',
-    dpg.mvKey_Y: 'y', dpg.mvKey_Z: 'z',
-    dpg.mvKey_0: '0', dpg.mvKey_1: '1', dpg.mvKey_2: '2', dpg.mvKey_3: '3',
-    dpg.mvKey_4: '4', dpg.mvKey_5: '5', dpg.mvKey_6: '6', dpg.mvKey_7: '7',
-    dpg.mvKey_8: '8', dpg.mvKey_9: '9',
-    dpg.mvKey_NumPad0: '0', dpg.mvKey_NumPad1: '1', dpg.mvKey_NumPad2: '2',
-    dpg.mvKey_NumPad3: '3', dpg.mvKey_NumPad4: '4', dpg.mvKey_NumPad5: '5',
-    dpg.mvKey_NumPad6: '6', dpg.mvKey_NumPad7: '7', dpg.mvKey_NumPad8: '8',
-    dpg.mvKey_NumPad9: '9',
-    dpg.mvKey_Minus: '-',
-    dpg.mvKey_Subtract: '-',
-    dpg.mvKey_Add: '+',
-    dpg.mvKey_Multiply: '*',
-    # Platform-specific key codes for backtick & equals
-    606: '`', 602: '=',        # DearPyGUI internal
-    96: '`', 45: '-', 61: '=', # GLFW codes
+# ── Key-to-character mapping — built at init from resolved constants ─────
+# Populated by init_keys() after DPG context is created.
+KEY_MAP = {}
+
+# Shift-modified character overrides (same physical key, different char)
+# Only includes mappings where we need the shifted character for tracker input.
+# We intentionally do NOT map shift+numbers to symbols — digits must stay
+# as digits for hex/decimal entry even when shift is held.
+_SHIFT_MAP = {
+    '`': '~',   # Grave → Tilde  (V-- entry)
 }
 
-KEY_GRAVE = 96  # Backtick / grave accent
+
+def init_keys():
+    """Build KEY_MAP from resolved DPG key constants.
+    
+    Must be called after dpg_keys.init() (i.e. after dpg.create_context).
+    """
+    global KEY_MAP
+    KEY_MAP = dpg_keys.build_key_map()
 
 # ── Song-editor pending hex state ────────────────────────────────────────────
 _song_pending_digit = None
@@ -167,7 +162,7 @@ def handle_key(sender, key):
     # ── Configurable action lookup (from keyboard.json) ───────────────────
     action = key_config.get_action(key, ctrl, shift)
     # NumpadEnter is a transparent alias for Enter in action lookup
-    if action is None and key == dpg.mvKey_NumPadEnter:
+    if action is None and key == dpg_keys.get('mvKey_NumPadEnter'):
         action = key_config.get_action(dpg.mvKey_Return, ctrl, shift)
     if action:
         handler = ACTION_HANDLERS.get(action)
@@ -210,15 +205,15 @@ def handle_key(sender, key):
     elif key == dpg.mvKey_Right: ops.move_cursor(0,  1)
     elif key == dpg.mvKey_Tab:
         ops.prev_channel() if shift else ops.next_channel()
-    elif key == dpg.mvKey_Prior: ops.jump_rows(-G.visible_rows)
-    elif key == dpg.mvKey_Next:  ops.jump_rows( G.visible_rows)
+    elif key == dpg_keys.get('mvKey_Prior'): ops.jump_rows(-G.visible_rows)
+    elif key == dpg_keys.get('mvKey_Next'):  ops.jump_rows( G.visible_rows)
     elif key == dpg.mvKey_Home:  ops.jump_start()
     elif key == dpg.mvKey_End:   ops.jump_end()
 
     # Editing
     elif key == dpg.mvKey_Delete:
         ops.delete_row()
-    elif key == dpg.mvKey_Back:
+    elif key == dpg_keys.get('mvKey_Back'):
         ops.clear_cell()
         ops.jump_rows(-state.step)
     elif key == dpg.mvKey_Insert:
@@ -227,16 +222,19 @@ def handle_key(sender, key):
     # Octave change (numpad special keys — not configurable editing keys)
     elif key == dpg.mvKey_Multiply: ops.octave_up()
     elif key == dpg.mvKey_Add:      ops.octave_up()
-    elif key in (dpg.mvKey_Subtract, dpg.mvKey_Minus): ops.octave_down()
+    elif key in (dpg.mvKey_Subtract, dpg_keys.get('mvKey_Minus', -1)): ops.octave_down()
 
     # Instrument change
-    elif key == dpg.mvKey_Open_Brace:  ops.prev_instrument()
-    elif key == dpg.mvKey_Close_Brace: ops.next_instrument()
+    elif key == dpg_keys.get('mvKey_Open_Brace'):  ops.prev_instrument()
+    elif key == dpg_keys.get('mvKey_Close_Brace'): ops.next_instrument()
 
     # Character input (notes, hex digits, octave change, note-off)
     else:
         char = KEY_MAP.get(key)
         if char:
+            # Apply shift to get shifted character (e.g. ` → ~)
+            if shift and char in _SHIFT_MAP:
+                char = _SHIFT_MAP[char]
             handle_char(char)
 
 
@@ -253,13 +251,14 @@ def _handle_instruments_key(key, shift):
     total = len(state.song.instruments)
     if total == 0:
         # Even with no instruments, consume nav keys so they don't trigger actions
-        if key in (dpg.mvKey_Spacebar, dpg.mvKey_Return, dpg.mvKey_NumPadEnter,
-                   dpg.mvKey_Up, dpg.mvKey_Down, dpg.mvKey_Prior, dpg.mvKey_Next,
+        if key in (dpg.mvKey_Spacebar, dpg.mvKey_Return, dpg_keys.get('mvKey_NumPadEnter'),
+                   dpg.mvKey_Up, dpg.mvKey_Down, dpg_keys.get('mvKey_Prior'),
+                   dpg_keys.get('mvKey_Next'),
                    dpg.mvKey_Home, dpg.mvKey_End):
             return True
         return False
 
-    if key == dpg.mvKey_Spacebar or key in (dpg.mvKey_Return, dpg.mvKey_NumPadEnter):
+    if key == dpg.mvKey_Spacebar or key in (dpg.mvKey_Return, dpg_keys.get('mvKey_NumPadEnter')):
         _play_instrument_preview(1)
         return True
     elif key == dpg.mvKey_Up:
@@ -270,10 +269,10 @@ def _handle_instruments_key(key, shift):
         if state.instrument < total - 1:
             state.instrument += 1; ops.refresh_instruments()
         return True
-    elif key == dpg.mvKey_Prior:
+    elif key == dpg_keys.get('mvKey_Prior'):
         state.instrument = max(0, state.instrument - 8); ops.refresh_instruments()
         return True
-    elif key == dpg.mvKey_Next:
+    elif key == dpg_keys.get('mvKey_Next'):
         state.instrument = min(total - 1, state.instrument + 8); ops.refresh_instruments()
         return True
     elif key == dpg.mvKey_Home:
@@ -338,12 +337,12 @@ def _handle_song_key(key):
         state.song_cursor_row = total_songlines - 1
         state.songline = state.song_cursor_row
         ops.refresh_song_editor(); ops.refresh_editor()
-    elif key == dpg.mvKey_Prior:
+    elif key == dpg_keys.get('mvKey_Prior'):
         clear_song_pending()
         state.song_cursor_row = max(0, state.song_cursor_row - G.SONG_VISIBLE_ROWS)
         state.songline = state.song_cursor_row
         ops.refresh_song_editor(); ops.refresh_editor()
-    elif key == dpg.mvKey_Next:
+    elif key == dpg_keys.get('mvKey_Next'):
         clear_song_pending()
         state.song_cursor_row = min(total_songlines - 1, state.song_cursor_row + G.SONG_VISIBLE_ROWS)
         state.songline = state.song_cursor_row

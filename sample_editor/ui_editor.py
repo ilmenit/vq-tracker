@@ -10,6 +10,7 @@ Full-featured non-destructive sample editor with:
 - Comprehensive tooltips and empty-state guide
 """
 import logging
+import os
 import time
 import threading
 import numpy as np
@@ -400,7 +401,17 @@ class SampleEditor:
                                    callback=self._on_reset_all)
                 with dpg.tooltip(b):
                     dpg.add_text("Remove all effects from chain")
-                dpg.add_spacer(width=490)
+
+                dpg.add_spacer(width=10)
+                b = dpg.add_button(label="Export", width=70,
+                                   callback=self._on_export)
+                with dpg.tooltip(b):
+                    dpg.add_text("Export processed sample to file")
+                    dpg.add_text("WAV always available; MP3/OGG/FLAC",
+                                 color=(160, 160, 160))
+                    dpg.add_text("require ffmpeg", color=(160, 160, 160))
+
+                dpg.add_spacer(width=400)
                 b = dpg.add_button(label="Close", width=70,
                                    callback=lambda *a: self.close())
                 with dpg.tooltip(b):
@@ -932,6 +943,57 @@ class SampleEditor:
         inst.effects.clear()
         self.selected = -1
         self._after_change()
+
+    def _on_export(self, *args):
+        """Export the processed sample to a file."""
+        inst = self._get_inst()
+        if not inst or not inst.is_loaded():
+            return
+
+        from sample_editor.pipeline import get_playback_audio
+        audio = get_playback_audio(inst)
+        if audio is None or len(audio) == 0:
+            return
+
+        # Build a safe default filename from instrument name
+        safe_name = "".join(
+            c if c.isalnum() or c in "-_ " else "_"
+            for c in (inst.name or "sample")
+        ).strip() or "sample"
+
+        import native_dialog
+        from file_io import get_export_filters, export_sample
+
+        filters = get_export_filters()
+        path = native_dialog.save_file(
+            title=f"Export: {inst.name}",
+            filters=filters,
+            default_name=f"{safe_name}.wav",
+        )
+        if not path:
+            return
+
+        # Ensure extension is present
+        if not os.path.splitext(path)[1]:
+            path += ".wav"
+
+        ok, msg = export_sample(audio, inst.sample_rate, path)
+        if ok:
+            logger.info(f"Exported instrument {self.inst_idx}: {msg}")
+            # Show status in main UI
+            try:
+                from state import state
+                import ui_refresh as ui
+                ui.show_status(msg)
+            except ImportError:
+                pass
+        else:
+            logger.error(f"Export failed: {msg}")
+            try:
+                import ui_refresh as ui
+                ui.show_status(f"Export failed: {msg}")
+            except ImportError:
+                pass
 
     def _on_octave_change(self, sender, value, *args):
         try:

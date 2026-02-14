@@ -61,16 +61,16 @@ def check_dependencies():
     for name, package in required:
         try:
             __import__(package.split('.')[0])
-            print(f"  âœ“ {name}")
+            print(f"  [OK] {name}")
         except (ImportError, OSError):
-            print(f"  âœ— {name} - MISSING")
+            print(f"  [X] {name} - MISSING")
             missing.append(name)
     
     # Check for vq_converter folder
     if os.path.isdir("vq_converter/pokey_vq"):
-        print(f"  âœ“ vq_converter folder found")
+        print(f"  [OK] vq_converter folder found")
     else:
-        print(f"  â—‹ vq_converter folder not found (needed for CONVERT functionality)")
+        print(f"  [ ] vq_converter folder not found (needed for CONVERT functionality)")
     
     if missing:
         print(f"\nMissing required packages: {', '.join(missing)}")
@@ -97,16 +97,16 @@ def check_bin_directory():
         plat_dir = "windows_x86_64"
         binary = "mads.exe"
     else:
-        print(f"  âœ— Unsupported platform: {system}")
+        print(f"  [X] Unsupported platform: {system}")
         return False
     
     mads_path = os.path.join("bin", plat_dir, binary)
     
     if os.path.exists(mads_path):
-        print(f"  âœ“ Found: {mads_path}")
+        print(f"  [OK] Found: {mads_path}")
         return True
     else:
-        print(f"  âœ— Not found: {mads_path}")
+        print(f"  [X] Not found: {mads_path}")
         print(f"\nPlease download MADS from http://mads.atari8.info/")
         print(f"and place {binary} in bin/{plat_dir}/")
         return False
@@ -117,7 +117,7 @@ def check_asm_directory():
     print("\nChecking ASM templates...")
     
     if not os.path.isdir("asm"):
-        print("  âœ— asm/ directory not found")
+        print("  [X] asm/ directory not found")
         return False
     
     # Count files recursively
@@ -129,7 +129,7 @@ def check_asm_directory():
     expected_subdirs = ["common", "tracker", "pitch"]
     found_subdirs = [d for d in expected_subdirs if os.path.isdir(os.path.join("asm", d))]
     
-    print(f"  âœ“ Found asm/ directory with {total_files} files")
+    print(f"  [OK] Found asm/ directory with {total_files} files")
     print(f"    Subdirectories: {', '.join(found_subdirs)}")
     
     return len(found_subdirs) >= 2  # At least common and tracker
@@ -142,10 +142,10 @@ def check_samples_directory():
     if os.path.isdir("samples"):
         samples = [f for f in os.listdir("samples") 
                    if f.lower().endswith(('.wav', '.mp3', '.ogg', '.flac'))]
-        print(f"  âœ“ Found samples/ directory with {len(samples)} audio files")
+        print(f"  [OK] Found samples/ directory with {len(samples)} audio files")
         return True, len(samples)
     else:
-        print("  â—‹ samples/ directory not found (optional - example samples)")
+        print("  [ ] samples/ directory not found (optional - example samples)")
         return False, 0
 
 
@@ -229,7 +229,7 @@ def build_executable():
     
     if os.path.exists(exe_path):
         size = os.path.getsize(exe_path) / (1024 * 1024)
-        print(f"\nâœ“ Executable built: {exe_path}")
+        print(f"\n[OK] Executable built: {exe_path}")
         print(f"  Size: {size:.1f} MB")
         return exe_path
     else:

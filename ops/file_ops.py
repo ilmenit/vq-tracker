@@ -18,6 +18,21 @@ from ops.base import ui, save_undo, fmt
 logger = logging.getLogger("tracker.ops.file")
 
 
+def _sync_editor_grid():
+    """Rebuild editor grid to match current song settings.
+    
+    Must be called after state.song changes when volume_control
+    or hex_mode may differ from the previous song's settings.
+    The grid layout (column count, widths) depends on these flags.
+    """
+    try:
+        from ui_callbacks import _rebuild_editor_grid
+        if _rebuild_editor_grid:
+            _rebuild_editor_grid()
+    except (ImportError, AttributeError):
+        pass
+
+
 # =============================================================================
 # HELPERS
 # =============================================================================
@@ -61,6 +76,7 @@ def _do_new():
     if file_io.work_dir:
         file_io.work_dir.clear_all()
     state.audio.set_song(state.song)
+    _sync_editor_grid()  # Reset grid (volume_control may have changed)
     ui.refresh_all()
     ui.update_title()
     ui.show_status("New project created")
@@ -109,6 +125,7 @@ def _load_file(path: str):
 
         state.selection.clear()
         state.audio.set_song(state.song)
+        _sync_editor_grid()  # Rebuild grid if volume_control changed
         ui.refresh_all()
         ui.update_title()
         ui.show_status(msg)
@@ -125,20 +142,24 @@ def _load_file(path: str):
 
 
 def _restore_editor_state(editor_state: EditorState):
-    """Restore editor state from loaded project."""
+    """Restore project-specific state from loaded .pvq file.
+    
+    Only cursor position and VQ settings are per-project.
+    Editor preferences (hex_mode, follow, octave, step) are personal
+    settings stored in local config — never overwritten by .pvq load.
+    """
+    # Project state: where the cursor was
     state.songline = editor_state.songline
     state.row = editor_state.row
     state.channel = editor_state.channel
     state.column = editor_state.column
     state.song_cursor_row = editor_state.song_cursor_row
     state.song_cursor_col = editor_state.song_cursor_col
-    state.octave = editor_state.octave
-    state.step = editor_state.step
+    state.selected_pattern = editor_state.selected_pattern
     state.instrument = editor_state.instrument
     state.volume = editor_state.volume
-    state.selected_pattern = editor_state.selected_pattern
-    state.hex_mode = editor_state.hex_mode
-    state.follow = editor_state.follow
+    # Editor preferences NOT restored: hex_mode, follow, octave, step
+    # (these are personal settings from local config)
 
     # Restore VQ settings
     state.vq.settings.rate = editor_state.vq_rate
@@ -327,6 +348,7 @@ def _do_import_mod(path: str, options: dict = None):
         state.selection.clear()
         state.vq.invalidate()
         state.audio.set_song(state.song)
+        _sync_editor_grid()  # Rebuild grid if volume_control changed
         ui.refresh_all()
         ui.update_title()
         ui.show_status(import_log.summary_line())

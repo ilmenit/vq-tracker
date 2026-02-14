@@ -499,6 +499,15 @@ def main():
     create_themes()
     logger.debug("UI themes created")
     
+    # Resolve platform-dependent key constants (needs DPG context)
+    import dpg_keys
+    dpg_keys.init()
+    logger.debug(dpg_keys.dump_key_codes())
+    
+    # Build KEY_MAP from resolved constants
+    from keyboard import init_keys
+    init_keys()
+    
     # Load configurable keyboard bindings (needs DPG for key codes)
     kc = key_config.init()
     if kc.errors:
@@ -571,6 +580,7 @@ def main():
             C.poll_vq_conversion()  # Poll VQ conversion status (thread-safe)
             C.poll_build_progress()  # Poll build progress (thread-safe)
             C.poll_button_blink()   # Update blinking attention buttons
+            R.update_vu_meters()   # Update VU meter bars
             dpg.render_dearpygui_frame()
     except Exception as e:
         logger.exception(f"Error in main loop: {e}")

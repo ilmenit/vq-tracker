@@ -779,6 +779,109 @@ def load_sample(inst: Instrument, path: str,
         return False, f"Load failed: {e}"
 
 
+def get_export_extensions() -> List[str]:
+    """Get list of supported export file extensions.
+    
+    WAV is always supported.
+    Other formats (MP3, OGG, FLAC, AIFF) require pydub + ffmpeg.
+    """
+    exts = ['.wav']
+    if PYDUB_OK and FFMPEG_OK:
+        exts.extend(['.flac', '.ogg', '.mp3', '.aiff'])
+    return exts
+
+
+def get_export_filters() -> dict:
+    """Get file dialog filter dict for export formats."""
+    filters = {"WAV Audio": "wav"}
+    if PYDUB_OK and FFMPEG_OK:
+        filters["FLAC Audio"] = "flac"
+        filters["OGG Vorbis"] = "ogg"
+        filters["MP3 Audio"] = "mp3"
+        filters["AIFF Audio"] = "aiff"
+    return filters
+
+
+def export_sample(audio: np.ndarray, sample_rate: int, path: str) -> Tuple[bool, str]:
+    """Export audio data to a file.
+    
+    Supports WAV natively. Other formats (MP3, OGG, FLAC, AIFF) require
+    pydub + ffmpeg.
+    
+    Args:
+        audio: Float32 audio array (mono, -1.0 to 1.0)
+        sample_rate: Sample rate in Hz
+        path: Output file path (extension determines format)
+        
+    Returns:
+        (success, message)
+    """
+    if audio is None or len(audio) == 0:
+        return False, "No audio data to export"
+    
+    ext = os.path.splitext(path)[1].lower()
+    
+    try:
+        # Convert float32 to int16
+        audio_int16 = np.clip(audio * 32767, -32768, 32767).astype(np.int16)
+        
+        if ext == '.wav':
+            # WAV export — always available, no dependencies
+            import wave
+            with wave.open(path, 'wb') as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)  # 16-bit
+                wf.setframerate(sample_rate)
+                wf.writeframes(audio_int16.tobytes())
+            
+            duration = len(audio) / sample_rate
+            size_kb = os.path.getsize(path) / 1024
+            return True, f"Exported WAV: {duration:.2f}s, {sample_rate}Hz, {size_kb:.0f} KB"
+        
+        elif ext in ('.mp3', '.ogg', '.flac', '.aiff', '.aif'):
+            if not PYDUB_OK:
+                return False, "pydub not installed — only WAV export available"
+            if not FFMPEG_OK and ext != '.wav':
+                return False, "ffmpeg not found — only WAV export available"
+            
+            # Create AudioSegment from raw int16 data
+            seg = AudioSegment(
+                data=audio_int16.tobytes(),
+                sample_width=2,
+                frame_rate=sample_rate,
+                channels=1,
+            )
+            
+            # Map extension to pydub format name
+            fmt_map = {
+                '.mp3': 'mp3', '.ogg': 'ogg', '.flac': 'flac',
+                '.aiff': 'aiff', '.aif': 'aiff',
+            }
+            fmt = fmt_map.get(ext, ext.lstrip('.'))
+            
+            # Export with reasonable quality settings
+            export_params = {}
+            if fmt == 'mp3':
+                export_params = {'bitrate': '192k'}
+            elif fmt == 'ogg':
+                export_params = {'parameters': ['-q:a', '6']}
+            
+            seg.export(path, format=fmt, **export_params)
+            
+            duration = len(audio) / sample_rate
+            size_kb = os.path.getsize(path) / 1024
+            return True, f"Exported {ext.upper().lstrip('.')}: {duration:.2f}s, {sample_rate}Hz, {size_kb:.0f} KB"
+        
+        else:
+            return False, f"Unsupported export format: {ext}"
+    
+    except FileNotFoundError:
+        return False, "ffmpeg not found — install ffmpeg for non-WAV export"
+    except Exception as e:
+        logger.error(f"Export failed: {e}")
+        return False, f"Export failed: {e}"
+
+
 def _read_wav(path: str) -> Tuple[int, Optional[np.ndarray]]:
     """Read WAV file using scipy or wave module."""
     if SCIPY_OK:

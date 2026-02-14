@@ -83,7 +83,7 @@ def enter_vol_change():
     volume.  Requires volume_control to be enabled on the song.
     """
     if not state.song.volume_control:
-        ui.show_status("Volume control is disabled — enable in Song Info")
+        ui.show_status("Volume control is disabled - enable in Song Info")
         return
 
     save_undo("Enter volume change")

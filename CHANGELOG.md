@@ -9,24 +9,53 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Features
 
-- **MOD Import Options dialog**: Importing a MOD file now shows a dialog with
-  two options before import begins. The importer scans the file and shows how
-  many volume effects and looped instruments were detected, so you can make an
-  informed choice:
+- **MOD Import Wizard**: The import dialog is now a full wizard with live memory
+  budget estimation. New features:
 
-  - **Per-row volume control**: When enabled, volume slides and set-volume
-    effects from the MOD are faithfully reproduced. The importer simulates the
-    original MOD's tick-by-tick volume changes and generates volume-change events
-    at every row where the volume differs. This produces accurate fade-ins,
-    fade-outs, and volume envelopes. Without this option, volume effects are
-    ignored (original behavior).
+  - **Target machine selection**: Choose memory config (64 KB to 1088 KB) before
+    import. The wizard shows how much space is available for song data vs samples
+    and updates in real-time as you change options.
 
-  - **Extend looped instruments**: When enabled, instruments that use looping in
-    the original MOD are automatically extended using the Sustain effect. The
-    importer calculates how long each looped instrument needs to play (based on
-    the longest note in the song) and unrolls the loop region accordingly. The
-    Sustain effect appears in each instrument's effects chain for later editing.
-    Without this option, looped instruments cut off at the sample end.
+  - **Per-row volume control**: Faithfully imports volume slides and set-volume
+    effects using per-position patterns with volume simulation. The wizard shows
+    the estimated pattern count and data size for both ON and OFF.
+
+  - **Extend looped instruments**: Unrolls loop regions using Sustain effect.
+    Now includes a max repeats control (1–64) and a per-instrument table showing
+    name, calculated repeats, and resulting size — so you can spot memory-hungry
+    instruments and cap them.
+
+  - **Pattern deduplication**: Automatically merges identical patterns after
+    import, which is especially effective when volume control creates per-position
+    patterns. Typical reduction: 40–60% fewer patterns.
+
+  - **Song truncation**: When song data overflows, the wizard shows an
+    Adjustments section with the option to keep only the first N positions.
+
+  - **Live budget bar**: Shows estimated song data vs available space with
+    percentage and fit/overflow status, updating instantly as options change.
+
+- **Instrument Export**: The Sample Editor now has an Export button in the bottom
+  bar. Exports the processed audio (with all effects applied) to WAV, and
+  additionally to FLAC, OGG, or MP3 when ffmpeg is available. Uses the native
+  save dialog with format filters.
+
+- **Cell color palettes**: Pattern editor cells can be colored by note pitch,
+  instrument number, volume level, or pattern number. Four multi-color palettes
+  (Chromatic, Pastel, Neon, Warm) provide 16 distinct colors each, plus six
+  single-color palettes (White, Green, Amber, Cyan, Blue, Pink). Each column
+  has an independent palette selector in Editor → Settings, with a live preview
+  strip showing all 16 colors. Pattern coloring applies everywhere pattern
+  numbers appear: Song grid cells, per-channel pattern combos in the editor
+  header, the Pattern section selector, and the instrument selector combo.
+  Default palette is Chromatic for all columns. Settings are stored in the
+  local editor config, not in .pvq project files.
+
+- **VU meters**: Four vertical bars in the SONG INFO panel show per-channel
+  activity during playback. Each bar spikes up on note trigger (height
+  proportional to volume) and decays smoothly downward. Color-coded to
+  match channel headers (red/green/blue/amber) with bright peak caps and
+  subtle glow. Zero CPU cost when silent (drawing skipped entirely).
 
 - **Volume-change events (V--)**: New event type that changes a channel's
   volume without interrupting the currently playing note. Displayed as "V--" in
@@ -73,7 +102,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 - **Settings moved to Editor menu**: Settings (Hex mode, Auto-save, Piano keys,
   Coupled entry) are now accessed via Editor → Settings in the menu bar, opening
-  in a modal dialog. This frees up screen space for the pattern editor.
+  in a modal dialog. This frees up screen space for the pattern editor. All
+  editor settings (including cell color palettes) are stored in the local config
+  file, not in .pvq project files — so your preferences follow you across
+  projects.
 
 - **Mark interval moved to Current section**: The row highlight interval
   selector is now in the CURRENT toolbar alongside Instrument, Volume, Octave,
@@ -83,6 +115,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   output line-by-line as the encoder runs, showing iteration progress
   (e.g. "Iteration 12/50...") in real time. Previously output only appeared
   after the entire conversion finished, making it look like the program hung.
+
+- **Effects indicator [E] in instrument list**: Each instrument row now shows
+  an [E] button between the optimizer indicator and the instrument name. Blue
+  when effects are applied (with tooltip listing effect types), blank otherwise.
+  Clicking opens the Sample Editor for that instrument.
+
+- **Detailed BUILD overflow diagnostics**: When song data exceeds the available
+  memory region, the build log now shows a per-file breakdown with sizes and
+  percentages (e.g. "SONG_DATA.asm: 20,620 bytes (20KB) — 77%"). The pre-flight
+  check now runs for banking mode too (previously only 64KB mode), catching
+  overflows before invoking MADS. ASM error messages now pinpoint which section
+  caused the overflow.
 
 ### Performance
 
@@ -127,6 +171,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 - **Removed dead code**: Cleaned up unused `original_sample_path` field,
   duplicate builder files, and an unused export function from the codebase.
+
+- **Double-sustain on .pvq round-trip**: MOD import overwrote `sample_data`
+  with the sustain-extended audio while also storing Sustain in the effects
+  chain. After save→load, the pipeline re-applied Sustain to already-extended
+  audio, doubling the loop unroll. Now the original audio stays in `sample_data`
+  (saved to WAV in .pvq) and the extended version goes to `processed_data`
+  (regenerated by the pipeline on load).
+
+- **song.speed not serialized in .pvq**: The initial speed (from the MOD's
+  first Fxx command) was lost on save→load, reverting to the default (6).
+  Now stored in project.json `meta.speed`.
+
+- **song.volume_control not set on import**: The wizard's "Enable per-row
+  volume control" option created volume events in patterns but never set
+  `song.volume_control = True`. BUILD would generate ASM without the
+  VOLUME_CONTROL flag, so all V-- events were silently ignored by the player.
+
+- **Import wizard crash with no loops**: Clicking Import on a MOD with no
+  looped samples crashed because `on_import` read the max_repeats widget
+  unconditionally. Now guarded with `does_item_exist()`.
+
+- **Editor preferences overwritten by .pvq load**: Opening a project file
+  overwrote hex mode, follow-cursor, octave, and step size with whatever
+  was stored in the project. These are now personal settings that persist
+  across projects via the local config file and are never changed by loading
+  a .pvq.
+
+- **Volume column not shown after MOD import or .pvq load**: Importing a MOD
+  with volume control enabled (or loading a .pvq saved with volume on) did
+  not rebuild the pattern editor grid. The Vol checkbox appeared checked but
+  the volume column was invisible. Now the editor grid is rebuilt whenever
+  a song is loaded, imported, or reset — syncing columns with the song's
+  volume_control setting.
+
+- **Key handling: cross-platform DPG compatibility**: DearPyGUI key constants
+  changed between versions (1.x used GLFW codes, 2.0 uses ImGui enum). Added
+  `dpg_keys.py` abstraction layer that tries multiple attribute names for
+  version-dependent keys (Prior/PageUp, Next/PageDown, Back/Backspace,
+  Open_Brace/LeftBracket, NumPadEnter/KeypadEnter, Grave/GraveAccent).
+  Fixes PageUp/PageDown, F1-F3 octave selection, and bracket keys across
+  all DPG versions. KEY_MAP is now built at runtime from resolved constants.
+
+- **Tilde key (V-- entry) not working**: Pressing Shift+\` always entered
+  note-off instead of V-- because DPG sends the same key code for both \`
+  and ~. The keyboard handler now detects shift state and transforms the
+  grave character to tilde before passing to handle_char().
 
 ---
 

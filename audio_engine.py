@@ -30,6 +30,7 @@ class Channel:
     position: float = 0.0
     pitch: float = 1.0
     enabled: bool = True  # Simplified: just enabled/disabled
+    vu_level: float = 0.0  # VU meter level (0.0–1.0), set on trigger
     
     def reset(self):
         self.active = False
@@ -182,13 +183,16 @@ class AudioEngine:
             if row.note == NOTE_OFF:
                 # Note-off: silence the channel
                 self.channels[ch_idx].active = False
+                self.channels[ch_idx].vu_level = 0.0
             elif row.note == VOL_CHANGE:
                 # Volume change only — no retrigger
                 self.channels[ch_idx].volume = row.volume
+                self.channels[ch_idx].vu_level = row.volume / 15.0
             elif row.note > 0:
                 inst = self.song.get_instrument(row.instrument)
                 if inst and inst.is_loaded():
                     self._trigger_note(ch_idx, row.note, inst, row.volume)
+                    self.channels[ch_idx].vu_level = row.volume / 15.0
     
     def _update_patterns(self):
         """Update pattern info and speed from current songline."""
@@ -314,8 +318,14 @@ class AudioEngine:
             self.playing = False
             self.mode = 'stop'
             self._stop_all_channels()
+            for ch in self.channels:
+                ch.vu_level = 0.0
             if was_playing and self.on_stop:
                 self._pending_callbacks.append((self.on_stop, ()))
+    
+    def get_vu_levels(self):
+        """Get current VU levels for all channels. Thread-safe."""
+        return [ch.vu_level for ch in self.channels[:MAX_CHANNELS]]
     
     def is_playing(self) -> bool:
         return self.playing

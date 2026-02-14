@@ -4,6 +4,11 @@ from constants import (MAX_CHANNELS, MAX_VOLUME, note_to_str, FOCUS_SONG,
                        COL_NOTE, COL_INST, COL_VOL)
 from state import state
 from ui_theme import get_cell_theme
+from cell_colors import (get_note_color_theme as _get_note_color,
+                         get_inst_color_theme as _get_inst_color,
+                         get_vol_color_theme as _get_vol_color,
+                         get_ptn_color_theme as _get_ptn_color,
+                         get_combo_color_theme as _get_combo_color)
 import ui_globals as G
 
 # Callbacks set by main module to avoid circular imports
@@ -40,6 +45,17 @@ def refresh_all():
         pass
 
 
+def _color_combo(tag: str, value: int, palette: str):
+    """Apply palette text color to a combo widget, or unbind if palette is None."""
+    if not dpg.does_item_exist(tag):
+        return
+    ct = _get_combo_color(value, palette)
+    if ct and dpg.does_item_exist(ct):
+        dpg.bind_item_theme(tag, ct)
+    else:
+        dpg.bind_item_theme(tag, 0)  # unbind
+
+
 def refresh_all_pattern_combos():
     """Update ALL pattern combo lists throughout the UI."""
     ptn_items = [G.fmt(i) for i in range(len(state.song.patterns))] + ["+"]
@@ -48,6 +64,7 @@ def refresh_all_pattern_combos():
         dpg.configure_item("ptn_select_combo", items=ptn_items)
         if state.selected_pattern < len(state.song.patterns):
             dpg.set_value("ptn_select_combo", G.fmt(state.selected_pattern))
+        _color_combo("ptn_select_combo", state.selected_pattern, G.ptn_palette)
     
     for ch in range(MAX_CHANNELS):
         combo_tag = f"ch_ptn_combo_{ch}"
@@ -56,6 +73,7 @@ def refresh_all_pattern_combos():
             ptns = state.get_patterns()
             if ch < len(ptns):
                 dpg.set_value(combo_tag, G.fmt(ptns[ch]))
+                _color_combo(combo_tag, ptns[ch], G.ptn_palette)
 
 
 def refresh_all_instrument_combos():
@@ -70,6 +88,7 @@ def refresh_all_instrument_combos():
             dpg.set_value("input_inst_combo", items[state.instrument])
         elif items:
             dpg.set_value("input_inst_combo", items[0])
+        _color_combo("input_inst_combo", state.instrument, G.inst_palette)
     
     if dpg.does_item_exist("input_vol_combo"):
         vol_items = [G.fmt_vol(v) for v in range(MAX_VOLUME + 1)]
@@ -123,7 +142,9 @@ def refresh_song_editor():
                     elif is_cursor_row:
                         theme = "theme_cell_current_row"
                     else:
-                        theme = "theme_cell_empty"
+                        # Apply pattern palette color
+                        cc = _get_ptn_color(ptn_val, G.ptn_palette, "n")
+                        theme = cc or "theme_cell_empty"
                     dpg.bind_item_theme(cell_tag, theme)
                 else:
                     dpg.configure_item(cell_tag, label="--")
@@ -387,6 +408,7 @@ def refresh_editor():
         combo_tag = f"ch_ptn_combo_{ch}"
         if dpg.does_item_exist(combo_tag):
             dpg.set_value(combo_tag, G.fmt(ptns[ch]))
+            _color_combo(combo_tag, ptns[ch], G.ptn_palette)
         cb_tag = f"ch_enabled_{ch}"
         if dpg.does_item_exist(cb_tag):
             dpg.set_value(cb_tag, state.audio.is_channel_enabled(ch))
@@ -447,7 +469,15 @@ def refresh_editor():
                     note_str = note_to_str(r.note)
                     prefix = "~" if is_repeat and actual_row == 0 else " "
                     dpg.configure_item(note_tag, label=f"{prefix}{note_str}")
-                    dpg.bind_item_theme(note_tag, cell_theme(is_cursor and state.column == COL_NOTE))
+                    base_theme = cell_theme(is_cursor and state.column == COL_NOTE)
+                    # Apply palette color for data cells (not cursor/playing/selected/inactive/repeat)
+                    cc_theme = None
+                    if (r.note > 0 and not is_cursor and not is_playing
+                            and not is_repeat and ch_enabled
+                            and not is_selected and G.note_palette != "None"):
+                        variant = "c" if is_cursor_row else ("h" if is_highlight else "n")
+                        cc_theme = _get_note_color(r.note, G.note_palette, variant)
+                    dpg.bind_item_theme(note_tag, cc_theme or base_theme)
                 else:
                     dpg.configure_item(note_tag, label="")
             
@@ -464,7 +494,15 @@ def refresh_editor():
                     if has_invalid_inst and not is_cursor:
                         dpg.bind_item_theme(inst_tag, "theme_cell_warning")
                     else:
-                        dpg.bind_item_theme(inst_tag, cell_theme(is_cursor and state.column == COL_INST))
+                        base_theme = cell_theme(is_cursor and state.column == COL_INST)
+                        cc_theme = None
+                        if (r.note > 0 and not has_invalid_inst
+                                and not is_cursor and not is_playing
+                                and not is_repeat and ch_enabled
+                                and not is_selected and G.inst_palette != "None"):
+                            variant = "c" if is_cursor_row else ("h" if is_highlight else "n")
+                            cc_theme = _get_inst_color(r.instrument, True, G.inst_palette, variant)
+                        dpg.bind_item_theme(inst_tag, cc_theme or base_theme)
                 else:
                     dpg.configure_item(inst_tag, label="")
             
@@ -473,7 +511,14 @@ def refresh_editor():
                 if r and row_idx < max_len:
                     vol_str = G.fmt_vol(r.volume) if r.note > 0 else ("-" if state.hex_mode else "--")
                     dpg.configure_item(vol_tag, label=vol_str)
-                    dpg.bind_item_theme(vol_tag, cell_theme(is_cursor and state.column == COL_VOL))
+                    base_theme = cell_theme(is_cursor and state.column == COL_VOL)
+                    cc_theme = None
+                    if (r.note > 0 and not is_cursor and not is_playing
+                            and not is_repeat and ch_enabled
+                            and not is_selected and G.vol_palette != "None"):
+                        variant = "c" if is_cursor_row else ("h" if is_highlight else "n")
+                        cc_theme = _get_vol_color(r.volume, True, G.vol_palette, variant)
+                    dpg.bind_item_theme(vol_tag, cc_theme or base_theme)
                 else:
                     dpg.configure_item(vol_tag, label="")
 
@@ -612,18 +657,121 @@ def update_validation_indicator():
     if errors > 0:
         # Red - errors found
         dpg.configure_item("validation_indicator", color=(255, 100, 100))
-        dpg.set_value("validation_indicator", f"âš  {errors} error(s)")
+        dpg.set_value("validation_indicator", f"[X] {errors} error(s)")
         if dpg.does_item_exist("validation_tooltip_text"):
             dpg.set_value("validation_tooltip_text", first_issue or "Click VALIDATE for details")
     elif warnings > 0:
         # Yellow - warnings only
         dpg.configure_item("validation_indicator", color=(255, 200, 100))
-        dpg.set_value("validation_indicator", f"âš  {warnings} warning(s)")
+        dpg.set_value("validation_indicator", f"[!] {warnings} warning(s)")
         if dpg.does_item_exist("validation_tooltip_text"):
             dpg.set_value("validation_tooltip_text", first_issue or "Click VALIDATE for details")
     else:
         # Green - all good
         dpg.configure_item("validation_indicator", color=(100, 200, 100))
-        dpg.set_value("validation_indicator", "âœ“ Valid")
+        dpg.set_value("validation_indicator", "[OK] Valid")
         if dpg.does_item_exist("validation_tooltip_text"):
             dpg.set_value("validation_tooltip_text", "Song is ready for export")
+
+
+# =============================================================================
+# VU METERS — vertical bars per channel
+# =============================================================================
+
+_vu_display = [0.0] * MAX_CHANNELS  # Smoothed display levels (0.0–1.0)
+_vu_was_silent = True  # Track if we already cleared
+
+_VU_DECAY = 0.92   # Per-frame decay (~60fps: full→10% in ~0.6s)
+_VU_TAG = "vu_drawlist"
+
+# Bar colors (RGBA) — match channel header colors
+_VU_BAR = [
+    (200, 60, 60, 180),    # Ch1 red
+    (60, 180, 80, 180),    # Ch2 green
+    (60, 120, 220, 180),   # Ch3 blue
+    (200, 165, 50, 180),   # Ch4 amber
+]
+_VU_PEAK = [
+    (255, 140, 140, 255),  # Ch1 bright red
+    (140, 255, 160, 255),  # Ch2 bright green
+    (140, 190, 255, 255),  # Ch3 bright blue
+    (255, 220, 120, 255),  # Ch4 bright amber
+]
+_VU_GLOW = [
+    (255, 80, 80, 60),     # Ch1 glow
+    (80, 255, 100, 60),    # Ch2 glow
+    (80, 150, 255, 60),    # Ch3 glow
+    (255, 200, 60, 60),    # Ch4 glow
+]
+
+
+def update_vu_meters():
+    """Update VU meter drawlist — vertical bars per channel.
+    
+    Called every frame from main loop.  Each bar spikes up on note
+    trigger and decays smoothly downward.
+    """
+    global _vu_display, _vu_was_silent
+    if not dpg.does_item_exist(_VU_TAG):
+        return
+
+    # Read engine levels and apply peak-hold + decay
+    engine_levels = state.audio.get_vu_levels()
+    for i in range(MAX_CHANNELS):
+        fresh = engine_levels[i] if i < len(engine_levels) else 0.0
+        _vu_display[i] = max(fresh, _vu_display[i] * _VU_DECAY)
+        # Let engine level decay too so next frame sees lower value
+        if i < len(state.audio.channels):
+            state.audio.channels[i].vu_level *= _VU_DECAY
+
+    # Skip drawing when all silent
+    if all(v < 0.005 for v in _vu_display):
+        if not _vu_was_silent:
+            children = dpg.get_item_children(_VU_TAG, slot=2)
+            if children:
+                dpg.delete_item(_VU_TAG, children_only=True)
+            _vu_was_silent = True
+        return
+    _vu_was_silent = False
+
+    # Get dimensions
+    w = dpg.get_item_width(_VU_TAG)
+    h = dpg.get_item_height(_VU_TAG)
+    if w < 20 or h < 10:
+        return
+
+    dpg.delete_item(_VU_TAG, children_only=True)
+
+    pad = 4
+    gap = 5
+    bar_w = max(6, (w - 2 * pad - (MAX_CHANNELS - 1) * gap) // MAX_CHANNELS)
+    max_h = h - pad * 2   # usable vertical pixels
+    peak_h = 3            # bright cap at top of bar
+
+    for i in range(MAX_CHANNELS):
+        level = min(1.0, _vu_display[i])
+        x = pad + i * (bar_w + gap)
+        bar_h = int(max_h * level)
+
+        if bar_h < 1:
+            continue
+
+        y_top = pad + (max_h - bar_h)
+        y_bot = pad + max_h
+
+        # Glow behind bar (wider, translucent)
+        if bar_h > 4:
+            dpg.draw_rectangle(
+                (x - 1, y_top + 1), (x + bar_w + 1, y_bot),
+                fill=_VU_GLOW[i], color=(0, 0, 0, 0), parent=_VU_TAG)
+
+        # Main bar body
+        dpg.draw_rectangle(
+            (x, y_top), (x + bar_w, y_bot),
+            fill=_VU_BAR[i], color=(0, 0, 0, 0), parent=_VU_TAG)
+
+        # Peak cap (bright line at top)
+        cap_bot = min(y_top + peak_h, y_bot)
+        dpg.draw_rectangle(
+            (x, y_top), (x + bar_w, cap_bot),
+            fill=_VU_PEAK[i], color=(0, 0, 0, 0), parent=_VU_TAG)

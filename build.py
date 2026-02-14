@@ -1419,23 +1419,45 @@ def build_xex_sync(song: Song, output_xex_path: str) -> BuildResult:
                 _output(f"    {name}: {sz:,}\n")
         
         # Pre-flight memory check: catch overflow BEFORE running MADS
-        if not use_banking:
+        if use_banking:
+            available = 0xC000 - 0x8000  # $8000-$BFFF = 16KB for data
+            region = "$8000–$BFFF"
+        else:
             available = 0xC000 - song.start_address
-            if total_data > available:
-                overflow = total_data - available
-                top = sorted(data_sizes.items(), key=lambda x: -x[1])[:5]
-                breakdown = "\n".join(f"  {n}: {s:,} bytes ({s//1024}KB)" 
-                                      for n, s in top if s >= 256)
-                result.error_message = (
-                    f"Memory overflow by ~{overflow:,} bytes ({overflow//1024}KB)!\n\n"
-                    f"Available: {available:,} bytes ({available//1024}KB) "
-                    f"from ${song.start_address:04X} to $BFFF.\n"
-                    f"Estimated total: ~{total_data:,} bytes ({total_data//1024}KB).\n\n"
-                    f"Breakdown:\n{breakdown}\n\n"
-                    f"To fix: switch large instruments to VQ, lower sample rate,\n"
-                    f"remove instruments, or use extended memory (128KB+).")
-                _output(f"\nERROR: {result.error_message}\n")
-                return result
+            region = f"${song.start_address:04X}–$BFFF"
+        
+        if total_data > available:
+            overflow = total_data - available
+            top = sorted(data_sizes.items(), key=lambda x: -x[1])[:5]
+            breakdown = "\n".join(f"  {n}: {s:,} bytes ({s//1024}KB)" 
+                                  for n, s in top if s >= 256)
+            
+            result.error_message = (
+                f"Memory overflow by ~{overflow:,} bytes ({overflow//1024}KB)!\n\n"
+                f"Available: {available:,} bytes ({available//1024}KB) "
+                f"in {region}.\n"
+                f"Estimated total: ~{total_data:,} bytes ({total_data//1024}KB).\n\n"
+                f"Breakdown:\n{breakdown}\n\n"
+                f"To fix: reduce the number of patterns, use shorter patterns,\n"
+                f"remove unused instruments, or lower the VQ vector size.")
+            _output(f"\nERROR: Data overflow by ~{overflow:,} bytes ({overflow//1024}KB)!\n")
+            _output(f"  Available: {available:,} bytes ({available//1024}KB) in {region}\n")
+            _output(f"  Estimated: {total_data:,} bytes ({total_data//1024}KB)\n")
+            _output(f"  Breakdown:\n")
+            for n, s in sorted(data_sizes.items(), key=lambda x: -x[1]):
+                if s >= 256:
+                    pct = s * 100 // total_data
+                    _output(f"    {n}: {s:,} bytes ({s//1024}KB) — {pct}%\n")
+            _output(f"\n  The data region ({region}) holds pitch tables, volume scale,\n")
+            _output(f"  song data, sample directory, VQ tables, and codebook.\n")
+            if use_banking:
+                _output(f"  Sample audio is in banks (OK), but metadata must fit in 16KB.\n")
+                _output(f"\n  To fix: reduce patterns/songlines, use shorter patterns,\n")
+                _output(f"  or remove unused instruments.\n")
+            else:
+                _output(f"\n  To fix: switch to extended memory (128KB+), use VQ mode\n")
+                _output(f"  on large instruments, or lower the sample rate.\n")
+            return result
         
         # Run MADS
         _output("\n  Assembling with MADS...\n")
@@ -1466,7 +1488,8 @@ def build_xex_sync(song: Song, output_xex_path: str) -> BuildResult:
             
             # Check for our specific memory overflow errors
             overflow_patterns = ['memory overflow', 'data overflow', 
-                                 'exceeds $4000', 'exceeds $c000']
+                                 'exceeds $4000', 'exceeds $c000',
+                                 'song_data too large', 'too large for']
             is_overflow = any(any(pat in l.lower() for pat in overflow_patterns)
                              for l in error_output.split('\n'))
             
@@ -1481,9 +1504,12 @@ def build_xex_sync(song: Song, output_xex_path: str) -> BuildResult:
                         f"Available for code: {code_space:,} bytes "
                         f"(${song.start_address:04X}–$3FFF).\n\n"
                         f"To fix: lower Start Address to give code more room.")
+                    _output(f"\nERROR: Player code exceeds $4000 bank window!\n")
+                    _output(f"  Available: {code_space:,} bytes (${song.start_address:04X}–$3FFF)\n")
+                    _output(f"  To fix: lower Start Address.\n")
                 else:
                     if use_banking:
-                        avail = 0xC000 - 0x8000  # $8000-$BFFF for banking data
+                        avail = 0xC000 - 0x8000
                         region = "$8000–$BFFF"
                     else:
                         avail = 0xC000 - song.start_address
@@ -1492,8 +1518,11 @@ def build_xex_sync(song: Song, output_xex_path: str) -> BuildResult:
                     overflow = max(0, total_data - avail)
                     
                     # Build top contributors
-                    top = sorted(data_sizes.items(), key=lambda x: -x[1])[:4]
+                    top = sorted(data_sizes.items(), key=lambda x: -x[1])[:5]
                     breakdown = ", ".join(f"{n}: {s//1024}KB" for n, s in top if s >= 1024)
+                    breakdown_detail = "\n".join(
+                        f"    {n}: {s:,} bytes ({s//1024}KB) — {s*100//total_data}%"
+                        for n, s in top if s >= 256)
                     
                     result.error_message = (
                         f"Memory overflow by ~{overflow:,} bytes ({overflow//1024}KB)!\n\n"
@@ -1501,8 +1530,13 @@ def build_xex_sync(song: Song, output_xex_path: str) -> BuildResult:
                         f"in {region}.\n"
                         f"Data: ~{total_data:,} bytes ({total_data//1024}KB).\n\n"
                         f"Biggest: {breakdown}\n\n"
-                        f"To fix: use VQ mode on large instruments, lower sample rate,\n"
-                        f"remove instruments, or switch to extended memory.")
+                        f"To fix: reduce patterns/songlines, use VQ on large instruments,\n"
+                        f"lower sample rate, or switch to extended memory.")
+                    
+                    _output(f"\nERROR: Data overflow by ~{overflow:,} bytes ({overflow//1024}KB)!\n")
+                    _output(f"  Available: {avail:,} bytes ({avail//1024}KB) in {region}\n")
+                    _output(f"  Estimated: {total_data:,} bytes ({total_data//1024}KB)\n")
+                    _output(f"  Breakdown:\n{breakdown_detail}\n")
             elif error_lines:
                 result.error_message = f"Assembly error:\n\n{error_lines[0][:200]}"
             else:

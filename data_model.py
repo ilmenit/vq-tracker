@@ -348,6 +348,7 @@ class Song:
             'meta': {
                 'title': self.title,
                 'author': self.author,
+                'speed': self.speed,
                 'system': self.system,
                 'volume_control': self.volume_control,
                 'screen_control': self.screen_control,
@@ -370,6 +371,7 @@ class Song:
         song = cls(
             title=meta.get('title', 'Untitled'),
             author=meta.get('author', ''),
+            speed=meta.get('speed', DEFAULT_SPEED),
             system=meta.get('system', PAL_HZ),
             volume_control=meta.get('volume_control', False),
             screen_control=meta.get('screen_control', True),

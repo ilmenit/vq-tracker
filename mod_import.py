@@ -20,6 +20,7 @@ from sample_editor.commands import SampleCommand
 from constants import (
     MAX_CHANNELS, MAX_VOLUME, DEFAULT_SPEED, DEFAULT_LENGTH,
     NOTE_OFF, VOL_CHANGE, MAX_INSTRUMENTS, MAX_PATTERNS, MAX_ROWS,
+    estimate_song_data_bytes,
 )
 
 logger = logging.getLogger("tracker.mod_import")
@@ -497,16 +498,81 @@ def _analyze_loop_durations(mod: dict, inst_map: dict) -> dict:
     return result
 
 
+def _dedup_patterns(song, log: ImportLog) -> int:
+    """Merge identical patterns and update songline references.
+    
+    Returns number of patterns removed.
+    """
+    if not song.patterns or not song.songlines:
+        return 0
+    
+    # Hash each pattern by its row data
+    import hashlib
+    pat_hashes = {}  # hash → first pattern index
+    remap = {}       # old index → new index (for duplicates)
+    
+    for i, pat in enumerate(song.patterns):
+        # Build a canonical representation of the pattern
+        key_parts = [str(pat.length)]
+        for row in pat.rows[:pat.length]:
+            key_parts.append(f"{row.note},{row.instrument},{row.volume}")
+        key = "|".join(key_parts)
+        h = hashlib.md5(key.encode()).hexdigest()
+        
+        if h in pat_hashes:
+            remap[i] = pat_hashes[h]
+        else:
+            pat_hashes[h] = i
+    
+    if not remap:
+        return 0
+    
+    # Update songline references
+    for sl in song.songlines:
+        sl.patterns = [remap.get(p, p) for p in sl.patterns]
+    
+    # Collect used pattern indices
+    used = set()
+    for sl in song.songlines:
+        used.update(sl.patterns)
+    
+    # Build new pattern list with only used patterns
+    old_to_new = {}
+    new_patterns = []
+    for i, pat in enumerate(song.patterns):
+        if i in used:
+            old_to_new[i] = len(new_patterns)
+            new_patterns.append(pat)
+    
+    # Remap songlines to new indices
+    for sl in song.songlines:
+        sl.patterns = [old_to_new.get(p, 0) for p in sl.patterns]
+    
+    removed = len(song.patterns) - len(new_patterns)
+    song.patterns = new_patterns
+    
+    if removed > 0:
+        log.info(f"  Pattern dedup: {removed} duplicates merged, "
+                 f"{len(new_patterns)} unique patterns remain")
+    
+    return removed
+
+
 def mod_to_song(mod: dict, log: ImportLog, options: dict = None) -> Song:
     """Convert parsed MOD data into a native Song object."""
     if options is None:
         options = {}
     enable_volume = options.get('volume_control', False)
     extend_loops = options.get('extend_loops', False)
+    max_loop_repeats = options.get('max_loop_repeats', 8)
+    truncate_songlines = options.get('truncate_songlines', 0)
+    do_dedup = options.get('dedup_patterns', True)  # on by default
+    memory_config = options.get('memory_config', None)
 
     song = Song()
     song.title = mod['title'] or "Imported MOD"
     song.speed = DEFAULT_SPEED
+    song.volume_control = enable_volume
     song.songlines = []
     song.patterns = []
     song.instruments = []
@@ -603,7 +669,7 @@ def mod_to_song(mod: dict, log: ImportLog, options: dict = None) -> Song:
                     continue  # Sample already long enough
 
                 repeats = max(2, int(np.ceil(remaining / loop_len)) + 1)
-                repeats = min(repeats, 64)  # Cap at sustain limit
+                repeats = min(repeats, max_loop_repeats)  # User-configurable cap
 
                 # Apply sustain effect via the sample editor command
                 start_ms = loop_start / native_rate * 1000.0
@@ -616,7 +682,10 @@ def mod_to_song(mod: dict, log: ImportLog, options: dict = None) -> Song:
                     'repeats': repeats,
                     'crossfade_ms': 5.0,
                 })
-                # Also store the sustain as a non-destructive effect
+                # Store sustain as a non-destructive effect in the chain.
+                # Keep original audio in sample_data (saved to WAV in .pvq).
+                # Put extended audio in processed_data (used for playback/build).
+                # On .pvq load, pipeline re-applies sustain from the chain.
                 inst.effects.append(SampleCommand(
                     type='sustain',
                     params={'start_ms': start_ms, 'end_ms': end_ms,
@@ -624,7 +693,7 @@ def mod_to_song(mod: dict, log: ImportLog, options: dict = None) -> Song:
                     enabled=True,
                 ))
                 old_len = len(inst.sample_data)
-                inst.sample_data = new_audio
+                inst.processed_data = new_audio
                 new_dur = len(new_audio) / native_rate
                 log.info(f"  Inst {tracker_idx:02d}: loop extended "
                          f"{old_len}→{len(new_audio)} samples "
@@ -960,10 +1029,24 @@ def mod_to_song(mod: dict, log: ImportLog, options: dict = None) -> Song:
     if song_end_pos is not None and len(song.songlines) > song_end_pos + 1:
         song.songlines = song.songlines[:song_end_pos + 1]
 
+    # Apply user-requested truncation
+    if truncate_songlines > 0 and len(song.songlines) > truncate_songlines:
+        old_count = len(song.songlines)
+        song.songlines = song.songlines[:truncate_songlines]
+        log.info(f"  Truncated: {old_count} → {truncate_songlines} songlines")
+
     log.info(f"Song: {len(song.songlines)} positions, "
              f"initial speed {song.speed}")
     if bpm_count:
         log.warn(f"{bpm_count} BPM tempo change(s) (speed > 31) ignored")
+
+    # --- Pattern deduplication ---
+    if do_dedup and len(song.patterns) > MAX_CHANNELS:
+        _dedup_patterns(song, log)
+
+    # --- Set memory config ---
+    if memory_config:
+        song.memory_config = memory_config
 
     # --- Finalize ---
     if not song.songlines:
@@ -982,15 +1065,16 @@ def mod_to_song(mod: dict, log: ImportLog, options: dict = None) -> Song:
 def scan_mod_features(path: str) -> dict:
     """Quick-scan a MOD file to detect features for the import options dialog.
 
-    Returns a dict with:
-        loop_count: number of samples that use looping
-        vol_slide_count: number of volume slide effects
-        vol_set_count: number of Set Volume effects on non-note rows
-        title: song title
-        error: error message if scan failed, or None
+    Returns a dict with all data needed for the import wizard:
+        loop_count, vol_slide_count, vol_set_count, title, error,
+        n_unique_patterns, n_positions, n_instruments, format,
+        event_density, loop_details, estimated_song_kb
     """
     result = {'loop_count': 0, 'vol_slide_count': 0, 'vol_set_count': 0,
-              'title': '', 'error': None}
+              'title': '', 'error': None,
+              'n_unique_patterns': 0, 'n_positions': 0, 'n_instruments': 0,
+              'format': '', 'event_density': 0.5, 'loop_details': [],
+              'estimated_song_kb': {}}
     try:
         with open(path, 'rb') as f:
             data = f.read()
@@ -1009,22 +1093,125 @@ def scan_mod_features(path: str) -> dict:
         return result
 
     result['title'] = mod['title'] or os.path.basename(path)
+    result['n_unique_patterns'] = mod['num_patterns']
+    result['n_positions'] = mod['song_length']
+    result['format'] = f"{mod['num_channels']}-channel MOD"
 
-    # Count looped samples
+    # Count non-empty instruments
+    non_empty = 0
     for smp in mod['samples']:
+        if smp['data'] is not None and len(smp['data']) >= 4:
+            non_empty += 1
+    result['n_instruments'] = non_empty
+
+    # Build inst_map for analysis (mirrors mod_to_song logic)
+    inst_map = {}
+    tracker_idx = 0
+    for i, smp in enumerate(mod['samples']):
+        if smp['data'] is not None and len(smp['data']) >= 4:
+            inst_map[i + 1] = tracker_idx
+            tracker_idx += 1
+
+    # Count looped samples + detailed loop info
+    loop_details = []
+    for i, smp in enumerate(mod['samples']):
         if (smp['data'] is not None and len(smp['data']) >= 4
                 and smp['repeat_length'] > 2):
             result['loop_count'] += 1
 
+    # Analyze loop durations if there are loops
+    if result['loop_count'] > 0:
+        loop_info = _analyze_loop_durations(mod, inst_map)
+        for i, smp in enumerate(mod['samples']):
+            mod_num = i + 1
+            if (smp['data'] is None or len(smp['data']) < 4
+                    or smp['repeat_length'] <= 2
+                    or mod_num not in inst_map):
+                continue
+            info = loop_info.get(mod_num, {})
+            max_rows = info.get('max_rows', 64)
+            max_note = info.get('max_note', 1)
+            speed = info.get('speed', 6)
+
+            # Calculate repeats needed (same logic as mod_to_song)
+            bpm = 125
+            row_dur = speed * 2.5 / bpm
+            hold_secs = max_rows * row_dur
+            pitch_mult = 2.0 ** ((max_note - 1) / 12.0)
+            native_rate = _MOD_C1_RATE
+            samples_needed = hold_secs * native_rate * pitch_mult
+            loop_start = smp['repeat_start']
+            loop_len = smp['repeat_length']
+            pre_loop = loop_start
+            remaining = samples_needed - pre_loop
+            if remaining > 0 and loop_len >= 4:
+                repeats = max(2, int(np.ceil(remaining / loop_len)) + 1)
+                repeats = min(repeats, 64)
+            else:
+                repeats = 1
+            extended_samples = len(smp['data']) + max(0, (repeats - 1)) * loop_len
+            extended_bytes = int(extended_samples * 2)  # 16-bit WAV
+
+            loop_details.append({
+                'mod_num': mod_num,
+                'name': smp['name'] or f"sample_{mod_num}",
+                'sample_bytes': len(smp['data']) * 2,
+                'loop_start': loop_start,
+                'loop_length': loop_len,
+                'calculated_repeats': repeats,
+                'extended_bytes': extended_bytes,
+                'max_rows': max_rows,
+            })
+    result['loop_details'] = loop_details
+
     # Count volume effects
+    total_events = 0
+    total_rows = 0
     for pat in mod['patterns']:
         for row in pat:
+            total_rows += 1
             for cell in row:
                 eff = cell['effect']
-                if eff in (0x0A, 0x05, 0x06):  # Vol Slide, TonePort+VS, Vib+VS
+                if eff in (0x0A, 0x05, 0x06):
                     result['vol_slide_count'] += 1
-                elif eff == 0x0C and cell['period'] == 0:  # Set Vol, no note
+                elif eff == 0x0C and cell['period'] == 0:
                     result['vol_set_count'] += 1
+                if cell['period'] > 0 or cell['sample'] > 0:
+                    total_events += 1
+
+    # Event density (for song data size estimation)
+    if total_rows > 0:
+        result['event_density'] = min(1.0, total_events / total_rows)
+
+    # Estimate song data sizes
+    n_pos = result['n_positions']
+    n_unique = result['n_unique_patterns']
+    density = result['event_density']
+
+    # Without volume: 4 patterns per unique MOD pattern
+    pats_no_vol = min(4 * n_unique, MAX_PATTERNS)
+    est_no_vol = estimate_song_data_bytes(
+        n_pos, pats_no_vol,
+        pattern_lengths=[64] * pats_no_vol,
+        avg_events_per_row=density)
+
+    # With volume: 4 patterns per position (worst case)
+    pats_vol = min(4 * n_pos, MAX_PATTERNS)
+    est_vol = estimate_song_data_bytes(
+        n_pos, pats_vol,
+        pattern_lengths=[64] * pats_vol,
+        avg_events_per_row=density * 1.2)  # volume adds events
+
+    # With volume + dedup estimate: typically 40-60% reduction
+    est_vol_dedup = int(est_vol * 0.55)  # conservative estimate
+
+    result['estimated_song_kb'] = {
+        'without_volume': est_no_vol / 1024,
+        'without_volume_patterns': pats_no_vol,
+        'with_volume': est_vol / 1024,
+        'with_volume_patterns': pats_vol,
+        'with_volume_dedup': est_vol_dedup / 1024,
+    }
 
     return result
 

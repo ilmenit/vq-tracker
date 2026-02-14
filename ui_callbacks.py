@@ -446,7 +446,7 @@ def on_ptn_len_change(sender, value):
         
         # Warn if exceeding max (254 for export compatibility)
         if parsed > MAX_ROWS:
-            G.show_status(f"âš  Max pattern length is {MAX_ROWS} (row 255 reserved for export)")
+            G.show_status(f"[!] Max pattern length is {MAX_ROWS} (row 255 reserved for export)")
             parsed = MAX_ROWS
         
         parsed = max(1, min(MAX_ROWS, parsed))
@@ -473,6 +473,7 @@ def on_pattern_select(sender, value):
             idx = int(value, 16) if state.hex_mode else int(value)
             state.selected_pattern = idx
             R.refresh_pattern_info()
+            R._color_combo("ptn_select_combo", idx, G.ptn_palette)
         except: pass
 
 
@@ -593,7 +594,7 @@ def on_volume_control_toggle(sender, value):
     
     # Show warning if rate is too high
     if value and state.vq.settings.rate > 5757:
-        G.show_status("Warning: Volume requires sample rate â‰¤5757 Hz")
+        G.show_status("Warning: Volume requires sample rate <=5757 Hz")
     else:
         mode = "enabled" if value else "disabled"
         G.show_status(f"Volume control {mode}")
@@ -677,6 +678,7 @@ def on_input_inst_change(sender, value):
     try:
         idx = int(value.split(" - ")[0], 16 if state.hex_mode else 10)
         state.instrument = idx
+        R._color_combo("input_inst_combo", idx, G.inst_palette)
         R.refresh_instruments()
         # Update sample editor if open
         from sample_editor.ui_editor import update_editor_instrument
@@ -1049,6 +1051,7 @@ def on_global_mouse_click(sender, app_data):
     
     Note: Row/cell selection is handled by individual button callbacks,
     NOT here. This only handles focus switching and clicking on empty areas.
+    Uses dpg.is_item_hovered() for reliable hit-testing even with nested panels.
     """
     if app_data != 0:  # 0 = left click
         return
@@ -1057,64 +1060,43 @@ def on_global_mouse_click(sender, app_data):
     if state.input_active:
         return
     
-    mouse_pos = dpg.get_mouse_pos(local=False)
+    # Check panels using DearPyGUI's native hover detection
+    # (works correctly with nested child_windows unlike manual rect math)
+    # Check most specific panels first, then broader containers
     
-    # Check song panel - just set focus, don't change row (buttons handle that)
-    if dpg.does_item_exist("song_panel"):
-        try:
-            pos = dpg.get_item_rect_min("song_panel")
-            rect = dpg.get_item_rect_size("song_panel")
-            if pos and rect:
-                if (pos[0] <= mouse_pos[0] <= pos[0] + rect[0] and
-                    pos[1] <= mouse_pos[1] <= pos[1] + rect[1]):
-                    G.set_focus(FOCUS_SONG)
-                    # Don't update row here - button callbacks handle cell selection
-                    # This prevents race condition with popup dialogs
+    for tag, focus in [("song_panel", FOCUS_SONG),
+                       ("editor_panel", FOCUS_EDITOR),
+                       ("inst_panel", FOCUS_INSTRUMENTS),
+                       ("pattern_panel", FOCUS_EDITOR)]:
+        if dpg.does_item_exist(tag):
+            try:
+                if dpg.is_item_hovered(tag):
+                    G.set_focus(focus)
                     return
-        except:
-            pass
-    
-    # Check editor panel - just set focus, don't change row (buttons handle that)
-    if dpg.does_item_exist("editor_panel"):
-        try:
-            pos = dpg.get_item_rect_min("editor_panel")
-            rect = dpg.get_item_rect_size("editor_panel")
-            if pos and rect:
-                if (pos[0] <= mouse_pos[0] <= pos[0] + rect[0] and
-                    pos[1] <= mouse_pos[1] <= pos[1] + rect[1]):
-                    G.set_focus(FOCUS_EDITOR)
-                    # Don't update row here - button callbacks handle cell selection
-                    # This prevents race condition with popup dialogs
-                    return
-        except:
-            pass
-    
-    # Check instruments panel
-    if dpg.does_item_exist("inst_panel"):
-        try:
-            pos = dpg.get_item_rect_min("inst_panel")
-            rect = dpg.get_item_rect_size("inst_panel")
-            if pos and rect:
-                if (pos[0] <= mouse_pos[0] <= pos[0] + rect[0] and
-                    pos[1] <= mouse_pos[1] <= pos[1] + rect[1]):
-                    G.set_focus(FOCUS_INSTRUMENTS)
-                    return
-        except:
-            pass
+            except:
+                pass
 
 
 def _is_mouse_over(panel_tag):
-    """Check if mouse cursor is over a given panel."""
+    """Check if mouse cursor is over a given panel (for scroll routing).
+    
+    Uses rect-based checking so it works even when hovering over child
+    widgets inside the panel (is_item_hovered only works for empty space).
+    """
     if not dpg.does_item_exist(panel_tag):
         return False
     try:
+        # Try native hover first (fast, works for direct hover)
+        if dpg.is_item_hovered(panel_tag):
+            return True
+        # Fallback: rect-based check for when hovering over child widgets
         pos = dpg.get_item_rect_min(panel_tag)
-        rect = dpg.get_item_rect_size(panel_tag)
-        if not pos or not rect:
+        sz = dpg.get_item_rect_size(panel_tag)
+        if not pos or not sz:
             return False
         mx, my = dpg.get_mouse_pos(local=False)
-        return (pos[0] <= mx <= pos[0] + rect[0] and
-                pos[1] <= my <= pos[1] + rect[1])
+        return (pos[0] <= mx <= pos[0] + sz[0] and
+                pos[1] <= my <= pos[1] + sz[1])
     except Exception:
         return False
 
@@ -1824,8 +1806,9 @@ _MOD_IMPORT_DLG = "mod_import_result"
 
 
 def show_mod_import_options(path: str, features: dict):
-    """Show pre-import options dialog for MOD files."""
+    """Show MOD import wizard dialog with machine selection and live budget."""
     import dearpygui.dearpygui as dpg
+    from constants import MEMORY_CONFIGS, MEMORY_CONFIG_NAMES
 
     if dpg.does_item_exist(_MOD_OPTIONS_DLG):
         dpg.delete_item(_MOD_OPTIONS_DLG)
@@ -1834,88 +1817,369 @@ def show_mod_import_options(path: str, features: dict):
 
     vp_w = dpg.get_viewport_width()
     vp_h = dpg.get_viewport_height()
-    w, h = 520, 330
+    w, h = 600, 580
 
     title = features.get('title', os.path.basename(path))
     vol_count = features.get('vol_slide_count', 0) + features.get('vol_set_count', 0)
     loop_count = features.get('loop_count', 0)
+    loop_details = features.get('loop_details', [])
+    estimates = features.get('estimated_song_kb', {})
+    n_unique = features.get('n_unique_patterns', 0)
+    n_pos = features.get('n_positions', 0)
+    n_inst = features.get('n_instruments', 0)
+    fmt = features.get('format', 'MOD')
+
+    TAG = _MOD_OPTIONS_DLG
 
     def on_close():
         state.set_input_active(False)
-        if dpg.does_item_exist(_MOD_OPTIONS_DLG):
-            dpg.delete_item(_MOD_OPTIONS_DLG)
+        if dpg.does_item_exist(TAG):
+            dpg.delete_item(TAG)
+
+    def _get_data_budget(mem_cfg):
+        """Get available bytes for song data in the data region."""
+        if mem_cfg == "64 KB":
+            # No banking: data region from ~$2000 to $BFFF, minus code+player
+            return 42000  # ~42KB after code
+        else:
+            # Banking: $8000-$BFFF = 16KB, minus fixed overhead
+            return 16384 - 5800  # ~10.5KB for song data
+
+    def _get_sample_budget(mem_cfg):
+        """Get available bytes for sample audio."""
+        for name, n_banks, _ in MEMORY_CONFIGS:
+            if name == mem_cfg:
+                if n_banks == 0:
+                    return 42000  # shares with data in 64KB mode
+                return n_banks * 16384  # bank count × 16KB
+        return 42000
+
+    def _update_budget(*args):
+        """Recalculate and display memory budget when options change."""
+        if not dpg.does_item_exist(TAG):
+            return
+
+        # Detect if the callback was triggered by the truncation checkbox itself
+        # If so, don't auto-toggle it (respect user's manual override)
+        sender = args[0] if args else None
+        trunc_cb_tag = f"{TAG}_trunc_cb"
+        from_trunc_cb = (sender == trunc_cb_tag) if sender else False
+        from_trunc_val = (sender == f"{TAG}_trunc_val") if sender else False
+
+        # Read current settings
+        mem_cfg = dpg.get_value(f"{TAG}_machine")
+        if mem_cfg not in MEMORY_CONFIG_NAMES:
+            mem_cfg = "1088 KB"
+        vol_on = dpg.get_value(f"{TAG}_vol")
+        loops_on = dpg.get_value(f"{TAG}_loop")
+
+        # Song data estimate (pre-truncation)
+        if vol_on:
+            est_kb = estimates.get('with_volume_dedup', estimates.get('with_volume', 20))
+            raw_pats = estimates.get('with_volume_patterns', n_pos * 4)
+            mode_str = f"{raw_pats} patterns, ~{int(raw_pats*0.55)} after dedup"
+        else:
+            est_kb = estimates.get('without_volume', 10)
+            raw_pats = estimates.get('without_volume_patterns', n_unique * 4)
+            mode_str = f"{raw_pats} patterns (shared across positions)"
+
+        budget = _get_data_budget(mem_cfg)
+        raw_est_bytes = int(est_kb * 1024)
+        raw_fits = raw_est_bytes <= budget
+
+        # Auto-toggle truncation checkbox when machine/volume changes
+        # (NOT when user manually toggles the checkbox or edits trunc value)
+        if not from_trunc_cb and not from_trunc_val:
+            if dpg.does_item_exist(trunc_cb_tag):
+                dpg.set_value(trunc_cb_tag, not raw_fits)
+                # Auto-set truncation value when overflow detected
+                if not raw_fits and n_pos > 0:
+                    per_sl = raw_est_bytes / n_pos
+                    fit_sl = max(1, int(budget / per_sl))
+                    if dpg.does_item_exist(f"{TAG}_trunc_val"):
+                        dpg.set_value(f"{TAG}_trunc_val", fit_sl)
+
+        # Adjust for truncation if enabled
+        if (dpg.does_item_exist(f"{TAG}_trunc_cb")
+                and dpg.get_value(f"{TAG}_trunc_cb")
+                and n_pos > 0):
+            try:
+                trunc_val = int(dpg.get_value(f"{TAG}_trunc_val"))
+                trunc_val = max(1, min(trunc_val, n_pos))
+                ratio = trunc_val / n_pos
+                est_kb = est_kb * ratio
+                mode_str += f" (keeping {trunc_val}/{n_pos} positions)"
+            except (ValueError, TypeError):
+                pass
+
+        est_bytes = int(est_kb * 1024)
+        sample_budget = _get_sample_budget(mem_cfg)
+        fits = est_bytes <= budget
+        pct = min(100, int(est_bytes * 100 / max(budget, 1)))
+
+        # Update data budget display
+        if dpg.does_item_exist(f"{TAG}_budget_data"):
+            color = (120, 200, 120) if fits else (240, 100, 100)
+            icon = "OK" if fits else "OVERFLOW"
+            dpg.set_value(f"{TAG}_budget_data",
+                f"  Song data: ~{est_kb:.1f} KB / {budget/1024:.1f} KB "
+                f"({pct}%) [{icon}]")
+            dpg.configure_item(f"{TAG}_budget_data", color=color)
+
+        if dpg.does_item_exist(f"{TAG}_budget_pats"):
+            dpg.set_value(f"{TAG}_budget_pats", f"  {mode_str}")
+
+        if dpg.does_item_exist(f"{TAG}_budget_samples"):
+            dpg.set_value(f"{TAG}_budget_samples",
+                f"  Sample space: {sample_budget//1024} KB "
+                f"({'banked' if mem_cfg != '64 KB' else 'shared with data'})")
+
+        # Volume impact line
+        if dpg.does_item_exist(f"{TAG}_vol_impact"):
+            if vol_on:
+                vol_kb = estimates.get('with_volume_dedup', 20)
+                dpg.set_value(f"{TAG}_vol_impact",
+                    f"    ~{vol_kb:.1f} KB song data (with dedup)")
+            else:
+                no_vol_kb = estimates.get('without_volume', 10)
+                dpg.set_value(f"{TAG}_vol_impact",
+                    f"    ~{no_vol_kb:.1f} KB song data")
+
+        # Truncation info
+        if dpg.does_item_exist(f"{TAG}_trunc_info"):
+            trunc_on = (dpg.does_item_exist(f"{TAG}_trunc_cb")
+                        and dpg.get_value(f"{TAG}_trunc_cb"))
+            if not raw_fits and n_pos > 0:
+                per_sl = raw_est_bytes / max(n_pos, 1)
+                fit_sl = max(1, int(budget / per_sl))
+                if trunc_on:
+                    dpg.set_value(f"{TAG}_trunc_info",
+                        f"    Keeping ~{fit_sl} of {n_pos} positions "
+                        f"to fit in {budget/1024:.1f} KB.")
+                else:
+                    overflow_kb = est_kb - budget / 1024
+                    dpg.set_value(f"{TAG}_trunc_info",
+                        f"    Warning: data overflows by "
+                        f"~{overflow_kb:.1f} KB.")
+            else:
+                if trunc_on:
+                    try:
+                        tv = int(dpg.get_value(f"{TAG}_trunc_val"))
+                        if tv < n_pos:
+                            dpg.set_value(f"{TAG}_trunc_info",
+                                f"    Keeping {tv} of {n_pos} positions.")
+                        else:
+                            dpg.set_value(f"{TAG}_trunc_info", "")
+                    except (ValueError, TypeError):
+                        dpg.set_value(f"{TAG}_trunc_info", "")
+                else:
+                    dpg.set_value(f"{TAG}_trunc_info", "")
+
+        # Loop size summary
+        if dpg.does_item_exist(f"{TAG}_loop_size"):
+            if loops_on and loop_details:
+                try:
+                    max_rep = int(dpg.get_value(f"{TAG}_max_repeats"))
+                except (ValueError, TypeError):
+                    max_rep = 8
+                total_ext = 0
+                for ld in loop_details:
+                    reps = min(ld['calculated_repeats'], max_rep)
+                    ext = ld['sample_bytes'] + max(0, reps - 1) * ld['loop_length'] * 2
+                    total_ext += ext
+                dpg.set_value(f"{TAG}_loop_size",
+                    f"    Total extended sample data: ~{total_ext//1024} KB")
+            else:
+                dpg.set_value(f"{TAG}_loop_size", "")
 
     def on_import():
+        mem_cfg = dpg.get_value(f"{TAG}_machine")
+        if mem_cfg not in MEMORY_CONFIG_NAMES:
+            mem_cfg = "1088 KB"
+        max_rep = 8
+        if dpg.does_item_exist(f"{TAG}_max_repeats"):
+            try:
+                max_rep = int(dpg.get_value(f"{TAG}_max_repeats"))
+                max_rep = max(1, min(8, max_rep))
+            except (ValueError, TypeError):
+                max_rep = 8
+        trunc = 0
+        if dpg.does_item_exist(f"{TAG}_trunc_cb") and dpg.get_value(f"{TAG}_trunc_cb"):
+            try:
+                trunc = int(dpg.get_value(f"{TAG}_trunc_val"))
+                trunc = max(1, trunc)
+            except (ValueError, TypeError):
+                trunc = 0
+
         options = {
-            'volume_control': dpg.get_value(f"{_MOD_OPTIONS_DLG}_vol"),
-            'extend_loops': dpg.get_value(f"{_MOD_OPTIONS_DLG}_loop"),
+            'volume_control': dpg.get_value(f"{TAG}_vol"),
+            'extend_loops': dpg.get_value(f"{TAG}_loop"),
+            'max_loop_repeats': max_rep,
+            'memory_config': mem_cfg,
+            'truncate_songlines': trunc,
+            'dedup_patterns': True,
         }
         on_close()
         from ops.file_ops import _do_import_mod
         _do_import_mod(path, options)
 
-    with dpg.window(tag=_MOD_OPTIONS_DLG, label=f"Import: {title}",
+    with dpg.window(tag=TAG, label=f"Import: {title}",
                     modal=True, width=w, height=h,
                     pos=[(vp_w - w) // 2, (vp_h - h) // 2],
-                    no_resize=True, no_collapse=True, on_close=on_close):
+                    no_resize=False, no_collapse=True, on_close=on_close):
 
-        dpg.add_text(f"Importing: {os.path.basename(path)}")
-        dpg.add_separator()
-        dpg.add_spacer(height=8)
+        # Scrollable content area (keeps Import button visible)
+        with dpg.child_window(height=-40, border=False):
 
-        # Volume control option
-        vol_default = vol_count > 0
-        dpg.add_checkbox(
-            tag=f"{_MOD_OPTIONS_DLG}_vol",
-            label="Enable per-row volume control",
-            default_value=vol_default,
-        )
-        if vol_count > 0:
-            dpg.add_text(
-                f"    {vol_count} volume effect(s) detected. Enables "
-                f"VOLUME_CONTROL in the",
-                color=(180, 180, 180))
-            dpg.add_text(
-                f"    ASM player (+2 cycles/ch/IRQ) and imports volume "
-                f"slide/set events.",
-                color=(180, 180, 180))
-        else:
-            dpg.add_text(
-                "    No volume effects detected. Can still be enabled "
-                "for manual use.",
-                color=(140, 140, 140))
+            # === Header ===
+            dpg.add_text(f"Importing: {os.path.basename(path)}")
+            dpg.add_text(f"{fmt}, {n_unique} patterns, {n_pos} positions, "
+                         f"{n_inst} instruments",
+                         color=(160, 160, 160))
+            dpg.add_separator()
+            dpg.add_spacer(height=4)
 
-        dpg.add_spacer(height=8)
+            # === Section 1: Target Machine ===
+            dpg.add_text("TARGET MACHINE", color=(200, 200, 100))
+            dpg.add_spacer(height=2)
 
-        # Loop extension option
-        loop_default = loop_count > 0
-        dpg.add_checkbox(
-            tag=f"{_MOD_OPTIONS_DLG}_loop",
-            label="Extend looped instruments",
-            default_value=loop_default,
-        )
-        if loop_count > 0:
-            dpg.add_text(
-                f"    {loop_count} looped sample(s) detected. Unrolls loop "
-                f"regions using",
-                color=(180, 180, 180))
-            dpg.add_text(
-                f"    the Sustain effect so instruments play for their full "
-                f"duration.",
-                color=(180, 180, 180))
-        else:
-            dpg.add_text(
-                "    No looped samples detected.",
-                color=(140, 140, 140))
+            # Machine dropdown
+            with dpg.group(horizontal=True):
+                dpg.add_text("  Machine:")
+                dpg.add_spacer(width=5)
+                # Default to largest memory config (most capable)
+                default_idx = len(MEMORY_CONFIG_NAMES) - 1
+                dpg.add_combo(tag=f"{TAG}_machine",
+                              items=MEMORY_CONFIG_NAMES,
+                              default_value=MEMORY_CONFIG_NAMES[default_idx],
+                              width=250, callback=_update_budget)
 
-        dpg.add_spacer(height=15)
-        dpg.add_separator()
-        dpg.add_spacer(height=8)
+            dpg.add_spacer(height=2)
+            dpg.add_text("", tag=f"{TAG}_budget_data", color=(120, 200, 120))
+            dpg.add_text("", tag=f"{TAG}_budget_pats", color=(140, 140, 140))
+            dpg.add_text("", tag=f"{TAG}_budget_samples", color=(140, 140, 140))
 
+            dpg.add_spacer(height=6)
+            dpg.add_separator()
+            dpg.add_spacer(height=4)
+
+            # === Section 2: Volume Control ===
+            dpg.add_text("VOLUME CONTROL", color=(200, 200, 100))
+            dpg.add_spacer(height=2)
+
+            vol_default = vol_count > 0
+            dpg.add_checkbox(tag=f"{TAG}_vol",
+                             label="Enable per-row volume control",
+                             default_value=vol_default,
+                             callback=_update_budget)
+            if vol_count > 0:
+                dpg.add_text(f"    {vol_count} volume effect(s) detected.",
+                             color=(180, 180, 180))
+            else:
+                dpg.add_text("    No volume effects detected.",
+                             color=(140, 140, 140))
+            dpg.add_text("", tag=f"{TAG}_vol_impact", color=(160, 160, 160))
+
+            dpg.add_spacer(height=6)
+            dpg.add_separator()
+            dpg.add_spacer(height=4)
+
+            # === Section 3: Loop Extension ===
+            dpg.add_text("LOOP EXTENSION", color=(200, 200, 100))
+            dpg.add_spacer(height=2)
+
+            loop_default = loop_count > 0
+            dpg.add_checkbox(tag=f"{TAG}_loop",
+                             label="Extend looped instruments",
+                             default_value=loop_default,
+                             callback=_update_budget)
+            if loop_count > 0:
+                dpg.add_text(f"    {loop_count} looped sample(s) detected.",
+                             color=(180, 180, 180))
+                with dpg.group(horizontal=True):
+                    dpg.add_text("    Max repeats:")
+                    dpg.add_spacer(width=5)
+                    dpg.add_input_int(tag=f"{TAG}_max_repeats",
+                                      default_value=8, min_value=1,
+                                      max_value=8, width=80, step=0,
+                                      callback=_update_budget)
+                # Loop details table
+                if loop_details:
+                    with dpg.child_window(height=min(100, 20 * len(loop_details) + 25),
+                                          border=True):
+                        dpg.add_text("  Inst  Name                  Repeats   Size",
+                                     color=(120, 120, 140))
+                        for ld in sorted(loop_details,
+                                         key=lambda x: -x['extended_bytes'])[:8]:
+                            reps = ld['calculated_repeats']
+                            sz_kb = ld['extended_bytes'] / 1024
+                            warn = " (!)" if sz_kb > 100 else ""
+                            name = ld['name'][:22].ljust(22)
+                            dpg.add_text(
+                                f"  {ld['mod_num']:3d}   {name} {reps:3d}x   "
+                                f"{sz_kb:6.0f} KB{warn}",
+                                color=(200, 180, 100) if sz_kb > 100
+                                      else (160, 160, 160))
+                    if len(loop_details) > 8:
+                        dpg.add_text(f"    ... and {len(loop_details) - 8} more",
+                                     color=(120, 120, 120))
+                dpg.add_text("", tag=f"{TAG}_loop_size", color=(160, 160, 160))
+            else:
+                dpg.add_text("    No looped samples detected.",
+                             color=(140, 140, 140))
+
+            dpg.add_spacer(height=6)
+            dpg.add_separator()
+            dpg.add_spacer(height=4)
+
+            # === Section 4: Truncation (always visible) ===
+            dpg.add_text("TRUNCATION", color=(200, 200, 100))
+            dpg.add_spacer(height=2)
+
+            # Compute initial fit so we know whether truncation is needed
+            _init_est_kb = estimates.get(
+                'with_volume_dedup' if vol_count > 0 else 'without_volume', 10)
+            _init_budget = _get_data_budget("1088 KB")  # default machine
+            _init_est_bytes = int(_init_est_kb * 1024)
+            _init_overflow = _init_est_bytes > _init_budget and n_pos > 0
+            if _init_overflow:
+                _per_sl = _init_est_bytes / n_pos
+                _init_trunc = max(1, int(_init_budget / _per_sl))
+            else:
+                _init_trunc = n_pos
+
+            with dpg.group(horizontal=True):
+                dpg.add_checkbox(tag=f"{TAG}_trunc_cb",
+                                 label="Truncate song to fit",
+                                 default_value=_init_overflow,
+                                 callback=_update_budget)
+                dpg.add_spacer(width=10)
+                dpg.add_text("Keep first")
+                dpg.add_input_int(tag=f"{TAG}_trunc_val",
+                                  default_value=_init_trunc,
+                                  min_value=1, max_value=max(n_pos, 1),
+                                  width=70, step=0,
+                                  callback=_update_budget)
+                dpg.add_text(f"of {n_pos} positions")
+            dpg.add_text("", tag=f"{TAG}_trunc_info", color=(180, 150, 100))
+            dpg.add_text("    Pattern dedup is automatic (identical patterns merged).",
+                         color=(140, 140, 140))
+
+            dpg.add_spacer(height=4)
+            dpg.add_separator()
+
+        # === Import / Cancel (outside scroll area, always visible) ===
         with dpg.group(horizontal=True):
-            dpg.add_spacer(width=280)
+            dpg.add_spacer(width=350)
             dpg.add_button(label="Import", width=100, callback=on_import)
+            dpg.add_spacer(width=10)
             dpg.add_button(label="Cancel", width=100, callback=on_close)
+
+    # Initial budget calculation
+    _update_budget()
+
+    # Fix combo default (combo uses string value, not index)
+    dpg.set_value(f"{TAG}_machine", MEMORY_CONFIG_NAMES[default_idx])
 
 
 def show_mod_import_result(import_log, success: bool):
@@ -1929,7 +2193,7 @@ def show_mod_import_result(import_log, success: bool):
     vp_h = dpg.get_viewport_height()
     w, h = 700, 450
 
-    title = "MOD Import — Complete" if success else "MOD Import — Failed"
+    title = "MOD Import - Complete" if success else "MOD Import - Failed"
 
     def on_close():
         state.set_input_active(False)
@@ -2071,7 +2335,16 @@ def poll_vq_conversion():
         if result.success:
             if dpg.does_item_exist("vq_size_label"):
                 if result.vq_data_size > 0:
-                    dpg.set_value("vq_size_label", f"Atari data: {format_size(result.vq_data_size)}")
+                    label = f"Atari: {format_size(result.vq_data_size)}"
+                    if result.vq_only_size > 0 and result.raw_only_size > 0:
+                        label = (f"VQ: {format_size(result.vq_only_size)}"
+                                 f"  RAW: {format_size(result.raw_only_size)}"
+                                 f"  Total: {format_size(result.vq_data_size)}")
+                    elif result.raw_only_size > 0:
+                        label = f"RAW: {format_size(result.raw_only_size)}"
+                    elif result.vq_only_size > 0:
+                        label = f"VQ: {format_size(result.vq_only_size)}"
+                    dpg.set_value("vq_size_label", label)
                 else:
                     dpg.set_value("vq_size_label", "")
             
@@ -2110,7 +2383,13 @@ def poll_vq_conversion():
             # Refresh instruments (will show green because use_converted=True)
             R.refresh_instruments()
             if result.vq_data_size > 0:
-                G.show_status(f"Conversion complete: {format_size(result.vq_data_size)} Atari data")
+                if result.vq_only_size > 0 and result.raw_only_size > 0:
+                    G.show_status(
+                        f"Converted: VQ {format_size(result.vq_only_size)}"
+                        f" + RAW {format_size(result.raw_only_size)}"
+                        f" = {format_size(result.vq_data_size)}")
+                else:
+                    G.show_status(f"Conversion complete: {format_size(result.vq_data_size)}")
             else:
                 G.show_status("Conversion complete")
         else:
@@ -2163,7 +2442,7 @@ def on_build_click(sender, app_data):
         warning_lines = []
         for issue in validation.issues:
             if issue.severity == "warning":
-                warning_lines.append(f"â€¢ {issue.location}: {issue.message}")
+                warning_lines.append(f"- {issue.location}: {issue.message}")
         # Log warnings but don't block
         logger.warning(f"Build warnings: {warning_lines}")
     
@@ -2208,10 +2487,10 @@ def show_build_validation_dialog(validation):
                     pos=[(vp_w - dlg_w) // 2, (vp_h - dlg_h) // 2]):
         
         # Summary line
-        dpg.add_text(f"âœ— Cannot build: {validation.error_count} error(s) found", color=(255, 100, 100))
+        dpg.add_text(f"[X] Cannot build: {validation.error_count} error(s) found", color=(255, 100, 100))
         
         if validation.warning_count > 0:
-            dpg.add_text(f"âš  {validation.warning_count} warning(s)", color=(255, 200, 100))
+            dpg.add_text(f"[!] {validation.warning_count} warning(s)", color=(255, 200, 100))
         
         dpg.add_separator()
         dpg.add_spacer(height=5)
@@ -2224,10 +2503,10 @@ def show_build_validation_dialog(validation):
             for issue in validation.issues:
                 if issue.severity == "error":
                     color = (255, 100, 100)
-                    icon = "âŒ"
+                    icon = "[X]"
                 else:
                     color = (255, 200, 100)
-                    icon = "âš ï¸"
+                    icon = "[!]"
                 
                 with dpg.group(horizontal=True):
                     dpg.add_text(icon, color=color)
