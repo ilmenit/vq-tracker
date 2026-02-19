@@ -1,12 +1,17 @@
 ; =============================================================================
-; Copy OS ROM to RAM
+; Copy OS ROM to RAM + Relocate charset to $FC00
 ; =============================================================================
-; Copies the OS ROM ($C000-$CFFF and $D800-$FFFF) to the underlying RAM.
-; This allows the OS to be disabled (for more RAM/timing control) while keeping
-; the character set and other OS data available in RAM.
+; Phase 1: Copies the OS ROM ($C000-$CFFF and $D800-$FFFF) to the underlying
+;          RAM.  This allows the OS ROM to be disabled later while keeping
+;          essential data (charset, vectors) in RAM.
+;
+; Phase 2: Copies the Atari charset from RAM $E000-$E3FF to RAM $FC00-$FFFF.
+;          This frees $D800-$FBFF for song data in banking mode.
+;          ANTIC uses CHBASE=$FC to read the relocated charset.
+;          Screen code 127 (TAB glyph, never displayed) partially overlaps
+;          the NMI/IRQ/RESET vectors at $FFFA-$FFFF — patched by start:.
 ;
 ; IMPORTANT: This MUST run via INI before the main program!
-; Without this, disabling ROM also disables the font, breaking display.
 ; =============================================================================
 
     ; Temporary ZP pointer for the copy operation
@@ -64,6 +69,35 @@ CopyOSRomToRam:
     lda os_copy_ptr+1
     bne @copy_loop
     
+    ; =========================================================================
+    ; Relocate charset: RAM $E000-$E3FF → RAM $FC00-$FFFF
+    ; =========================================================================
+    ; In banking mode, $E000 is overwritten by song data (region B).
+    ; ANTIC will be set to CHBASE=$FC to read charset from $FC00.
+    ; Both source and destination are under OS ROM — need ROM off.
+    ; NMI+IRQ are still disabled (safe: $FFFA vectors are temporarily
+    ; overwritten in RAM, but NMI can't fire with NMIEN=0).
+    lda $D301
+    and #$FE                ; ROM off → RAM visible
+    sta $D301
+
+    ldy #0
+@charset_copy:
+    lda $E000,y
+    sta $FC00,y
+    lda $E100,y
+    sta $FD00,y
+    lda $E200,y
+    sta $FE00,y
+    lda $E300,y
+    sta $FF00,y
+    iny
+    bne @charset_copy
+
+    lda $D301
+    ora #$01                ; ROM back on (for OS loader)
+    sta $D301
+
     ; Done copying - restore interrupts for OS loader
     ; ROM stays enabled (PORTB bit 0 = 1) which is correct for OS
     lda #$40                ; Enable VBI (bit 6) - OS needs this for loader

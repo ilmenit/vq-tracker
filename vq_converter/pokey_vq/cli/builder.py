@@ -484,13 +484,13 @@ class PokeyVQBuilder:
             print(f"    VQ audio: {len(audio)} samples ({len(audio)/sr:.2f}s)")
             raw_total = sum(end - start for i, (start, end) in enumerate(self._all_boundaries)
                            if i < len(sample_modes) and sample_modes[i])
-            print(f"    RAW audio: {raw_total} samples ({raw_total/sr:.2f}s) — excluded from VQ codebook")
+            print(f"    RAW audio: {raw_total} samples ({raw_total/sr:.2f}s) -- excluded from VQ codebook")
         elif has_any_raw and not has_any_vq:
             # All RAW: no VQ encoding needed
             self._vq_orig_indices = []
             self.sample_boundaries = []
             self.sample_names = []
-            print(f"  > All {len(self._all_boundaries)} instruments are RAW — skipping VQ encoding")
+            print(f"  > All {len(self._all_boundaries)} instruments are RAW -- skipping VQ encoding")
         else:
             # All VQ: no split needed (original behavior)
             self._vq_orig_indices = list(range(len(self._all_boundaries)))
@@ -703,6 +703,8 @@ class PokeyVQBuilder:
                 },
                 "stats": {
                     "size_bytes": actual_size,
+                    "vq_size_bytes": getattr(self, 'vq_only_size', actual_size),
+                    "raw_size_bytes": getattr(self, 'raw_only_size', 0),
                     "bitrate_bps": int(actual_bitrate),
                     "rmse": round(float(rmse), 4),
                     "psnr_db": round(float(psnr), 2),
@@ -731,9 +733,14 @@ class PokeyVQBuilder:
         
         actual_size = getattr(self, 'actual_data_size', size)
         actual_bitrate = actual_size * 8 / duration if duration > 0 else 0
+        vq_sz = getattr(self, 'vq_only_size', 0)
+        raw_sz = getattr(self, 'raw_only_size', 0)
         
         print(f"\n  > Compression Results:")
         print(f"    Sample Data: {actual_size:,} bytes")
+        if vq_sz > 0 and raw_sz > 0:
+            print(f"    VQ data:     {vq_sz:,} bytes")
+            print(f"    RAW data:    {raw_sz:,} bytes")
         if has_any_vq:
             print(f"    Bitrate: {actual_bitrate:.0f} bps (VQ only)")
             print(f"    RMSE:    {rmse:.4f}")
@@ -741,7 +748,19 @@ class PokeyVQBuilder:
             print(f"    LSD:     {lsd:.4f}")
             print(f"    Time:    {elapsed:.2f}s")
         else:
-            print(f"    (All instruments RAW — no VQ compression stats)")
+            print(f"    (All instruments RAW -- no VQ compression stats)")
+
+        # Ensure stats is always populated (all-RAW path may skip JSON creation)
+        if self.stats is None:
+            self.stats = {
+                'size_bytes': actual_size,
+                'vq_size_bytes': vq_sz,
+                'raw_size_bytes': raw_sz,
+            }
+        else:
+            self.stats['vq_size_bytes'] = vq_sz
+            self.stats['raw_size_bytes'] = raw_sz
+
         print(f"    Output:  {os.path.basename(self.output_bin)}")
         print(f"    ASM:     [Split Files Created]")
 
@@ -1068,10 +1087,11 @@ class PokeyVQBuilder:
         else:
              table = POKEY_VOLTAGE_TABLE_DUAL
              map_full = None
-        # Tracker mode: store raw 0-15 volumes (saves AND #$0F in IRQ handler)
-        # Standalone mode: store $10|vol (AUDC-ready bytes)
-        is_tracker = getattr(self.args, 'tracker', False)
-        audc_prebake = not is_tracker
+        # Always prebake $10 (AUDC volume-only mode bit) into sample data.
+        # The IRQ handler uses conditional assembly:
+        #   VOLUME_CONTROL=0: direct STA to AUDC (no ORA needed, saves 2 cycles/ch)
+        #   VOLUME_CONTROL=1: AND #$0F to strip bit before volume lookup
+        audc_prebake = True
              
         # Export VQ blob/indices/LO/HI (VQ-only data)
         self.actual_data_size = exporter.export(
@@ -1079,6 +1099,8 @@ class PokeyVQBuilder:
             fast=(self.args.fast or (self.args.optimize == 'speed')),
             channels=self.args.channels,
             audc_prebake=audc_prebake)
+        self.vq_only_size = self.actual_data_size  # VQ portion only
+        self.raw_only_size = 0                      # RAW portion tracked below
 
         # Export SAMPLE_DIR + RAW_SAMPLES for ALL instruments
         all_boundaries = getattr(self, '_all_boundaries', self.sample_boundaries)
@@ -1108,6 +1130,7 @@ class PokeyVQBuilder:
                     total_pages = sum(info[2] for info in raw_labels.values())
                     raw_data_bytes = total_pages * 256
                     self.actual_data_size += raw_data_bytes
+                    self.raw_only_size = raw_data_bytes
                     ns_str = " [noise-shaped]" if use_ns else ""
                     print(f"      - Exported RAW_SAMPLES.asm ({n_raw} RAW instruments, {total_pages} pages, {raw_data_bytes} bytes){ns_str}")
 

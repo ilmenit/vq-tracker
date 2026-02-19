@@ -22,12 +22,12 @@ from ops.base import (
 
 from ops.file_ops import (
     new_song, open_song, save_song, save_song_as,
-    export_binary_file,
+    export_binary_file, export_wav,
     import_mod,
 )
 
 from ops.editing import (
-    enter_note, enter_note_off, clear_cell, clear_row, clear_and_up,
+    enter_note, enter_note_off, enter_vol_change, clear_cell, clear_row, clear_and_up,
     insert_row, delete_row, enter_digit, enter_digit_decimal,
     copy_cells, cut_cells, paste_cells,
     undo, redo,
@@ -39,6 +39,7 @@ from ops.navigation import (
     move_cursor, next_channel, prev_channel,
     jump_rows, jump_start, jump_end,
     jump_first_songline, jump_last_songline,
+    select_all, toggle_follow, solo_channel,
 )
 
 from ops.playback import (

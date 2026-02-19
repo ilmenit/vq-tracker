@@ -99,69 +99,133 @@ class UndoManager:
 
 
 class Selection:
-    """Multi-cell selection for copy/paste."""
+    """2D block selection for multi-channel copy/paste.
+    
+    Tracks a rectangular region: (start_row..end_row) × (start_ch..end_ch).
+    Both dimensions can extend in either direction (start can be > end).
+    """
     
     def __init__(self):
         self.active = False
         self.start_row = 0
         self.end_row = 0
-        self.channel = 0
+        self.start_ch = 0
+        self.end_ch = 0
+    
+    # Legacy alias for keyboard.py compatibility
+    @property
+    def channel(self):
+        return self.start_ch
     
     def begin(self, row: int, channel: int):
-        """Start selection."""
+        """Start selection at (row, channel)."""
         self.active = True
         self.start_row = row
         self.end_row = row
-        self.channel = channel
+        self.start_ch = channel
+        self.end_ch = channel
     
-    def extend(self, row: int):
-        """Extend selection to row."""
+    def extend(self, row: int, channel: int = None):
+        """Extend selection to (row, channel).
+        
+        If channel is None, extends rows only (preserves current channel range).
+        """
         if self.active:
             self.end_row = row
+            if channel is not None:
+                self.end_ch = channel
     
     def clear(self):
         """Clear selection."""
         self.active = False
         self.start_row = 0
         self.end_row = 0
+        self.start_ch = 0
+        self.end_ch = 0
     
     def get_range(self) -> Optional[Tuple[int, int]]:
-        """Get (start, end) row range, or None if no selection."""
+        """Get (start_row, end_row) range, or None.  Backward-compatible."""
         if not self.active:
             return None
-        lo = min(self.start_row, self.end_row)
-        hi = max(self.start_row, self.end_row)
-        return (lo, hi)
+        return (min(self.start_row, self.end_row),
+                max(self.start_row, self.end_row))
+    
+    def get_block(self) -> Optional[Tuple[int, int, int, int]]:
+        """Get (row_lo, row_hi, ch_lo, ch_hi) inclusive ranges, or None."""
+        if not self.active:
+            return None
+        row_lo = min(self.start_row, self.end_row)
+        row_hi = max(self.start_row, self.end_row)
+        ch_lo = min(self.start_ch, self.end_ch)
+        ch_hi = max(self.start_ch, self.end_ch)
+        return (row_lo, row_hi, ch_lo, ch_hi)
     
     def contains(self, row: int, channel: int) -> bool:
-        """Check if row/channel is in selection."""
-        if not self.active or channel != self.channel:
+        """Check if (row, channel) is inside the selection rectangle."""
+        if not self.active:
             return False
-        lo, hi = min(self.start_row, self.end_row), max(self.start_row, self.end_row)
-        return lo <= row <= hi
+        row_lo = min(self.start_row, self.end_row)
+        row_hi = max(self.start_row, self.end_row)
+        ch_lo = min(self.start_ch, self.end_ch)
+        ch_hi = max(self.start_ch, self.end_ch)
+        return row_lo <= row <= row_hi and ch_lo <= channel <= ch_hi
+    
+    @property
+    def num_channels(self) -> int:
+        """Number of channels in selection."""
+        if not self.active:
+            return 0
+        return abs(self.end_ch - self.start_ch) + 1
+    
+    @property
+    def num_rows(self) -> int:
+        """Number of rows in selection."""
+        if not self.active:
+            return 0
+        return abs(self.end_row - self.start_row) + 1
 
 
 class Clipboard:
-    """Copy/paste clipboard for pattern rows."""
+    """Copy/paste clipboard for pattern blocks.
+    
+    Stores a 2D block: block[ch_offset][row_offset] = Row.
+    ch_offset 0 = first channel in the copied selection.
+    """
     
     def __init__(self):
-        self.rows: List[Row] = []
-        self.channel: int = 0
+        self.block: List[List[Row]] = []  # block[ch][row]
+        self.num_channels: int = 0
+        self.num_rows: int = 0
+    
+    def copy_block(self, block: List[List[Row]]):
+        """Copy a 2D block.  block[ch_idx][row_idx]."""
+        self.block = [[r.copy() for r in ch_rows] for ch_rows in block]
+        self.num_channels = len(block)
+        self.num_rows = len(block[0]) if block else 0
     
     def copy(self, rows: List[Row], channel: int = 0):
-        """Copy rows to clipboard."""
-        self.rows = [r.copy() for r in rows]
-        self.channel = channel
+        """Legacy: copy single-channel rows."""
+        self.block = [[r.copy() for r in rows]]
+        self.num_channels = 1
+        self.num_rows = len(rows)
+    
+    def paste_block(self) -> List[List[Row]]:
+        """Get copied block (deep copy).  Returns block[ch][row]."""
+        return [[r.copy() for r in ch_rows] for ch_rows in self.block]
     
     def paste(self) -> List[Row]:
-        """Get copied rows."""
-        return [r.copy() for r in self.rows]
+        """Legacy: get first channel's rows."""
+        if not self.block:
+            return []
+        return [r.copy() for r in self.block[0]]
     
     def has_data(self) -> bool:
-        return len(self.rows) > 0
+        return self.num_rows > 0 and self.num_channels > 0
     
     def clear(self):
-        self.rows.clear()
+        self.block.clear()
+        self.num_channels = 0
+        self.num_rows = 0
 
 
 class AppState:

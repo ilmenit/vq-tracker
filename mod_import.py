@@ -16,9 +16,11 @@ from typing import Optional, Tuple, List
 import numpy as np
 
 from data_model import Song, Pattern, Row, Instrument, Songline
+from sample_editor.commands import SampleCommand
 from constants import (
     MAX_CHANNELS, MAX_VOLUME, DEFAULT_SPEED, DEFAULT_LENGTH,
-    NOTE_OFF, MAX_INSTRUMENTS, MAX_PATTERNS, MAX_ROWS,
+    NOTE_OFF, VOL_CHANGE, MAX_INSTRUMENTS, MAX_PATTERNS, MAX_ROWS,
+    estimate_song_data_bytes,
 )
 
 logger = logging.getLogger("tracker.mod_import")
@@ -334,11 +336,243 @@ _MOD_C1_RATE = _AMIGA_CLOCK_PAL // (856 * 2)   # 4143 Hz (C-1 on PAL)
 _MOD_C3_RATE = _AMIGA_CLOCK_PAL // (214 * 2)   # 16574 Hz (C-3 on PAL)
 
 
-def mod_to_song(mod: dict, log: ImportLog) -> Song:
+def _simulate_volume(mod: dict, inst_map: dict) -> dict:
+    """Simulate per-tick MOD volume state across the entire song.
+
+    Returns a dict: vol_map[(pos_idx, row_idx, ch)] = volume (0-64)
+    Only entries where volume differs from the note's default are stored.
+    Also returns vol_at_row for all positions/rows/channels.
+    """
+    samples = mod['samples']
+    patterns = mod['patterns']
+    order = mod['pattern_order']
+    num_ch = min(mod['num_channels'], 4)
+
+    # Per-channel state
+    ch_vol = [64] * 4  # current volume per channel (0-64)
+    current_speed = 6   # default MOD speed
+
+    # Detect initial speed from first pattern row 0
+    if order and order[0] < len(patterns):
+        for ch in range(num_ch):
+            cell = patterns[order[0]][0][ch]
+            if cell['effect'] == 0x0F and 1 <= cell['effect_data'] <= 31:
+                current_speed = cell['effect_data']
+
+    vol_map = {}  # (pos, row, ch) → volume after tick processing
+
+    for pos_idx, mod_pat_num in enumerate(order):
+        if mod_pat_num >= len(patterns):
+            continue
+        pat = patterns[mod_pat_num]
+
+        for row_idx in range(len(pat)):
+            for ch in range(num_ch):
+                cell = pat[row_idx][ch]
+                sample_num = cell['sample']
+                period = cell['period']
+                effect = cell['effect']
+                effect_data = cell['effect_data']
+
+                # Speed change (F): applies from this row
+                if effect == 0x0F and 1 <= effect_data <= 31:
+                    current_speed = effect_data
+
+                # Note trigger: reset volume to sample default
+                has_note = period > 0 and sample_num > 0
+                if has_note and sample_num <= len(samples):
+                    ch_vol[ch] = samples[sample_num - 1]['volume']
+
+                # Set Volume (C): override on tick 0
+                if effect == 0x0C:
+                    ch_vol[ch] = min(64, effect_data)
+
+                # Volume Slide (A) + combined effects 5, 6
+                slide_x, slide_y = 0, 0
+                if effect == 0x0A:
+                    slide_x = (effect_data >> 4) & 0x0F
+                    slide_y = effect_data & 0x0F
+                elif effect == 0x05:  # Tone Porta + VolSlide
+                    slide_x = (effect_data >> 4) & 0x0F
+                    slide_y = effect_data & 0x0F
+                elif effect == 0x06:  # Vibrato + VolSlide
+                    slide_x = (effect_data >> 4) & 0x0F
+                    slide_y = effect_data & 0x0F
+
+                # Apply per-tick slide (ticks 1..speed-1)
+                if slide_x > 0 or slide_y > 0:
+                    for _ in range(1, current_speed):
+                        if slide_x > 0:
+                            ch_vol[ch] = min(64, ch_vol[ch] + slide_x)
+                        elif slide_y > 0:
+                            ch_vol[ch] = max(0, ch_vol[ch] - slide_y)
+
+                vol_map[(pos_idx, row_idx, ch)] = ch_vol[ch]
+
+    return vol_map
+
+
+def _analyze_loop_durations(mod: dict, inst_map: dict) -> dict:
+    """Analyze maximum hold time (in rows) per looped instrument.
+
+    Also tracks the highest note used per instrument for pitch scaling.
+
+    Returns: {mod_sample_num: {'max_rows': int, 'max_note': int, 'speed': int}}
+    """
+    samples = mod['samples']
+    patterns = mod['patterns']
+    order = mod['pattern_order']
+    num_ch = min(mod['num_channels'], 4)
+
+    # Track per-channel: what instrument is playing, when it started
+    ch_inst = [0] * 4       # current MOD sample number per channel
+    ch_start = [0] * 4      # row counter when note started
+    ch_note = [0] * 4       # note number per channel
+
+    result = {}  # mod_sample_num → {max_rows, max_note, speed}
+    row_counter = 0
+    current_speed = 6
+
+    # Detect initial speed
+    if order and order[0] < len(patterns):
+        for ch in range(num_ch):
+            cell = patterns[order[0]][0][ch]
+            if cell['effect'] == 0x0F and 1 <= cell['effect_data'] <= 31:
+                current_speed = cell['effect_data']
+
+    for pos_idx, mod_pat_num in enumerate(order):
+        if mod_pat_num >= len(patterns):
+            continue
+        pat = patterns[mod_pat_num]
+
+        for row_idx in range(len(pat)):
+            for ch in range(num_ch):
+                cell = pat[row_idx][ch]
+
+                if cell['effect'] == 0x0F and 1 <= cell['effect_data'] <= 31:
+                    current_speed = cell['effect_data']
+
+                period = cell['period']
+                sample_num = cell['sample']
+
+                # New note trigger: finalize old duration, start new
+                if period > 0 and sample_num > 0:
+                    # Finalize previous instrument on this channel
+                    prev = ch_inst[ch]
+                    if prev > 0 and prev <= len(samples):
+                        duration = row_counter - ch_start[ch]
+                        if prev not in result:
+                            result[prev] = {'max_rows': 0, 'max_note': 1,
+                                            'speed': current_speed}
+                        if duration > result[prev]['max_rows']:
+                            result[prev]['max_rows'] = duration
+                            result[prev]['speed'] = current_speed
+
+                    # Start tracking new instrument
+                    ch_inst[ch] = sample_num
+                    ch_start[ch] = row_counter
+                    ch_note[ch] = _period_to_note(period)
+
+                    # Track highest note
+                    note = ch_note[ch]
+                    if sample_num not in result:
+                        result[sample_num] = {'max_rows': 0, 'max_note': note,
+                                              'speed': current_speed}
+                    if note > result[sample_num]['max_note']:
+                        result[sample_num]['max_note'] = note
+
+            row_counter += 1
+
+    # Finalize any still-playing channels
+    for ch in range(num_ch):
+        prev = ch_inst[ch]
+        if prev > 0 and prev <= len(samples):
+            duration = row_counter - ch_start[ch]
+            if prev not in result:
+                result[prev] = {'max_rows': 0, 'max_note': 1,
+                                'speed': current_speed}
+            if duration > result[prev]['max_rows']:
+                result[prev]['max_rows'] = duration
+                result[prev]['speed'] = current_speed
+
+    return result
+
+
+def _dedup_patterns(song, log: ImportLog) -> int:
+    """Merge identical patterns and update songline references.
+    
+    Returns number of patterns removed.
+    """
+    if not song.patterns or not song.songlines:
+        return 0
+    
+    # Hash each pattern by its row data
+    import hashlib
+    pat_hashes = {}  # hash → first pattern index
+    remap = {}       # old index → new index (for duplicates)
+    
+    for i, pat in enumerate(song.patterns):
+        # Build a canonical representation of the pattern
+        key_parts = [str(pat.length)]
+        for row in pat.rows[:pat.length]:
+            key_parts.append(f"{row.note},{row.instrument},{row.volume}")
+        key = "|".join(key_parts)
+        h = hashlib.md5(key.encode()).hexdigest()
+        
+        if h in pat_hashes:
+            remap[i] = pat_hashes[h]
+        else:
+            pat_hashes[h] = i
+    
+    if not remap:
+        return 0
+    
+    # Update songline references
+    for sl in song.songlines:
+        sl.patterns = [remap.get(p, p) for p in sl.patterns]
+    
+    # Collect used pattern indices
+    used = set()
+    for sl in song.songlines:
+        used.update(sl.patterns)
+    
+    # Build new pattern list with only used patterns
+    old_to_new = {}
+    new_patterns = []
+    for i, pat in enumerate(song.patterns):
+        if i in used:
+            old_to_new[i] = len(new_patterns)
+            new_patterns.append(pat)
+    
+    # Remap songlines to new indices
+    for sl in song.songlines:
+        sl.patterns = [old_to_new.get(p, 0) for p in sl.patterns]
+    
+    removed = len(song.patterns) - len(new_patterns)
+    song.patterns = new_patterns
+    
+    if removed > 0:
+        log.info(f"  Pattern dedup: {removed} duplicates merged, "
+                 f"{len(new_patterns)} unique patterns remain")
+    
+    return removed
+
+
+def mod_to_song(mod: dict, log: ImportLog, options: dict = None) -> Song:
     """Convert parsed MOD data into a native Song object."""
+    if options is None:
+        options = {}
+    enable_volume = options.get('volume_control', False)
+    extend_loops = options.get('extend_loops', False)
+    max_loop_repeats = options.get('max_loop_repeats', 8)
+    truncate_songlines = options.get('truncate_songlines', 0)
+    do_dedup = options.get('dedup_patterns', True)  # on by default
+    memory_config = options.get('memory_config', None)
+
     song = Song()
     song.title = mod['title'] or "Imported MOD"
     song.speed = DEFAULT_SPEED
+    song.volume_control = enable_volume
     song.songlines = []
     song.patterns = []
     song.instruments = []
@@ -391,9 +625,86 @@ def mod_to_song(mod: dict, log: ImportLog) -> Song:
     log.info(f"Loaded {len(song.instruments)} instrument(s)"
              + (f", skipped {skipped}" if skipped else ""))
     if loop_count:
-        log.warn(f"{loop_count} sample(s) use looping — sounds will stop "
-                 f"at sample end instead of sustaining. Long/sustained "
-                 f"instruments may cut off abruptly.")
+        if extend_loops:
+            # Analyze max hold durations and extend looped instruments
+            loop_info = _analyze_loop_durations(mod, inst_map)
+            extended = 0
+            for i, smp in enumerate(mod['samples']):
+                mod_num = i + 1
+                if (smp['data'] is None or len(smp['data']) < 4
+                        or smp['repeat_length'] <= 2
+                        or mod_num not in inst_map):
+                    continue
+                tracker_idx = inst_map[mod_num]
+                inst = song.instruments[tracker_idx]
+                info = loop_info.get(mod_num, {})
+                max_rows = info.get('max_rows', 64)
+                max_note = info.get('max_note', 1)
+                speed = info.get('speed', 6)
+
+                # Calculate required duration in seconds
+                # Row duration = speed × tick_duration
+                # Tick duration = 2.5 / BPM (default BPM=125)
+                bpm = 125
+                row_dur = speed * 2.5 / bpm
+                hold_secs = max_rows * row_dur
+
+                # Account for pitch: higher notes consume samples faster
+                # Pitch multiplier = 2^((note-1)/12) for our note system
+                pitch_mult = 2.0 ** ((max_note - 1) / 12.0)
+
+                # Samples needed at native rate, accounting for pitch
+                native_rate = _MOD_C1_RATE
+                samples_needed = hold_secs * native_rate * pitch_mult
+
+                # Sustain region = loop portion
+                loop_start = smp['repeat_start']
+                loop_len = smp['repeat_length']
+                loop_end = min(loop_start + loop_len, len(smp['data']))
+
+                # Samples in the pre-loop portion
+                pre_loop_samples = loop_start
+                remaining = samples_needed - pre_loop_samples
+                if remaining <= 0 or loop_len < 4:
+                    continue  # Sample already long enough
+
+                repeats = max(2, int(np.ceil(remaining / loop_len)) + 1)
+                repeats = min(repeats, max_loop_repeats)  # User-configurable cap
+
+                # Apply sustain effect via the sample editor command
+                start_ms = loop_start / native_rate * 1000.0
+                end_ms = loop_end / native_rate * 1000.0
+
+                from sample_editor.commands import apply_sustain
+                new_audio = apply_sustain(inst.sample_data, native_rate, {
+                    'start_ms': start_ms,
+                    'end_ms': end_ms,
+                    'repeats': repeats,
+                    'crossfade_ms': 5.0,
+                })
+                # Store sustain as a non-destructive effect in the chain.
+                # Keep original audio in sample_data (saved to WAV in .pvq).
+                # Put extended audio in processed_data (used for playback/build).
+                # On .pvq load, pipeline re-applies sustain from the chain.
+                inst.effects.append(SampleCommand(
+                    type='sustain',
+                    params={'start_ms': start_ms, 'end_ms': end_ms,
+                            'repeats': repeats, 'crossfade_ms': 5.0},
+                    enabled=True,
+                ))
+                old_len = len(inst.sample_data)
+                inst.processed_data = new_audio
+                new_dur = len(new_audio) / native_rate
+                log.info(f"  Inst {tracker_idx:02d}: loop extended "
+                         f"{old_len}→{len(new_audio)} samples "
+                         f"({new_dur:.2f}s, ×{repeats} repeats)")
+                extended += 1
+            if extended:
+                log.info(f"Extended {extended} looped instrument(s)")
+        else:
+            log.warn(f"{loop_count} sample(s) use looping — sounds will stop "
+                     f"at sample end instead of sustaining. Long/sustained "
+                     f"instruments may cut off abruptly.")
     if empty_samples:
         log.info(f"  Empty/silent sample numbers: "
                  f"{', '.join(str(s) for s in sorted(empty_samples))}")
@@ -441,12 +752,13 @@ def mod_to_song(mod: dict, log: ImportLog) -> Song:
         log.info("  No effects used")
 
     if pattern_breaks:
-        log.warn(f"{len(pattern_breaks)} Pattern Break(s) — "
-                 f"rows after break cleared in imported patterns")
+        log.info(f"{len(pattern_breaks)} Pattern Break(s) — "
+                 f"patterns truncated at break row")
         for pat_idx, row_idx, dest in pattern_breaks:
             if dest > 0:
                 log.info(f"    Pattern {pat_idx} row {row_idx}: break to "
-                         f"row {dest} of next pattern (dest row ignored)")
+                         f"row {dest} of next pattern (dest row ignored, "
+                         f"pattern truncated to {row_idx + 1} rows)")
     if position_jumps:
         log.warn(f"{len(position_jumps)} Position Jump(s) — "
                  f"song order may differ from original")
@@ -461,152 +773,301 @@ def mod_to_song(mod: dict, log: ImportLog) -> Song:
             desc = ", ".join(f"row {r} E6{d:X}" for r, d in entries)
             log.info(f"    Pattern {pat_idx}: {desc}")
     if mid_speed_changes:
-        log.warn(f"{mid_speed_changes} mid-pattern speed change(s) ignored "
-                 f"(only row-0 speed changes are imported)")
+        log.warn(f"{mid_speed_changes} mid-pattern speed change(s) — "
+                 f"last speed per pattern used for songline "
+                 f"(within-pattern changes approximated)")
 
     # --- Convert patterns ---
     log.section("Patterns")
 
-    break_map = {}  # pat_idx → earliest break row
+    break_map = {}  # pat_idx → earliest break row (Dxx or Bxx)
     for pat_idx, row_idx, _ in pattern_breaks:
         if pat_idx not in break_map or row_idx < break_map[pat_idx]:
             break_map[pat_idx] = row_idx
+    for pat_idx, row_idx, _ in position_jumps:
+        if pat_idx not in break_map or row_idx < break_map[pat_idx]:
+            break_map[pat_idx] = row_idx
+
+    # Pre-compute volume map when volume control is enabled
+    vol_map = None
+    if enable_volume:
+        vol_map = _simulate_volume(mod, inst_map)
 
     patterns_full = False
-    vol_change_no_note = 0   # $C on rows without a note trigger
-    note_without_sample = 0  # Note with sample_num=0 (uses fallback inst 0)
+    vol_change_no_note = 0
+    vol_events_added = 0
+    note_without_sample = 0
 
-    for pat_idx, mod_pat in enumerate(mod['patterns']):
-        if patterns_full:
-            break
+    if enable_volume:
+        # --- Per-position pattern creation (volume-accurate) ---
+        # Each song position gets its own 4 tracker patterns so that
+        # inherited volume state from previous positions is correct.
+        ch_last_vol = [MAX_VOLUME] * 4  # track last emitted volume per channel
 
-        tracker_pats = [Pattern(length=DEFAULT_LENGTH)
-                        for _ in range(MAX_CHANNELS)]
-        break_row = break_map.get(pat_idx, 64)
+        for pos_idx, mod_pat_num in enumerate(mod['pattern_order']):
+            if patterns_full:
+                break
+            if mod_pat_num >= len(mod['patterns']):
+                continue
+            mod_pat = mod['patterns'][mod_pat_num]
 
-        for row_idx in range(64):
-            if row_idx > break_row:
-                continue  # Leave as empty default
+            tracker_pats = [Pattern(length=DEFAULT_LENGTH)
+                            for _ in range(MAX_CHANNELS)]
+            break_row = break_map.get(mod_pat_num, 64)
 
-            for ch in range(MAX_CHANNELS):
-                cell = mod_pat[row_idx][ch]
-                note = _period_to_note(cell['period'])
-                sample_num = cell['sample']
-                effect = cell['effect']
-                effect_data = cell['effect_data']
-
-                row = tracker_pats[ch].rows[row_idx]
-
-                # Empty/silent sample → NOTE_OFF
-                if sample_num > 0 and sample_num in empty_samples:
-                    if note > 0:
-                        row.note = NOTE_OFF
+            for row_idx in range(64):
+                if row_idx > break_row:
                     continue
 
-                # Set note first
-                row.note = note
+                for ch in range(MAX_CHANNELS):
+                    cell = mod_pat[row_idx][ch]
+                    note = _period_to_note(cell['period'])
+                    sample_num = cell['sample']
+                    effect = cell['effect']
+                    effect_data = cell['effect_data']
+                    row = tracker_pats[ch].rows[row_idx]
 
-                # Only populate instrument and volume when there IS a note.
-                # Our audio engine ignores these fields on note=0 rows.
-                # In MOD, sample-without-period changes the channel state,
-                # but we can't represent that — skip to avoid dead data.
-                if note > 0:
-                    # Map instrument
-                    if sample_num > 0 and sample_num in inst_map:
-                        row.instrument = inst_map[sample_num]
+                    if sample_num > 0 and sample_num in empty_samples:
+                        if note > 0:
+                            row.note = NOTE_OFF
+                        continue
+
+                    if note > 0:
+                        row.note = note
+                        if sample_num > 0 and sample_num in inst_map:
+                            row.instrument = inst_map[sample_num]
+                        else:
+                            row.instrument = 0
+                            if sample_num == 0:
+                                note_without_sample += 1
+
+                        # Volume from simulation
+                        sim_vol = vol_map.get((pos_idx, row_idx, ch), 64)
+                        row.volume = _mod_vol_to_tracker(sim_vol)
+                        ch_last_vol[ch] = row.volume
                     else:
-                        row.instrument = 0
-                        if sample_num == 0:
-                            note_without_sample += 1
-
-                    # Volume from sample default
-                    if sample_num > 0 and sample_num in inst_map:
-                        smp_idx = sample_num - 1
-                        if 0 <= smp_idx < len(mod['samples']):
-                            row.volume = _mod_vol_to_tracker(
-                                mod['samples'][smp_idx]['volume'])
-
-                    # Effect: Set Volume ($C) — only meaningful with a note
-                    if effect == 0x0C:
-                        row.volume = _mod_vol_to_tracker(
-                            min(64, effect_data))
-                else:
-                    # No note on this row
-                    if effect == 0x0C:
-                        vol_change_no_note += 1
-                        # $C00 on empty row is channel mute — map to NOTE_OFF
-                        if effect_data == 0:
+                        # No note — check for volume change
+                        sim_vol = vol_map.get((pos_idx, row_idx, ch))
+                        if sim_vol is not None:
+                            tracker_vol = _mod_vol_to_tracker(sim_vol)
+                            if tracker_vol != ch_last_vol[ch]:
+                                if sim_vol == 0:
+                                    row.note = NOTE_OFF
+                                else:
+                                    row.note = VOL_CHANGE
+                                    row.volume = tracker_vol
+                                    vol_events_added += 1
+                                ch_last_vol[ch] = tracker_vol
+                        # Also handle explicit $C00 mute
+                        if effect == 0x0C and effect_data == 0 and note == 0:
                             row.note = NOTE_OFF
 
-        # All 4 channel patterns must fit — don't add partial sets
-        if len(song.patterns) + MAX_CHANNELS > MAX_PATTERNS:
-            log.warn(f"Pattern limit ({MAX_PATTERNS}) reached at MOD pattern "
-                     f"{pat_idx} — remaining patterns skipped")
-            patterns_full = True
-            continue
+            effective_length = min(break_row + 1, DEFAULT_LENGTH)
+            for p in tracker_pats:
+                p.length = effective_length
+                p.rows = p.rows[:effective_length]
 
-        for p in tracker_pats:
-            song.patterns.append(p)
+            if len(song.patterns) + MAX_CHANNELS > MAX_PATTERNS:
+                log.warn(f"Pattern limit ({MAX_PATTERNS}) reached at "
+                         f"position {pos_idx} — remaining skipped")
+                patterns_full = True
+                continue
 
-    log.info(f"Converted {mod['num_patterns']} MOD patterns -> "
-             f"{len(song.patterns)} tracker patterns")
-    if vol_change_no_note:
-        muted = sum(1 for pi, mod_pat in enumerate(mod['patterns'])
-                    for row in mod_pat for cell in row
-                    if cell['effect'] == 0x0C and cell['effect_data'] == 0
-                    and cell['period'] == 0)
-        vol_fade = vol_change_no_note - muted
-        if muted:
-            log.info(f"  {muted} volume-mute(s) ($C00 on empty row) mapped to NOTE_OFF")
-        if vol_fade:
-            log.warn(f"{vol_fade} volume change(s) ($C on non-note rows) lost — "
-                     f"our engine can't change volume without re-triggering a note")
+            for p in tracker_pats:
+                song.patterns.append(p)
+
+        log.info(f"Converted {len(mod['pattern_order'])} positions -> "
+                 f"{len(song.patterns)} tracker patterns (per-position)")
+        if vol_events_added:
+            log.info(f"  {vol_events_added} volume-change event(s) added")
+
+    else:
+        # --- Per-MOD-pattern creation (original behavior) ---
+        for pat_idx, mod_pat in enumerate(mod['patterns']):
+            if patterns_full:
+                break
+
+            tracker_pats = [Pattern(length=DEFAULT_LENGTH)
+                            for _ in range(MAX_CHANNELS)]
+            break_row = break_map.get(pat_idx, 64)
+
+            for row_idx in range(64):
+                if row_idx > break_row:
+                    continue
+
+                for ch in range(MAX_CHANNELS):
+                    cell = mod_pat[row_idx][ch]
+                    note = _period_to_note(cell['period'])
+                    sample_num = cell['sample']
+                    effect = cell['effect']
+                    effect_data = cell['effect_data']
+                    row = tracker_pats[ch].rows[row_idx]
+
+                    if sample_num > 0 and sample_num in empty_samples:
+                        if note > 0:
+                            row.note = NOTE_OFF
+                        continue
+
+                    row.note = note
+                    if note > 0:
+                        if sample_num > 0 and sample_num in inst_map:
+                            row.instrument = inst_map[sample_num]
+                        else:
+                            row.instrument = 0
+                            if sample_num == 0:
+                                note_without_sample += 1
+                        if sample_num > 0 and sample_num in inst_map:
+                            smp_idx = sample_num - 1
+                            if 0 <= smp_idx < len(mod['samples']):
+                                row.volume = _mod_vol_to_tracker(
+                                    mod['samples'][smp_idx]['volume'])
+                        if effect == 0x0C:
+                            row.volume = _mod_vol_to_tracker(
+                                min(64, effect_data))
+                    else:
+                        if effect == 0x0C:
+                            vol_change_no_note += 1
+                            if effect_data == 0:
+                                row.note = NOTE_OFF
+
+            effective_length = min(break_row + 1, DEFAULT_LENGTH)
+            for p in tracker_pats:
+                p.length = effective_length
+                p.rows = p.rows[:effective_length]
+
+            if len(song.patterns) + MAX_CHANNELS > MAX_PATTERNS:
+                log.warn(f"Pattern limit ({MAX_PATTERNS}) reached at MOD "
+                         f"pattern {pat_idx} — remaining patterns skipped")
+                patterns_full = True
+                continue
+
+            for p in tracker_pats:
+                song.patterns.append(p)
+
+        log.info(f"Converted {mod['num_patterns']} MOD patterns -> "
+                 f"{len(song.patterns)} tracker patterns")
+        if vol_change_no_note:
+            muted = sum(1 for pi, mod_pat in enumerate(mod['patterns'])
+                        for row in mod_pat for cell in row
+                        if cell['effect'] == 0x0C and cell['effect_data'] == 0
+                        and cell['period'] == 0)
+            vol_fade = vol_change_no_note - muted
+            if muted:
+                log.info(f"  {muted} volume-mute(s) ($C00 on empty row) "
+                         f"mapped to NOTE_OFF")
+            if vol_fade:
+                log.warn(f"{vol_fade} volume change(s) ($C on non-note "
+                         f"rows) lost — our engine can't change volume "
+                         f"without re-triggering a note")
+
     if note_without_sample:
         log.info(f"  {note_without_sample} note(s) without sample number — "
                  f"defaulted to instrument 00")
 
     # --- Determine initial speed from first PLAYED pattern ---
-    # ProTracker processes channels left to right; last $F wins.
+    # Scan ALL rows (not just row 0) and use the last Fxx value.
+    # This matches the songline-building logic below: the last speed
+    # command dominates and is the best single-value approximation.
     first_pat_num = mod['pattern_order'][0] if mod['pattern_order'] else 0
     if first_pat_num < len(mod['patterns']):
-        for ch in range(MAX_CHANNELS):
-            cell = mod['patterns'][first_pat_num][0][ch]
-            if cell['effect'] == 0x0F and 1 <= cell['effect_data'] <= 31:
-                song.speed = cell['effect_data']
-                # Don't break — last channel wins
+        first_break = break_map.get(first_pat_num, 64)
+        for row_idx in range(min(first_break + 1, 64)):
+            for ch in range(MAX_CHANNELS):
+                cell = mod['patterns'][first_pat_num][row_idx][ch]
+                if cell['effect'] == 0x0F and 1 <= cell['effect_data'] <= 31:
+                    song.speed = cell['effect_data']
 
     # --- Build songlines with per-position speed tracking ---
     log.section("Song")
 
+    # Build map of which MOD patterns have effective Bxx (Position Jump).
+    # A Bxx is "effective" only if no Dxx (Pattern Break) fires on an
+    # earlier row — when Dxx fires first, the pattern ends before Bxx.
+    pat_jump_map = {}  # pat_idx → (row, dest_position)
+    for pat_idx, row_idx, dest in position_jumps:
+        # Check if a Dxx occurs before this Bxx
+        dxx_row = break_map.get(pat_idx)
+        if dxx_row is not None and dxx_row < row_idx:
+            continue  # Dxx fires first → Bxx never executes
+        if pat_idx not in pat_jump_map or row_idx < pat_jump_map[pat_idx][0]:
+            pat_jump_map[pat_idx] = (row_idx, dest)
+
     current_speed = song.speed
     bpm_count = 0
+    song_end_pos = None  # Will be set if Bxx truncates the song
 
     for pos_idx, mod_pat_num in enumerate(mod['pattern_order']):
-        base = mod_pat_num * MAX_CHANNELS
+        if enable_volume:
+            # Per-position patterns: sequential
+            base = pos_idx * MAX_CHANNELS
+        else:
+            # Per-MOD-pattern: indexed by MOD pattern number
+            base = mod_pat_num * MAX_CHANNELS
         patterns = [base + ch for ch in range(MAX_CHANNELS)]
         for ch_idx in range(MAX_CHANNELS):
             if patterns[ch_idx] >= len(song.patterns):
                 patterns[ch_idx] = 0
 
-        # Scan row 0 of this pattern for speed commands
-        # ProTracker processes channels left to right; last $F wins.
+        # Scan ALL rows of this pattern for speed commands.
+        # ProTracker processes channels left to right; last $F wins per row.
+        # We use the LAST speed command in the pattern because:
+        #   1. It dominates the tail (usually the longest section)
+        #   2. It carries forward correctly to the next position
+        #   3. It handles "speed 1 as timing trick" (F01 on row 0 followed
+        #      by the real speed on row 1+)
+        # Previously only row 0 was scanned, causing positions after
+        # mid-pattern speed changes to inherit the wrong speed.
+        effective_len = break_map.get(mod_pat_num, 64)
         if mod_pat_num < len(mod['patterns']):
-            for ch in range(MAX_CHANNELS):
-                cell = mod['patterns'][mod_pat_num][0][ch]
-                if cell['effect'] == 0x0F:
-                    if 1 <= cell['effect_data'] <= 31:
-                        current_speed = cell['effect_data']
-                        # Don't break — last channel wins
-                    elif cell['effect_data'] > 31:
-                        bpm_count += 1
+            for row_idx in range(min(effective_len + 1, 64)):
+                for ch in range(MAX_CHANNELS):
+                    cell = mod['patterns'][mod_pat_num][row_idx][ch]
+                    if cell['effect'] == 0x0F:
+                        if 1 <= cell['effect_data'] <= 31:
+                            current_speed = cell['effect_data']
+                        elif cell['effect_data'] > 31:
+                            bpm_count += 1
 
         sl = Songline(patterns=patterns, speed=current_speed)
         song.songlines.append(sl)
+
+        # Check if this position's pattern has an effective Bxx.
+        # If it jumps backward (loop) or to the current position, all
+        # positions after this one are unreachable in normal playback.
+        if mod_pat_num in pat_jump_map:
+            bxx_row, dest_pos = pat_jump_map[mod_pat_num]
+            if dest_pos <= pos_idx:
+                song_end_pos = pos_idx
+                log.info(f"  Position {pos_idx} (pattern {mod_pat_num}): "
+                         f"B{dest_pos:02X} on row {bxx_row} → "
+                         f"loops to position {dest_pos}")
+                log.info(f"  Positions {pos_idx+1}-{len(mod['pattern_order'])-1} "
+                         f"are unreachable — song ends here "
+                         f"({pos_idx + 1} of {len(mod['pattern_order'])} positions)")
+                break
+
+    # Truncate songlines if a backward Bxx was found
+    if song_end_pos is not None and len(song.songlines) > song_end_pos + 1:
+        song.songlines = song.songlines[:song_end_pos + 1]
+
+    # Apply user-requested truncation
+    if truncate_songlines > 0 and len(song.songlines) > truncate_songlines:
+        old_count = len(song.songlines)
+        song.songlines = song.songlines[:truncate_songlines]
+        log.info(f"  Truncated: {old_count} → {truncate_songlines} songlines")
 
     log.info(f"Song: {len(song.songlines)} positions, "
              f"initial speed {song.speed}")
     if bpm_count:
         log.warn(f"{bpm_count} BPM tempo change(s) (speed > 31) ignored")
+
+    # --- Pattern deduplication ---
+    if do_dedup and len(song.patterns) > MAX_CHANNELS:
+        _dedup_patterns(song, log)
+
+    # --- Set memory config ---
+    if memory_config:
+        song.memory_config = memory_config
 
     # --- Finalize ---
     if not song.songlines:
@@ -622,7 +1083,162 @@ def mod_to_song(mod: dict, log: ImportLog) -> Song:
 # PUBLIC API
 # ============================================================================
 
-def import_mod_file(path: str, work_dir=None) -> Tuple[Optional[Song], ImportLog]:
+def scan_mod_features(path: str) -> dict:
+    """Quick-scan a MOD file to detect features for the import options dialog.
+
+    Returns a dict with all data needed for the import wizard:
+        loop_count, vol_slide_count, vol_set_count, title, error,
+        n_unique_patterns, n_positions, n_instruments, format,
+        event_density, loop_details, estimated_song_kb
+    """
+    result = {'loop_count': 0, 'vol_slide_count': 0, 'vol_set_count': 0,
+              'title': '', 'error': None,
+              'n_unique_patterns': 0, 'n_positions': 0, 'n_instruments': 0,
+              'format': '', 'event_density': 0.5, 'loop_details': [],
+              'estimated_song_kb': {}}
+    try:
+        with open(path, 'rb') as f:
+            data = f.read()
+    except OSError as e:
+        result['error'] = str(e)
+        return result
+
+    if len(data) < 600:
+        result['error'] = 'File too small'
+        return result
+
+    log = ImportLog()
+    mod = parse_mod(data, log)
+    if mod is None:
+        result['error'] = log.get_text()
+        return result
+
+    result['title'] = mod['title'] or os.path.basename(path)
+    result['n_unique_patterns'] = mod['num_patterns']
+    result['n_positions'] = mod['song_length']
+    result['format'] = f"{mod['num_channels']}-channel MOD"
+
+    # Count non-empty instruments
+    non_empty = 0
+    for smp in mod['samples']:
+        if smp['data'] is not None and len(smp['data']) >= 4:
+            non_empty += 1
+    result['n_instruments'] = non_empty
+
+    # Build inst_map for analysis (mirrors mod_to_song logic)
+    inst_map = {}
+    tracker_idx = 0
+    for i, smp in enumerate(mod['samples']):
+        if smp['data'] is not None and len(smp['data']) >= 4:
+            inst_map[i + 1] = tracker_idx
+            tracker_idx += 1
+
+    # Count looped samples + detailed loop info
+    loop_details = []
+    for i, smp in enumerate(mod['samples']):
+        if (smp['data'] is not None and len(smp['data']) >= 4
+                and smp['repeat_length'] > 2):
+            result['loop_count'] += 1
+
+    # Analyze loop durations if there are loops
+    if result['loop_count'] > 0:
+        loop_info = _analyze_loop_durations(mod, inst_map)
+        for i, smp in enumerate(mod['samples']):
+            mod_num = i + 1
+            if (smp['data'] is None or len(smp['data']) < 4
+                    or smp['repeat_length'] <= 2
+                    or mod_num not in inst_map):
+                continue
+            info = loop_info.get(mod_num, {})
+            max_rows = info.get('max_rows', 64)
+            max_note = info.get('max_note', 1)
+            speed = info.get('speed', 6)
+
+            # Calculate repeats needed (same logic as mod_to_song)
+            bpm = 125
+            row_dur = speed * 2.5 / bpm
+            hold_secs = max_rows * row_dur
+            pitch_mult = 2.0 ** ((max_note - 1) / 12.0)
+            native_rate = _MOD_C1_RATE
+            samples_needed = hold_secs * native_rate * pitch_mult
+            loop_start = smp['repeat_start']
+            loop_len = smp['repeat_length']
+            pre_loop = loop_start
+            remaining = samples_needed - pre_loop
+            if remaining > 0 and loop_len >= 4:
+                repeats = max(2, int(np.ceil(remaining / loop_len)) + 1)
+                repeats = min(repeats, 64)
+            else:
+                repeats = 1
+            extended_samples = len(smp['data']) + max(0, (repeats - 1)) * loop_len
+            extended_bytes = int(extended_samples * 2)  # 16-bit WAV
+
+            loop_details.append({
+                'mod_num': mod_num,
+                'name': smp['name'] or f"sample_{mod_num}",
+                'sample_bytes': len(smp['data']) * 2,
+                'loop_start': loop_start,
+                'loop_length': loop_len,
+                'calculated_repeats': repeats,
+                'extended_bytes': extended_bytes,
+                'max_rows': max_rows,
+            })
+    result['loop_details'] = loop_details
+
+    # Count volume effects
+    total_events = 0
+    total_rows = 0
+    for pat in mod['patterns']:
+        for row in pat:
+            total_rows += 1
+            for cell in row:
+                eff = cell['effect']
+                if eff in (0x0A, 0x05, 0x06):
+                    result['vol_slide_count'] += 1
+                elif eff == 0x0C and cell['period'] == 0:
+                    result['vol_set_count'] += 1
+                if cell['period'] > 0 or cell['sample'] > 0:
+                    total_events += 1
+
+    # Event density (for song data size estimation)
+    if total_rows > 0:
+        result['event_density'] = min(1.0, total_events / total_rows)
+
+    # Estimate song data sizes
+    n_pos = result['n_positions']
+    n_unique = result['n_unique_patterns']
+    density = result['event_density']
+
+    # Without volume: 4 patterns per unique MOD pattern
+    pats_no_vol = min(4 * n_unique, MAX_PATTERNS)
+    est_no_vol = estimate_song_data_bytes(
+        n_pos, pats_no_vol,
+        pattern_lengths=[64] * pats_no_vol,
+        avg_events_per_row=density)
+
+    # With volume: 4 patterns per position (worst case)
+    pats_vol = min(4 * n_pos, MAX_PATTERNS)
+    est_vol = estimate_song_data_bytes(
+        n_pos, pats_vol,
+        pattern_lengths=[64] * pats_vol,
+        avg_events_per_row=density * 1.2)  # volume adds events
+
+    # With volume + dedup estimate: typically 40-60% reduction
+    est_vol_dedup = int(est_vol * 0.55)  # conservative estimate
+
+    result['estimated_song_kb'] = {
+        'without_volume': est_no_vol / 1024,
+        'without_volume_patterns': pats_no_vol,
+        'with_volume': est_vol / 1024,
+        'with_volume_patterns': pats_vol,
+        'with_volume_dedup': est_vol_dedup / 1024,
+    }
+
+    return result
+
+
+def import_mod_file(path: str, work_dir=None, options: dict = None
+                    ) -> Tuple[Optional[Song], ImportLog]:
     """Import a .MOD file and return a Song object.
 
     Args:
@@ -661,7 +1277,7 @@ def import_mod_file(path: str, work_dir=None) -> Tuple[Optional[Song], ImportLog
     if mod is None:
         return None, log
 
-    song = mod_to_song(mod, log)
+    song = mod_to_song(mod, log, options)
 
     if work_dir:
         _save_samples_to_workdir(song, work_dir, log)

@@ -1,24 +1,49 @@
 ; ==========================================================================
-; TRACKER IRQ HANDLER - SPEED OPTIMIZED (4-channel, Mixed RAW/VQ)
+; TRACKER IRQ HANDLER - BANKED (4-channel, Mixed RAW/VQ, Extended Memory)
 ; ==========================================================================
-; Non-banking variant (64KB mode). Macro-based: CHANNEL_IRQ_64K generates
-; identical handler code per channel from a single definition.
+; Macro-based: CHANNEL_IRQ macro generates identical code per channel.
+; Single point of maintenance — ~200 lines of macro replaces ~800 lines.
 ;
-; No bank switching overhead — all data resides in main RAM.
+; Bank window exit detection ($4000-$7FFF → $8000+) uses the N flag
+; instead of explicit CMP #$80:
+;   - After INC ptr+1: N flag set if result >= $80 → BPL skips bank cross
+;   - After LDA ptr+1: N flag set by LDA → BMI branches to bank cross
+; Saves 2-4 bytes and 2-5 cycles per check (12 checks × 4 channels).
 ;
 ; RAW pitch hot path: falls through to chN_skip (zero branch overhead).
 ;
-; Cycle counts (common non-boundary path per channel, VOLUME_CONTROL=0):
-;   RAW pitch, no page cross: ~19 cycles (no bank switch overhead)
-;   RAW no-pitch, no wrap:    ~22 cycles
-;   VQ no-pitch, no boundary: ~28 cycles
-;   Inactive channel:          8 cycles
+; SMC per channel (patched by process_row.asm):
+;   chN_bank     - PORTB value for sample bank
+;   chN_tick_jmp - JMP target: one of 4 mode+pitch handlers
+;
+; All handler labels (chN_vq_pitch, chN_raw_no_pitch, etc.) are made
+; globally visible using ".def" for SMC patching by process_row.asm.
+; (MADS macro labels are local by default — .def overrides this.)
 ; ==========================================================================
 
-; Default MIN_VECTOR for all-RAW builds (converter omits it when algo=raw)
+.ifndef USE_BANKING
+    .error "tracker_irq_banked.asm requires USE_BANKING to be defined"
+.endif
+
+; Default MIN_VECTOR for all-RAW builds (converter omits it when algo=raw).
+; Must be defined BEFORE any usage below (CODEBOOK_SIZE fallback, VECTOR_MASK).
 .ifndef MIN_VECTOR
     MIN_VECTOR = 8
 .endif
+
+; Per-bank codebook: VQ lookup tables point into codebook at $4000.
+; BANK_CODEBOOK_BYTES comes from VQ_CFG.asm (set by build pipeline):
+;   - Non-zero when VQ instruments present (256 * vec_size)
+;   - Zero when no VQ instruments exist
+.ifdef BANK_CODEBOOK_BYTES
+    CODEBOOK_SIZE = BANK_CODEBOOK_BYTES
+.else
+    CODEBOOK_SIZE = 256 * MIN_VECTOR
+.endif
+; BANK_DATA_HI: legacy constant, retained for reference.
+; Bank-crossing code uses per-channel ch:1_data_hi instead (set from
+; SAMPLE_DATA_HI table in BANK_CFG.asm at note trigger time).
+BANK_DATA_HI = >($4000 + CODEBOOK_SIZE)
 
 ; Masks for modulo operation (MIN_VECTOR - 1)
 .if MIN_VECTOR = 2
@@ -45,9 +70,12 @@
 .ifndef OPCODE_BEQ
     OPCODE_BEQ = $F0
 .endif
+.ifndef PORTB_MAIN
+    PORTB_MAIN = $FE
+.endif
 
 ; ==========================================================================
-; CHANNEL_IRQ_64K — Per-channel IRQ handler macro (no banking)
+; CHANNEL_IRQ — Per-channel IRQ handler macro
 ; ==========================================================================
 ; :1 = channel number (0-3)     Label/variable names: ch:1_xxx, trk:1_xxx
 ; :2 = AUDC register            AUDC1 through AUDC4
@@ -57,7 +85,7 @@
 ; patching) use ".def name = *" to force global scope.  Internal-only
 ; labels (ch:1_active, ch:1_skip, etc.) remain local.
 ; ==========================================================================
-.macro CHANNEL_IRQ_64K
+.macro CHANNEL_IRQ
 
     ; --- Active check ---
     lda trk:1_active
@@ -65,7 +93,11 @@
     jmp ch:1_skip
 ch:1_active:
 
-    ; --- Output sample (no bank switch in 64KB mode) ---
+    ; --- Bank switch + Output sample ---
+.def ch:1_bank = *+1              ; .def → global (SMC target for process_row)
+    ldx #PORTB_MAIN              ; SMC: patched to instrument's PORTB
+    stx PORTB
+
     ldy trk:1_vector_offset
 .if VOLUME_CONTROL = 1
     lda (trk:1_sample_ptr),y
@@ -134,7 +166,21 @@ ch:1_active:
     adc trk:1_stream_ptr
     sta trk:1_stream_ptr
     bcc ch:1_vq_p_nc
+    ; Stream ptr high byte page cross — check bank window exit
     inc trk:1_stream_ptr+1
+    bpl ch:1_vq_p_nc             ; N clear = hi < $80 = still in bank window
+    ; Exited bank window ($80+) — switch to next bank or end
+    lda ch:1_banks_left
+    bne @+
+    jmp ch:1_end
+@   lda ch:1_data_hi
+    sta trk:1_stream_ptr+1
+    inc ch:1_bank_seq_idx
+    ldy ch:1_bank_seq_idx
+    lda SAMPLE_BANK_SEQ,y
+    sta ch:1_bank
+    sta PORTB
+    dec ch:1_banks_left
 ch:1_vq_p_nc:
     txa
     and #VECTOR_MASK
@@ -151,12 +197,29 @@ ch:1_vq_boundary:
     sta trk:1_vector_offset
     inc trk:1_stream_ptr
     bne ch:1_check_end
+    ; Low byte wrapped to 0 — increment high, check bank exit
     inc trk:1_stream_ptr+1
+    bpl ch:1_check_end           ; N clear = still in bank window
+    ; Exited bank window
+    lda ch:1_banks_left
+    bne @+
+    jmp ch:1_end
+@   lda ch:1_data_hi
+    sta trk:1_stream_ptr+1
+    inc ch:1_bank_seq_idx
+    ldx ch:1_bank_seq_idx
+    lda SAMPLE_BANK_SEQ,x
+    sta ch:1_bank
+    sta PORTB
+    dec ch:1_banks_left
+    jmp ch:1_load_vector
 
     ; =================================================================
     ; CHECK END + LOAD VECTOR
     ; =================================================================
 ch:1_check_end:
+    lda ch:1_banks_left
+    bne ch:1_load_vector
     lda trk:1_stream_ptr+1
     cmp trk:1_stream_end+1
     bcc ch:1_load_vector
@@ -199,14 +262,32 @@ ch:1_raw_np_page:
 ch:1_raw_p_page:
     inc trk:1_sample_ptr+1
 ch:1_raw_page_check:
+    ; Need A = sample_ptr+1 for end-of-stream check below.
+    ; LDA sets N flag → BMI branches if >= $80 (exited bank window).
     lda trk:1_sample_ptr+1
-    cmp trk:1_stream_end+1
+    bmi ch:1_raw_bank_cross       ; bit 7 set = past $7FFF
+    ldx ch:1_banks_left           ; preserves A
+    bne ch:1_raw_page_ok
+    cmp trk:1_stream_end+1        ; A = sample_ptr+1
     bcc ch:1_raw_page_ok          ; hi < end_hi → still playing
     bne ch:1_end                  ; hi > end_hi → past end
     ; hi == end_hi: check low byte (vector_offset vs stream_end lo)
     lda trk:1_vector_offset
     cmp trk:1_stream_end
-    bcs ch:1_end                  ; offset >= end_lo → end
+    bcc ch:1_raw_page_ok          ; offset < end_lo → still playing
+    jmp ch:1_end                  ; offset >= end_lo → end
+ch:1_raw_bank_cross:
+    lda ch:1_banks_left
+    bne @+
+    jmp ch:1_end
+@   lda ch:1_data_hi
+    sta trk:1_sample_ptr+1
+    inc ch:1_bank_seq_idx
+    ldx ch:1_bank_seq_idx
+    lda SAMPLE_BANK_SEQ,x
+    sta ch:1_bank
+    sta PORTB
+    dec ch:1_banks_left
 ch:1_raw_page_ok:
     jmp ch:1_skip
 
@@ -240,18 +321,21 @@ Tracker_IRQ:
     sta IRQEN
 
     ; === Channel 0 — AUDC1 ================================================
-    CHANNEL_IRQ_64K 0, AUDC1
+    CHANNEL_IRQ 0, AUDC1
 
     ; === Channel 1 — AUDC2 ================================================
-    CHANNEL_IRQ_64K 1, AUDC2
+    CHANNEL_IRQ 1, AUDC2
 
     ; === Channel 2 — AUDC3 ================================================
-    CHANNEL_IRQ_64K 2, AUDC3
+    CHANNEL_IRQ 2, AUDC3
 
     ; === Channel 3 — AUDC4 ================================================
-    CHANNEL_IRQ_64K 3, AUDC4
+    CHANNEL_IRQ 3, AUDC4
 
-    ; === Exit ==============================================================
+    ; === Exit — restore PORTB to main RAM ==================================
+    lda #PORTB_MAIN
+    sta PORTB
+
     ldy irq_save_y
     ldx irq_save_x
     lda irq_save_a

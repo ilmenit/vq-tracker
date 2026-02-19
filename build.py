@@ -119,12 +119,12 @@ def validate_song(song: Song, check_samples: bool = True) -> ValidationResult:
             loc_row = f"Pattern {ptn_idx:02d}, Row {row_idx:02d}"
             
             # Check note value
-            if row.note != 0 and row.note != 255:  # 0=empty, 255=OFF
+            if row.note != 0 and row.note not in (255, 254):  # 0=empty, 255=OFF, 254=VOL_CHANGE
                 if row.note < 1 or row.note > MAX_NOTES:
                     result.add_error(loc_row, f"Note value {row.note} out of range (valid: 1-{MAX_NOTES})")
             
             # Check instrument
-            if row.note > 0 and row.note != 255:  # Has actual note
+            if row.note > 0 and row.note not in (255, 254):  # Has actual note
                 if row.instrument < 0:
                     result.add_error(loc_row, f"Instrument index {row.instrument} is negative")
                 elif row.instrument >= MAX_INSTRUMENTS:
@@ -200,6 +200,12 @@ class BuildResult:
     xex_path: str = ""
     error_message: str = ""
     build_dir: str = ""
+    # Memory upgrade suggestion (set when bank packing fails)
+    needs_upgrade: bool = False
+    suggested_config: str = ""      # e.g. "320 KB"
+    suggested_banks: int = 0        # e.g. 16
+    current_config: str = ""        # e.g. "128 KB"
+    total_sample_bytes: int = 0     # for display in dialog
 
 
 class BuildState:
@@ -238,16 +244,25 @@ class BuildState:
 build_state = BuildState()
 
 
-def export_song_data(song: Song, output_path: str, output_func=None) -> Tuple[bool, str]:
+def export_song_data(song: Song, output_path: str, output_func=None,
+                     region_a_limit: int = 0) -> Tuple[bool, str]:
     """Export song data to SONG_DATA.asm format.
     
     Also generates SONG_CFG.asm with equates that need to be included early
     (before ORG) for conditional assembly.
     
+    When region_a_limit > 0 (banking mode), song data is split:
+      SONG_DATA.asm   — metadata + patterns fitting in region_a_limit bytes
+      SONG_DATA_2.asm — overflow patterns (may be empty)
+    Pattern labels (PTN_N) are referenced by PATTERN_PTR_LO/HI across files;
+    MADS resolves these since both are included in the same assembly scope.
+    
     Args:
         song: Song object to export
         output_path: Path to write SONG_DATA.asm
         output_func: Optional function for debug output
+        region_a_limit: If > 0, split patterns at this byte boundary.
+                        Generates SONG_DATA_2.asm alongside SONG_DATA.asm.
         
     Returns:
         (success, error_message)
@@ -295,6 +310,20 @@ def export_song_data(song: Song, output_path: str, output_func=None) -> Tuple[bo
         key_ctrl_val = 1 if song.keyboard_control else 0
         cfg_lines.append(f"KEY_CONTROL = {key_ctrl_val}  ; 1=enable stop/restart keys, 0=play-once (saves cycles)")
         cfg_lines.append("")
+        cfg_lines.append(f"START_ADDRESS = ${song.start_address:04X}  ; ORG address for player code")
+        cfg_lines.append("")
+        # Banking mode
+        from constants import MEMORY_CONFIGS
+        use_banking = song.memory_config != "64 KB"
+        if use_banking:
+            n_banks = 0
+            for name, banks, _ in MEMORY_CONFIGS:
+                if name == song.memory_config:
+                    n_banks = banks
+                    break
+            cfg_lines.append(f"USE_BANKING = 1  ; Extended memory mode")
+            cfg_lines.append(f"MAX_BANKS = {n_banks}  ; Available banks for {song.memory_config}")
+            cfg_lines.append("")
         cfg_lines.append(f"NUM_CHANNELS = {MAX_CHANNELS}  ; Number of polyphonic channels (AUDC1-AUDC4)")
         cfg_lines.append("")
         
@@ -365,31 +394,89 @@ def export_song_data(song: Song, output_path: str, output_func=None) -> Tuple[bo
         if output_func:
             output_func("\n  --- Pattern Encoding Debug ---\n")
         
+        # Pre-encode ALL patterns to determine byte counts for split
+        encoded_patterns = []
         for i, pattern in enumerate(song.patterns):
+            event_bytes = _encode_pattern_events(pattern, i, song.instruments, output_func)
+            encoded_patterns.append((i, event_bytes))
+        
+        if output_func:
+            output_func("  --- End Pattern Encoding ---\n")
+        
+        # Calculate metadata byte count (everything before pattern event data)
+        # SONG_SPEED + SONG_PTN_CH0-3 + PATTERN_LEN + PTR_LO + PTR_HI
+        metadata_bytes = 5 * num_songlines + 3 * num_patterns
+        
+        # Determine split point (only if region_a_limit > 0)
+        split_idx = num_patterns  # default: all patterns in region A
+        if region_a_limit > 0:
+            cumulative = metadata_bytes
+            for i, (ptn_idx, event_bytes) in enumerate(encoded_patterns):
+                ptn_size = max(len(event_bytes), 1)  # at least 1 ($FF for empty)
+                if cumulative + ptn_size > region_a_limit and i > 0:
+                    split_idx = i
+                    if output_func:
+                        output_func(f"  Split at pattern {i}: region A = {cumulative} bytes, "
+                                    f"remaining patterns → region B\n")
+                    break
+                cumulative += ptn_size
+        
+        # Write pattern data for region A (up to split_idx)
+        for i, event_bytes in encoded_patterns[:split_idx]:
             lines.append("")
             lines.append(f"PTN_{i}:")
-            event_bytes = _encode_pattern_events(pattern, i, song.instruments, output_func)
-            
             if not event_bytes:
                 lines.append("    .byte $FF  ; Empty pattern")
             else:
-                # Write in chunks for readability
                 for j in range(0, len(event_bytes), 16):
                     chunk = event_bytes[j:j+16]
                     hex_bytes = ','.join(f'${b:02X}' for b in chunk)
                     lines.append(f"    .byte {hex_bytes}")
         
-        if output_func:
-            output_func("  --- End Pattern Encoding ---\n")
-        
         lines.append("")
-        lines.append("; === END OF SONG DATA ===")
+        if split_idx < num_patterns:
+            lines.append(f"; === END OF SONG DATA REGION A ({split_idx} of {num_patterns} patterns) ===")
+            lines.append(f"; Remaining {num_patterns - split_idx} patterns in SONG_DATA_2.asm (region B)")
+        else:
+            lines.append("; === END OF SONG DATA ===")
         
-        # Write file
+        # Write SONG_DATA.asm
         with open(output_path, 'w') as f:
             f.write('\n'.join(lines))
         
-        logger.info(f"Exported song data to {output_path}")
+        # Generate SONG_DATA_2.asm (overflow patterns or empty stub)
+        if region_a_limit > 0:
+            lines2 = []
+            lines2.append("; ==========================================================================")
+            lines2.append("; SONG_DATA_2.asm - Overflow pattern data (Region B: $D800-$FBFF)")
+            lines2.append("; ==========================================================================")
+            
+            if split_idx < num_patterns:
+                lines2.append(f"; Patterns {split_idx}-{num_patterns-1} "
+                              f"({num_patterns - split_idx} patterns)")
+                lines2.append("")
+                for i, event_bytes in encoded_patterns[split_idx:]:
+                    lines2.append(f"PTN_{i}:")
+                    if not event_bytes:
+                        lines2.append("    .byte $FF  ; Empty pattern")
+                    else:
+                        for j in range(0, len(event_bytes), 16):
+                            chunk = event_bytes[j:j+16]
+                            hex_bytes = ','.join(f'${b:02X}' for b in chunk)
+                            lines2.append(f"    .byte {hex_bytes}")
+                    lines2.append("")
+                lines2.append("; === END OF SONG DATA REGION B ===")
+            else:
+                lines2.append("; (All patterns fit in region A — no overflow)")
+            
+            path2 = output_path.replace("SONG_DATA.asm", "SONG_DATA_2.asm")
+            with open(path2, 'w') as f:
+                f.write('\n'.join(lines2))
+        
+        logger.info(f"Exported song data to {output_path}"
+                     f" (split at pattern {split_idx}/{num_patterns})"
+                     if split_idx < num_patterns else
+                     f"Exported song data to {output_path}")
         return True, ""
         
     except Exception as e:
@@ -440,6 +527,8 @@ def _encode_pattern_events(pattern: Pattern, pattern_idx: int, instruments: list
         # Handle NOTE_OFF (255 in GUI -> 0 in ASM for silence)
         if row.note == 255:  # NOTE_OFF
             note = 0  # ASM player treats note 0 as note-off
+        elif row.note == 254:  # VOL_CHANGE
+            note = 61  # ASM: volume-only event, no retrigger
         else:
             # Apply base_note pitch correction:
             # Samples are resampled to POKEY rate, so base_note should map to 1.0x pitch.
@@ -459,6 +548,8 @@ def _encode_pattern_events(pattern: Pattern, pattern_idx: int, instruments: list
         NOTE_NAMES = ['C-', 'C#', 'D-', 'D#', 'E-', 'F-', 'F#', 'G-', 'G#', 'A-', 'A#', 'B-']
         if note == 0:
             pitch_idx = -1  # N/A for note-off
+        elif note == 61:
+            pitch_idx = -1  # N/A for volume change
         else:
             # Show original GUI note for clarity
             gui_note = row.note
@@ -469,6 +560,8 @@ def _encode_pattern_events(pattern: Pattern, pattern_idx: int, instruments: list
         if output_func:
             if note == 0:
                 output_func(f"    Row {row_num:02d}: OFF inst={inst} vol={vol:2d}")
+            elif note == 61:
+                output_func(f"    Row {row_num:02d}: V-- vol={vol:2d}")
             else:
                 output_func(f"    Row {row_num:02d}: {gui_name} (gui={gui_note:2d} export={note:2d} idx={pitch_idx:2d} pitch={pitch_mult:.3f}x) inst={inst} vol={vol:2d}")
         logger.debug(f"  Row {row_num}: note={note}, inst={inst}, vol={vol}")
@@ -485,7 +578,7 @@ def _encode_pattern_events(pattern: Pattern, pattern_idx: int, instruments: list
             logger.debug(f"    -> Full event: ${row_num:02X} ${note|0x80:02X} ${inst|0x80:02X} ${vol:02X}")
             last_inst = inst
             last_vol = vol
-        elif inst != last_inst or vol != last_vol:
+        elif note == 61 or inst != last_inst or vol != last_vol:
             # Instrument or volume changed
             if vol != last_vol:
                 # Volume changed - must include inst byte too
@@ -541,7 +634,7 @@ def find_mads() -> Optional[str]:
         if system != "Windows" and not os.access(mads_path, os.X_OK):
             try:
                 os.chmod(mads_path, 0o755)
-            except:
+            except OSError:
                 pass
         if os.access(mads_path, os.X_OK) or system == "Windows":
             return mads_path
@@ -588,6 +681,1288 @@ def _output(text: str):
     """Output text to both queue and console."""
     build_state.queue_output(text)
     print(text, end='', flush=True)  # flush=True ensures immediate output
+
+
+# =============================================================================
+# BANKING BUILD SUPPORT
+# =============================================================================
+
+def _estimate_data_sizes(build_dir: str, use_banking: bool) -> dict:
+    """Estimate data sizes from generated ASM files by counting .byte directives.
+    
+    In banking mode, song data spans two regions:
+      Region A ($8000-$CFFF): SONG_DATA.asm   — 20,480 bytes max
+      Region B ($D800-$FBFF): SONG_DATA_2.asm —  9,216 bytes max
+    All other tables are placed before $4000 and don't count.
+    
+    In 64KB mode, everything is contiguous from START_ADDRESS.
+    
+    Returns dict of {filename: byte_count} for data in the main region.
+    """
+    sizes = {}
+    
+    if use_banking:
+        # Banking mode: song data split across two regions.
+        # Both count against the total budget (29,696 bytes).
+        data_files = ["SONG_DATA.asm", "SONG_DATA_2.asm"]
+    else:
+        # 64KB mode: everything is contiguous
+        data_files = [
+            "SONG_DATA.asm",
+            "SAMPLE_DIR.asm",
+            "VQ_LO.asm",
+            "VQ_HI.asm",
+            "VQ_BLOB.asm",
+            "VQ_INDICES.asm",
+            "RAW_SAMPLES.asm",
+        ]
+    
+    for filename in data_files:
+        filepath = os.path.join(build_dir, filename)
+        if os.path.exists(filepath):
+            byte_count = _count_asm_bytes(filepath)
+            if byte_count > 0:
+                sizes[filename] = byte_count
+    
+    if not use_banking:
+        # Fixed overheads (player code + pitch tables + volume scale + staging)
+        # Only relevant in 64KB mode where everything shares the address space
+        sizes["player code+tables"] = 3800
+        sizes["staging variables"] = 150
+    
+    return sizes
+
+
+def _count_asm_bytes(filepath: str) -> int:
+    """Count total bytes from .byte directives in an ASM file.
+    
+    Handles: .byte $XX,$YY,...  and  .byte <(expr),>(expr)  and .ds N
+    Also accounts for .align $100 padding.
+    """
+    total = 0
+    with open(filepath, 'r') as f:
+        for line in f:
+            stripped = line.strip()
+            # Strip comments
+            semi = stripped.find(';')
+            if semi >= 0:
+                stripped = stripped[:semi].strip()
+            if not stripped:
+                continue
+            
+            lower = stripped.lower()
+            if '.byte' in lower:
+                idx = lower.index('.byte')
+                rest = stripped[idx + 5:].strip()
+                if rest:
+                    # Count comma-separated values
+                    total += len([v for v in rest.split(',') if v.strip()])
+            elif '.ds' in lower:
+                # .ds N — reserve N bytes
+                idx = lower.index('.ds')
+                rest = stripped[idx + 3:].strip()
+                try:
+                    total += int(rest)
+                except ValueError:
+                    pass
+            elif '.align' in lower:
+                # .align $100 — worst case adds up to 255 bytes
+                # Average: 128 bytes per alignment directive
+                total += 128
+    
+    return total
+
+
+def _parse_asm_bytes(filepath: str) -> bytes:
+    """Parse .byte directives from an ASM file and return raw binary data."""
+    data = bytearray()
+    if not os.path.exists(filepath):
+        return bytes(data)
+    with open(filepath, 'r') as f:
+        for line in f:
+            line = line.strip()
+            # Handle comments
+            idx = line.find(';')
+            if idx >= 0:
+                line = line[:idx].strip()
+            if not line:
+                continue
+            # Find .byte directive
+            lower = line.lower()
+            if '.byte' in lower:
+                # Extract the part after .byte
+                byte_idx = lower.index('.byte')
+                rest = line[byte_idx + 5:].strip()
+                if not rest:
+                    continue
+                for val_str in rest.split(','):
+                    val_str = val_str.strip()
+                    if not val_str:
+                        continue
+                    try:
+                        if val_str.startswith('$'):
+                            data.append(int(val_str[1:], 16))
+                        elif val_str.startswith('0x'):
+                            data.append(int(val_str, 16))
+                        else:
+                            data.append(int(val_str))
+                    except ValueError:
+                        pass  # Skip expressions like <(label)
+    return bytes(data)
+
+
+def _extract_raw_blocks(filepath: str) -> dict:
+    """Parse RAW_SAMPLES.asm and extract per-instrument byte arrays.
+    
+    Returns: {instrument_idx: bytes} for each RAW instrument.
+    """
+    blocks = {}
+    if not os.path.exists(filepath):
+        return blocks
+    
+    current_idx = None
+    current_data = bytearray()
+    
+    with open(filepath, 'r') as f:
+        for line in f:
+            stripped = line.strip()
+            # Strip trailing colon if present (MADS labels may or may not have it)
+            label_candidate = stripped.rstrip(':')
+            # Detect label: RAW_INST_NN or RAW_INST_NN_END (converter output)
+            # Also support RAW_SAMPLES_N for backwards compat
+            is_raw_label = (
+                (label_candidate.startswith('RAW_INST_') or 
+                 label_candidate.startswith('RAW_SAMPLES_'))
+                and not '.byte' in stripped.lower()
+                and not stripped.startswith(';')
+            )
+            if is_raw_label:
+                if '_END' in label_candidate:
+                    # End of block — save
+                    if current_idx is not None and current_data:
+                        blocks[current_idx] = bytes(current_data)
+                    current_idx = None
+                    current_data = bytearray()
+                else:
+                    # Start of new block — extract instrument index
+                    try:
+                        # Handle RAW_INST_00 or RAW_SAMPLES_0 format
+                        if label_candidate.startswith('RAW_INST_'):
+                            idx_str = label_candidate.replace('RAW_INST_', '')
+                        else:
+                            idx_str = label_candidate.replace('RAW_SAMPLES_', '')
+                        current_idx = int(idx_str)
+                        current_data = bytearray()
+                    except ValueError:
+                        current_idx = None
+            elif current_idx is not None and '.byte' in stripped.lower():
+                # Parse bytes
+                idx = stripped.lower().index('.byte')
+                rest = stripped[idx + 5:].split(';')[0].strip()
+                for val_str in rest.split(','):
+                    val_str = val_str.strip()
+                    try:
+                        if val_str.startswith('$'):
+                            current_data.append(int(val_str[1:], 16))
+                        elif val_str.startswith('0x'):
+                            current_data.append(int(val_str, 16))
+                        elif val_str.isdigit():
+                            current_data.append(int(val_str))
+                    except (ValueError, IndexError):
+                        pass
+    
+    # Handle case where file doesn't have _END label for last block
+    if current_idx is not None and current_data:
+        blocks[current_idx] = bytes(current_data)
+    
+    return blocks
+
+
+def _extract_vq_streams(vq_indices_path: str, sample_dir_path: str, 
+                         n_instruments: int) -> dict:
+    """Extract per-instrument VQ index streams.
+    
+    Parses VQ_INDICES.asm for the full blob, then uses byte-offset info
+    from SAMPLE_DIR.asm (VQ_INDICES+$xxxx expressions) to slice per instrument.
+    
+    Returns: {instrument_idx: bytes} for each VQ instrument.
+    """
+    import re
+    streams = {}
+    
+    # Parse full VQ indices blob
+    all_indices = _parse_asm_bytes(vq_indices_path)
+    if not all_indices:
+        logger.debug("_extract_vq_streams: no VQ indices data found")
+        return streams
+    
+    if not os.path.exists(sample_dir_path):
+        logger.warning(f"_extract_vq_streams: SAMPLE_DIR not found: {sample_dir_path}")
+        return streams
+    
+    with open(sample_dir_path, 'r') as f:
+        content = f.read()
+    
+    # Walk through SAMPLE_DIR sections to find VQ instrument offsets.
+    # Format: SAMPLE_START_LO section has lines like:
+    #   .byte <(VQ_INDICES+$0000) ; inst_name ; VQ
+    # The $xxxx is the full byte offset into VQ_INDICES.
+    vq_start_offsets = {}  # inst_idx -> offset
+    vq_end_offsets = {}    # inst_idx -> offset
+    
+    section = None  # 'start' or 'end'
+    idx = 0
+    
+    for line in content.split('\n'):
+        stripped = line.strip()
+        
+        # Detect section headers (label lines without .byte)
+        if '.byte' not in stripped.lower():
+            if 'SAMPLE_START_LO' in stripped and not stripped.startswith(';'):
+                section = 'start'
+                idx = 0
+            elif 'SAMPLE_END_LO' in stripped and not stripped.startswith(';'):
+                section = 'end'
+                idx = 0
+            elif any(h in stripped for h in ['SAMPLE_START_HI', 'SAMPLE_END_HI', 'SAMPLE_MODE']):
+                if not stripped.startswith(';'):
+                    section = None  # Skip HI sections (same offsets as LO)
+            continue
+        
+        if section is None:
+            continue
+        
+        # Extract offset from VQ_INDICES+$xxxx pattern
+        match = re.search(r'VQ_INDICES\+\$([0-9A-Fa-f]+)', stripped)
+        if match:
+            offset = int(match.group(1), 16)
+            if section == 'start':
+                vq_start_offsets[idx] = offset
+            elif section == 'end':
+                vq_end_offsets[idx] = offset
+        
+        idx += 1
+    
+    # Slice VQ indices per instrument
+    for inst_idx in vq_start_offsets:
+        if inst_idx not in vq_end_offsets:
+            logger.warning(f"VQ inst {inst_idx}: has start but no end offset")
+            continue
+        start = vq_start_offsets[inst_idx]
+        end = vq_end_offsets[inst_idx]
+        if end <= start:
+            logger.warning(f"VQ inst {inst_idx}: end ({end}) <= start ({start})")
+            continue
+        if end > len(all_indices):
+            logger.warning(f"VQ inst {inst_idx}: end ({end}) > indices size ({len(all_indices)})")
+            end = len(all_indices)
+        if start >= len(all_indices):
+            continue
+        streams[inst_idx] = all_indices[start:end]
+    
+    logger.info(f"Extracted {len(streams)} VQ streams from {len(all_indices)} bytes")
+    return streams
+
+
+def _parse_vq_blob(vq_blob_path: str) -> list:
+    """Parse VQ_BLOB.asm to extract raw codebook bytes.
+    
+    Returns list of integers (raw AUDC bytes, typically $10|vol).
+    """
+    blob_bytes = []
+    if not os.path.exists(vq_blob_path):
+        return blob_bytes
+    
+    with open(vq_blob_path, 'r') as f:
+        for line in f:
+            stripped = line.strip()
+            # Strip inline comments before parsing
+            semi = stripped.find(';')
+            if semi >= 0:
+                stripped = stripped[:semi].strip()
+            if not stripped:
+                continue
+            if stripped.startswith('.byte') or stripped.startswith('.BYTE'):
+                # Parse .byte $XX,$XX,...
+                data_part = stripped[5:].strip()
+                for token in data_part.split(','):
+                    token = token.strip()
+                    if not token:
+                        continue
+                    try:
+                        if token.startswith('$'):
+                            blob_bytes.append(int(token[1:], 16))
+                        elif token.startswith('0x'):
+                            blob_bytes.append(int(token, 16))
+                        else:
+                            blob_bytes.append(int(token))
+                    except ValueError:
+                        continue
+    return blob_bytes
+
+
+def _get_vec_size_from_cfg(vq_output_dir: str) -> int:
+    """Read MIN_VECTOR from VQ_CFG.asm to determine vector size."""
+    cfg_path = os.path.join(vq_output_dir, "VQ_CFG.asm")
+    if not os.path.exists(cfg_path):
+        return 8  # default
+    with open(cfg_path, 'r') as f:
+        for line in f:
+            if 'MIN_VECTOR' in line and '=' in line:
+                parts = line.split('=')
+                if len(parts) >= 2:
+                    try:
+                        return int(parts[1].strip().split()[0])
+                    except (ValueError, IndexError):
+                        pass
+    return 8
+
+
+def _reencode_bank_vq(bank_vq_indices: bytes, global_codebook: list,
+                      vec_size: int, n_iter: int = 20) -> tuple:
+    """Re-encode VQ index stream with a per-bank codebook.
+    
+    Takes the original indices (referencing the global codebook),
+    reconstructs the audio vectors, trains a bank-specific 256-entry
+    codebook via k-means, and re-encodes all vectors.
+    
+    If near-silent vectors exist, codebook[0] is reserved for silence.
+    
+    Args:
+        bank_vq_indices: Raw VQ index bytes from this bank
+        global_codebook: Global codebook as flat byte list
+                        (256 entries × vec_size bytes each)
+        vec_size: Samples per codebook vector (e.g. 4, 8)
+        n_iter: K-means iterations
+    
+    Returns:
+        (codebook_bytes, reencoded_indices) where:
+         codebook_bytes: 256 * vec_size bytes (per-bank codebook, AUDC-ready)
+         reencoded_indices: bytes (same length as bank_vq_indices)
+    """
+    import numpy as np
+    
+    n_codes = 256
+    indices = np.frombuffer(bank_vq_indices, dtype=np.uint8)
+    n_indices = len(indices)
+    
+    if n_indices == 0:
+        # Empty bank — return silence codebook ($10 = AUDC vol 0) + empty indices
+        return bytes([0x10] * (n_codes * vec_size)), b''
+    
+    # Validate global codebook has enough data
+    codebook_len = len(global_codebook)
+    if codebook_len < vec_size:
+        # Codebook too small or empty — can't reconstruct vectors
+        logger.warning(f"Global codebook too small ({codebook_len} bytes, "
+                       f"need {vec_size}+). Returning silence codebook.")
+        silence_cb = bytes([0x10] * (n_codes * vec_size))
+        # Map all indices to 0 (silence)
+        return silence_cb, bytes(n_indices)
+    
+    # Reconstruct vectors from global codebook
+    # global_codebook is flat: entry i = global_codebook[i*vec_size : (i+1)*vec_size]
+    vectors = np.zeros((n_indices, vec_size), dtype=np.uint8)
+    for i, idx in enumerate(indices):
+        start = int(idx) * vec_size
+        end = start + vec_size
+        if end <= codebook_len:
+            entry = global_codebook[start:end]
+            # Defensive: verify we actually got vec_size bytes
+            if len(entry) == vec_size:
+                vectors[i] = entry
+            else:
+                vectors[i] = 0x10  # silence fallback
+    
+    # Strip AUDC $10 mask — work with volume nibbles (0-15) for k-means
+    volumes = (vectors & 0x0F).astype(np.float32)
+    
+    # Silence detection (adapted from stream player)
+    max_level = 15  # POKEY volume range 0-15
+    thresh = max(1, max_level // 15)  # ~1
+    if vec_size >= 16:
+        thresh = max(thresh, 2)
+    near_silent_mask = np.all(volumes <= thresh, axis=1)
+    n_near_silent = int(near_silent_mask.sum())
+    
+    if n_near_silent > 0 and n_near_silent < n_indices:
+        # Reserve codebook[0] for silence, train 255 entries on non-silent
+        non_silent = volumes[~near_silent_mask]
+        cb_rest = _bank_kmeans(non_silent, n_codes - 1, n_iter, max_level)
+        
+        codebook_vol = np.zeros((n_codes, vec_size), dtype=np.float32)
+        codebook_vol[1:n_codes] = cb_rest[:n_codes - 1]
+    elif n_near_silent == n_indices:
+        # Entire bank is silent
+        codebook_vol = np.zeros((n_codes, vec_size), dtype=np.float32)
+    else:
+        # No silence — use all 256 codes
+        codebook_vol = _bank_kmeans(volumes, n_codes, n_iter, max_level)
+    
+    # Quantize codebook to integer volumes (0-15)
+    codebook_int = np.clip(np.round(codebook_vol), 0, max_level).astype(np.uint8)
+    
+    # Re-encode: assign each vector to nearest codebook entry
+    cb_f = codebook_int.astype(np.float32)
+    chunk_size = min(50000, n_indices)
+    assignments = np.empty(n_indices, dtype=np.uint8)
+    for s in range(0, n_indices, chunk_size):
+        e = min(s + chunk_size, n_indices)
+        d = np.sum((volumes[s:e, None, :] - cb_f[None, :, :]) ** 2, axis=2)
+        assignments[s:e] = np.argmin(d, axis=1).astype(np.uint8)
+    
+    # Build final codebook bytes with $10 AUDC mask
+    codebook_bytes = bytearray(n_codes * vec_size)
+    for i in range(n_codes):
+        for j in range(vec_size):
+            codebook_bytes[i * vec_size + j] = 0x10 | codebook_int[i, j]
+    
+    return bytes(codebook_bytes), assignments.tobytes()
+
+
+def _bank_kmeans(vectors, n_codes, n_iter, max_level):
+    """K-means clustering for per-bank VQ codebook.
+    
+    Args:
+        vectors: (N, vec_size) float32 array of volume vectors
+        n_codes: Number of codebook entries to produce
+        n_iter: Max iterations
+        max_level: Maximum volume value (for clamping)
+    
+    Returns:
+        (n_codes, vec_size) float32 codebook
+    """
+    import numpy as np
+    
+    n_vecs, vec_size = vectors.shape
+    
+    if n_vecs == 0:
+        # No vectors to cluster — return silence codebook
+        return np.zeros((n_codes, vec_size), dtype=np.float32)
+    
+    vf = vectors.astype(np.float32)
+    
+    if n_vecs <= n_codes:
+        rng = np.random.RandomState(42)
+        codebook = np.zeros((n_codes, vec_size), dtype=np.float32)
+        codebook[:n_vecs] = vf
+        for i in range(n_vecs, n_codes):
+            codebook[i] = vf[rng.randint(n_vecs)]
+        return codebook
+    
+    # K-means++ init
+    rng = np.random.RandomState(42)
+    indices = [rng.randint(n_vecs)]
+    for _ in range(1, min(n_codes, n_vecs)):
+        cb_so_far = vf[indices]
+        dists = np.min(
+            np.sum((vf[:, None, :] - cb_so_far[None, :, :]) ** 2, axis=2),
+            axis=1)
+        total = dists.sum()
+        if total < 1e-30:
+            probs = np.ones(n_vecs) / n_vecs
+        else:
+            probs = dists / total
+            probs = probs / probs.sum()
+        indices.append(rng.choice(n_vecs, p=probs))
+    
+    codebook = vf[indices].copy()
+    chunk_size = min(50000, n_vecs)
+    
+    for iteration in range(n_iter):
+        # Assign
+        assignments = np.empty(n_vecs, dtype=np.int32)
+        for s in range(0, n_vecs, chunk_size):
+            e = min(s + chunk_size, n_vecs)
+            d = np.sum((vf[s:e, None, :] - codebook[None, :, :]) ** 2, axis=2)
+            assignments[s:e] = np.argmin(d, axis=1)
+        
+        # Update centroids
+        new_cb = codebook.copy()
+        for c in range(n_codes):
+            members = vf[assignments == c]
+            if len(members) > 0:
+                new_cb[c] = np.mean(members, axis=0)
+        
+        if np.allclose(new_cb, codebook, atol=0.01):
+            codebook = new_cb
+            break
+        codebook = new_cb
+    
+    return codebook
+
+
+def _generate_banking_vq_tables(build_dir: str, vec_size: int):
+    """Generate VQ_LO.asm and VQ_HI.asm for banking mode.
+    
+    In banking mode, codebook entries are at $4000 + index * vec_size
+    within the bank window.
+    """
+    bank_base = 0x4000
+    
+    # VQ_LO.asm
+    lines = ["; VQ_LO.asm - Banking mode (per-bank codebook at $4000)"]
+    lines.append(f"VQ_LO_LEN = 256")
+    lines.append("VQ_LO")
+    for i in range(0, 256, 8):
+        vals = []
+        for j in range(8):
+            idx = i + j
+            addr = bank_base + idx * vec_size
+            vals.append(f"${addr & 0xFF:02X}")
+        lines.append(f" .byte {','.join(vals)}")
+    
+    with open(os.path.join(build_dir, "VQ_LO.asm"), 'w') as f:
+        f.write('\n'.join(lines))
+    
+    # VQ_HI.asm
+    lines = ["; VQ_HI.asm - Banking mode (per-bank codebook at $4000)"]
+    lines.append(f"VQ_HI_LEN = 256")
+    lines.append("VQ_HI")
+    for i in range(0, 256, 8):
+        vals = []
+        for j in range(8):
+            idx = i + j
+            addr = bank_base + idx * vec_size
+            vals.append(f"${(addr >> 8) & 0xFF:02X}")
+        lines.append(f" .byte {','.join(vals)}")
+    
+    with open(os.path.join(build_dir, "VQ_HI.asm"), 'w') as f:
+        f.write('\n'.join(lines))
+
+
+def _generate_banking_build(build_dir: str, vq_output_dir: str,
+                            song: Song, output_func=None) -> Optional[str]:
+    """Generate banking build files with per-bank VQ codebooks.
+    
+    Each bank stores its own 256-entry codebook at $4000, trained via
+    k-means on that bank's audio content. This dramatically improves
+    VQ quality vs. a single global codebook.
+    
+    Returns error message on failure, None on success.
+    """
+    from constants import MEMORY_CONFIGS
+    from bank_packer import pack_into_banks, generate_bank_asm, BANK_SIZE, BANK_BASE, DBANK_TABLE
+    
+    _out = output_func or _output
+    
+    # Determine available banks
+    max_banks = 4  # default to 130XE
+    for name, banks, _ in MEMORY_CONFIGS:
+        if name == song.memory_config:
+            max_banks = banks
+            break
+    
+    _out(f"\n  Banking mode: {song.memory_config} ({max_banks} banks)\n")
+    
+    # Get vector size for codebook overhead calculation
+    vec_size = _get_vec_size_from_cfg(vq_output_dir)
+    codebook_size = 256 * vec_size  # bytes reserved at start of each bank
+    _out(f"  Per-bank codebook: {codebook_size} bytes (vec_size={vec_size})\n")
+    
+    # Parse global codebook from VQ_BLOB.asm (needed for per-bank re-encoding)
+    vq_blob_path = os.path.join(build_dir, "VQ_BLOB.asm")
+    global_codebook = _parse_vq_blob(vq_blob_path)
+    if global_codebook:
+        _out(f"  Global codebook: {len(global_codebook)} bytes "
+             f"({len(global_codebook) // vec_size} entries)\n")
+    
+    # Extract per-instrument binary data
+    _out("  Extracting sample data from converter output...\n")
+    
+    vq_indices_path = os.path.join(vq_output_dir, "VQ_INDICES.asm")
+    raw_samples_path = os.path.join(vq_output_dir, "RAW_SAMPLES.asm")
+    sample_dir_path = os.path.join(vq_output_dir, "SAMPLE_DIR.asm")
+    
+    n_inst = len(song.instruments)
+    
+    # Get VQ stream data per instrument
+    vq_streams = _extract_vq_streams(vq_indices_path, sample_dir_path, n_inst)
+    
+    # Get RAW data per instrument
+    raw_blocks = _extract_raw_blocks(raw_samples_path)
+    
+    # Determine which instruments are VQ vs RAW
+    inst_sizes = []
+    for i in range(n_inst):
+        if i in vq_streams:
+            inst_sizes.append((i, len(vq_streams[i])))
+            _out(f"    Inst {i}: VQ, {len(vq_streams[i])} bytes\n")
+        elif i in raw_blocks:
+            inst_sizes.append((i, len(raw_blocks[i])))
+            _out(f"    Inst {i}: RAW, {len(raw_blocks[i])} bytes\n")
+        else:
+            inst_sizes.append((i, 0))
+    
+    # Build set of VQ instrument indices for two-phase packing.
+    # VQ banks get codebook overhead, RAW banks use full 16KB.
+    vq_set = set(vq_streams.keys())
+    n_raw = sum(1 for idx, sz in inst_sizes if sz > 0 and idx not in vq_set)
+    if vq_set:
+        _out(f"  VQ instruments: {len(vq_set)} → banks with "
+             f"{codebook_size}B codebook\n")
+        _out(f"  RAW instruments: {n_raw} → "
+             f"full 16KB banks\n")
+    else:
+        _out("  All instruments RAW — no codebook overhead\n")
+    
+    # Append BANK_CODEBOOK_BYTES to VQ_CFG.asm in build dir.
+    # VQ_CFG.asm is included before tracker_irq_banked.asm, so this
+    # constant is available when the IRQ handler computes CODEBOOK_SIZE.
+    # Note: this is the VQ codebook size (may be 0 if no VQ instruments).
+    effective_cb = codebook_size if vq_set else 0
+    vq_cfg_build = os.path.join(build_dir, "VQ_CFG.asm")
+    if os.path.exists(vq_cfg_build):
+        # Read existing config
+        with open(vq_cfg_build, 'r') as f:
+            cfg_lines = f.readlines()
+        
+        def _defines_label(lines, label):
+            """True if any active (non-comment) line is an assignment of `label`."""
+            for l in lines:
+                stripped = l.strip()
+                if stripped.startswith(';'):
+                    continue
+                # Strip inline comment
+                semi = stripped.find(';')
+                code = stripped[:semi].strip() if semi >= 0 else stripped
+                if not code.startswith(label):
+                    continue
+                # Ensure we matched the full label (not a prefix like
+                # MIN_VECTOR_NOTE) by checking the next char is whitespace or '='
+                rest = code[len(label):]
+                if rest and rest.lstrip().startswith('='):
+                    return True
+            return False
+        
+        # Track which constants already exist
+        has_min_vector = _defines_label(cfg_lines, 'MIN_VECTOR')
+        has_algo_fixed = _defines_label(cfg_lines, 'ALGO_FIXED')
+        has_multi_sample = _defines_label(cfg_lines, 'MULTI_SAMPLE')
+        has_pitch_control = _defines_label(cfg_lines, 'PITCH_CONTROL')
+        
+        with open(vq_cfg_build, 'w') as f:
+            for line in cfg_lines:
+                stripped = line.strip()
+                # Strip converter's CODEBOOK_SIZE — tracker_irq_banked.asm
+                # is the single source of truth (derives CODEBOOK_SIZE from
+                # BANK_CODEBOOK_BYTES).  MADS labels are immutable, so
+                # having both would cause "Label declared twice" errors.
+                if (stripped.startswith("CODEBOOK_SIZE") and
+                        stripped[len("CODEBOOK_SIZE"):].lstrip().startswith('=')):
+                    f.write(f"; {stripped}  ; (overridden by BANK_CODEBOOK_BYTES below)\n")
+                else:
+                    f.write(line)
+            
+            f.write(f"\n; === Tracker build pipeline additions ===\n")
+            f.write(f"BANK_CODEBOOK_BYTES = {effective_cb}\n")
+            
+            # Ensure tracker-required constants exist.
+            # The VQ converter omits these when algo=raw (all instruments
+            # are RAW samples). The tracker player needs them for the
+            # mixed VQ/RAW code paths even if VQ is never used at runtime.
+            if not has_min_vector:
+                f.write(f"MIN_VECTOR = {vec_size}  ; (added by tracker build — "
+                        f"converter omitted for raw-only)\n")
+            if not has_algo_fixed:
+                f.write(f"ALGO_FIXED = 1  ; (required by tracker player)\n")
+            if not has_multi_sample:
+                f.write(f"MULTI_SAMPLE = 1  ; (required by tracker player)\n")
+            if not has_pitch_control:
+                f.write(f"PITCH_CONTROL = 1  ; (required by tracker player)\n")
+    
+    # Pack into banks (two-phase: VQ with codebook, RAW without)
+    _out("  Packing into banks...\n")
+    pack_result = pack_into_banks(inst_sizes, max_banks,
+                                  codebook_size=codebook_size,
+                                  vq_instruments=vq_set)
+    
+    if not pack_result.success:
+        # Find the smallest config that would work
+        total = sum(sz for _, sz in inst_sizes if sz > 0)
+        suggested_cfg = None
+        
+        for cfg_name, cfg_banks, cfg_desc in MEMORY_CONFIGS:
+            if cfg_banks <= max_banks or cfg_banks == 0:
+                continue  # skip smaller/equal configs and 64KB
+            
+            test_result = pack_into_banks(inst_sizes, cfg_banks,
+                                          codebook_size=codebook_size,
+                                          vq_instruments=vq_set)
+            if test_result.success:
+                suggested_cfg = (cfg_name, cfg_banks)
+                break
+        
+        if suggested_cfg:
+            cfg_name, cfg_banks = suggested_cfg
+            _out(f"\n  Sample data ({total:,} bytes) does not fit "
+                 f"in {song.memory_config} ({max_banks} banks).\n")
+            _out(f"  Minimum required: {cfg_name} ({cfg_banks} banks).\n")
+            _out(f"\n  Change Memory setting to \"{cfg_name}\" or higher "
+                 f"and rebuild.\n")
+            # Return special UPGRADE: prefix so build_xex_sync can offer
+            # the user an interactive upgrade dialog
+            return (f"UPGRADE:{cfg_name}:{cfg_banks}:{total}:"
+                    f"{song.memory_config}")
+        else:
+            # Even max config won't fit — give detailed breakdown
+            max_cfg = MEMORY_CONFIGS[-1]
+            max_cap = max_cfg[1] * (BANK_SIZE - codebook_size)
+            _out(f"\n  Sample data ({total:,} bytes) does not fit in any "
+                 f"memory configuration.\n")
+            _out(f"  Even {max_cfg[0]} ({max_cfg[1]} banks, "
+                 f"{max_cap // 1024}KB effective) is not enough.\n")
+            _out(f"  Reduce sample lengths, convert more instruments to VQ,\n")
+            _out(f"  or lower the sample rate.\n")
+            return (f"Sample data too large ({total:,} bytes / "
+                    f"{total // 1024}KB).\n\n"
+                    f"Even {max_cfg[0]} ({max_cfg[1]} banks, "
+                    f"{max_cap // 1024}KB effective) is not enough.\n\n"
+                    f"To fix: reduce sample lengths, convert more "
+                    f"instruments to VQ, or lower the sample rate.")
+    
+    _out(f"    Used {pack_result.n_banks_used} of {max_banks} banks\n")
+    for bi, util in enumerate(pack_result.bank_utilization):
+        _out(f"    Bank {bi}: {util*100:.0f}% full\n")
+    
+    # Per-bank VQ re-encoding
+    bank_codebooks = {}  # bank_idx -> codebook_bytes (256*vec_size)
+    bank_reencoded = {}  # (inst_idx, bank_idx) -> reencoded_bytes
+    
+    if vq_streams and not global_codebook:
+        logger.warning("VQ instruments found but global codebook is empty — "
+                       "per-bank re-encoding skipped, audio quality will suffer")
+        _out("  WARNING: Could not parse VQ_BLOB.asm — per-bank codebooks disabled\n")
+    
+    if global_codebook and vq_streams:
+        _out("  Per-bank VQ re-encoding...\n")        
+        # bank_raw_indices: concatenated original indices per bank (for training)
+        # bank_chunk_order: tracks (inst_idx, chunk_len) per bank in concat order
+        bank_raw_indices = {}  # bank_idx -> bytearray
+        bank_chunk_order = {}  # bank_idx -> [(inst_idx, chunk_len), ...]
+        
+        # Group VQ instrument data by bank
+        for inst_idx in sorted(vq_streams.keys()):
+            stream = vq_streams[inst_idx]
+            if inst_idx not in pack_result.placements:
+                continue
+            p = pack_result.placements[inst_idx]
+            
+            effective_bank_size = BANK_SIZE - codebook_size
+            remaining = bytearray(stream)
+            
+            for bi_offset, bank_idx in enumerate(p.bank_indices):
+                chunk_size = min(len(remaining), effective_bank_size)
+                if chunk_size == 0:
+                    break  # no more data to pack
+                chunk = bytes(remaining[:chunk_size])
+                remaining = remaining[chunk_size:]
+                
+                if bank_idx not in bank_raw_indices:
+                    bank_raw_indices[bank_idx] = bytearray()
+                    bank_chunk_order[bank_idx] = []
+                bank_raw_indices[bank_idx].extend(chunk)
+                bank_chunk_order[bank_idx].append((inst_idx, len(chunk)))
+        
+        # Train per-bank codebooks and re-encode
+        for bank_idx in sorted(bank_raw_indices.keys()):
+            all_bank_indices = bytes(bank_raw_indices[bank_idx])
+            if not all_bank_indices:
+                continue  # skip banks with no VQ data
+            try:
+                cb_bytes, reencoded = _reencode_bank_vq(
+                    all_bank_indices, global_codebook, vec_size)
+            except Exception as e:
+                logger.error(f"VQ re-encoding failed for bank {bank_idx}: {e}",
+                             exc_info=True)
+                _out(f"  WARNING: Bank {bank_idx} VQ re-encoding failed: {e}\n")
+                _out(f"           Using global codebook (lower quality)\n")
+                # Fallback: use global codebook bytes directly
+                cb_bytes = bytes(global_codebook[:256 * vec_size])
+                if len(cb_bytes) < 256 * vec_size:
+                    cb_bytes += bytes([0x10] * (256 * vec_size - len(cb_bytes)))
+                reencoded = all_bank_indices  # keep original indices
+            bank_codebooks[bank_idx] = cb_bytes
+            
+            # Split re-encoded indices back in the SAME order they were concatenated
+            pos = 0
+            for inst_idx, chunk_len in bank_chunk_order[bank_idx]:
+                key = (inst_idx, bank_idx)
+                bank_reencoded[key] = reencoded[pos:pos + chunk_len]
+                pos += chunk_len
+            
+            _out(f"    Bank {bank_idx}: re-encoded {len(all_bank_indices)} indices\n")
+    
+    # Generate BANK_CFG.asm
+    bank_cfg_asm = generate_bank_asm(pack_result, n_inst,
+                                      codebook_bytes=codebook_size,
+                                      vq_instruments=vq_set)
+    bank_cfg_path = os.path.join(build_dir, "BANK_CFG.asm")
+    with open(bank_cfg_path, 'w') as f:
+        f.write(bank_cfg_asm)
+    _out(f"    + BANK_CFG.asm\n")
+    
+    # Generate banking-aware SAMPLE_DIR.asm with absolute $4000+ addresses
+    _generate_bank_sample_dir(build_dir, n_inst, pack_result, 
+                               vq_streams, raw_blocks, song)
+    _out(f"    + SAMPLE_DIR.asm (banking)\n")
+    
+    # Generate per-bank data files (with codebook prefix)
+    _generate_bank_data_files(build_dir, pack_result, vq_streams, raw_blocks,
+                               bank_codebooks, bank_reencoded, codebook_size)
+    n_vq_banks = sum(pack_result.bank_has_codebook) if pack_result.bank_has_codebook else 0
+    if n_vq_banks > 0:
+        _out(f"    + {pack_result.n_banks_used} BANK_DATA files "
+             f"({n_vq_banks} VQ with codebook, "
+             f"{pack_result.n_banks_used - n_vq_banks} RAW)\n")
+    else:
+        _out(f"    + {pack_result.n_banks_used} BANK_DATA files (all RAW, no codebook)\n")
+    
+    # Generate banking-mode VQ_LO/VQ_HI (pointing to $4000+ codebook in bank)
+    _generate_banking_vq_tables(build_dir, vec_size)
+    _out(f"    + VQ_LO.asm, VQ_HI.asm (banking mode, codebook at $4000)\n")
+    
+    # Generate bank_loader.asm (top-level source for MADS)
+    _generate_bank_loader(build_dir, pack_result)
+    _out(f"    + bank_loader.asm\n")
+    
+    # Copy mem_detect.asm to build dir
+    our_asm_dir = runtime.get_asm_dir()
+    banking_src = os.path.join(our_asm_dir, "banking")
+    banking_dst = os.path.join(build_dir, "banking")
+    if os.path.isdir(banking_src):
+        os.makedirs(banking_dst, exist_ok=True)
+        for fn in os.listdir(banking_src):
+            shutil.copy2(os.path.join(banking_src, fn), banking_dst)
+        _out(f"    + banking/\n")
+    
+    # Generate MEM_ERR_TEXT.asm with config-specific error screen
+    # Goes in build_dir/ (not banking/) because bank_loader.asm includes
+    # it at the top level: icl 'MEM_ERR_TEXT.asm'
+    _generate_mem_err_text(build_dir, song.memory_config,
+                           pack_result.n_banks_used, song.title)
+    _out(f"    + MEM_ERR_TEXT.asm\n")
+    
+    return None  # Success
+
+
+def _generate_bank_sample_dir(build_dir: str, n_inst: int,
+                                pack_result, vq_streams: dict, 
+                                raw_blocks: dict, song: Song):
+    """Generate SAMPLE_DIR.asm with absolute addresses for banking mode."""
+    from bank_packer import BANK_BASE, BANK_SIZE
+    
+    lines = []
+    lines.append("; SAMPLE_DIR.asm - Banking Mode (absolute addresses in bank window)")
+    lines.append("; Generated by POKEY VQ Tracker")
+    lines.append("")
+    lines.append(f"SAMPLE_COUNT = {n_inst}")
+    lines.append("")
+    
+    # Compute addresses for each instrument
+    # In banking mode:
+    #   - stream start/end are addresses within the bank window ($4000-$7FFF)
+    #   - For multi-bank samples, start=$4000, end=end address in LAST bank
+    
+    start_addrs = []
+    end_addrs = []
+    modes = []
+    
+    for i in range(n_inst):
+        if i in pack_result.placements:
+            p = pack_result.placements[i]
+            start_addrs.append(p.offset)  # $4000 + codebook_size + offset
+            
+            # Use pre-computed end address from bank_packer
+            # (already accounts for codebook_size in multi-bank case)
+            end_addr = (p.end_addr_hi << 8) | p.end_addr_lo
+            end_addrs.append(end_addr)
+            
+            # Mode: VQ if in vq_streams, RAW if in raw_blocks
+            if i in vq_streams:
+                modes.append(0)
+            else:
+                modes.append(0xFF)
+        else:
+            # Unused instrument: safe sentinel (start == end → immediate silence)
+            start_addrs.append(BANK_BASE)
+            end_addrs.append(BANK_BASE)
+            modes.append(0)
+    
+    # SAMPLE_START_LO
+    lines.append("SAMPLE_START_LO:")
+    for i in range(n_inst):
+        lines.append(f" .byte ${start_addrs[i] & 0xFF:02X}")
+    lines.append("")
+    
+    # SAMPLE_START_HI
+    lines.append("SAMPLE_START_HI:")
+    for i in range(n_inst):
+        lines.append(f" .byte ${(start_addrs[i] >> 8) & 0xFF:02X}")
+    lines.append("")
+    
+    # SAMPLE_END_LO
+    lines.append("SAMPLE_END_LO:")
+    for i in range(n_inst):
+        lines.append(f" .byte ${end_addrs[i] & 0xFF:02X}")
+    lines.append("")
+    
+    # SAMPLE_END_HI
+    lines.append("SAMPLE_END_HI:")
+    for i in range(n_inst):
+        lines.append(f" .byte ${(end_addrs[i] >> 8) & 0xFF:02X}")
+    lines.append("")
+    
+    # SAMPLE_MODE
+    lines.append("SAMPLE_MODE:")
+    for i in range(n_inst):
+        lines.append(f" .byte ${modes[i]:02X}")
+    
+    with open(os.path.join(build_dir, "SAMPLE_DIR.asm"), 'w') as f:
+        f.write('\n'.join(lines))
+
+
+def _generate_bank_data_files(build_dir: str, pack_result, 
+                                vq_streams: dict, raw_blocks: dict,
+                                bank_codebooks: dict = None,
+                                bank_reencoded: dict = None,
+                                codebook_size: int = 0):
+    """Generate BANK_DATA_N.asm files with per-bank codebooks.
+    
+    VQ bank layout (when codebook_size > 0 and bank has VQ data):
+      $4000 + 0                    : codebook (256 * vec_size bytes)
+      $4000 + codebook_size        : VQ index data
+      ...up to $7FFF
+    
+    RAW bank layout (no codebook overhead):
+      $4000 + 0                    : RAW sample data
+      ...up to $7FFF
+    
+    For VQ instruments, uses re-encoded indices (bank_reencoded) that
+    reference the per-bank codebook instead of the global one.
+    """
+    from bank_packer import BANK_SIZE, BANK_BASE
+    
+    if bank_codebooks is None:
+        bank_codebooks = {}
+    if bank_reencoded is None:
+        bank_reencoded = {}
+    
+    # Build per-bank byte arrays
+    n_banks = pack_result.n_banks_used
+    bank_data = [bytearray() for _ in range(n_banks)]
+    
+    # Determine which banks have codebook from pack result
+    has_cb = pack_result.bank_has_codebook if pack_result.bank_has_codebook else []
+    
+    # Step 1: Prepend codebook ONLY to VQ banks (bank_has_codebook=True)
+    for bank_idx in range(n_banks):
+        is_vq_bank = bank_idx < len(has_cb) and has_cb[bank_idx]
+        if codebook_size > 0 and is_vq_bank:
+            if bank_idx in bank_codebooks:
+                cb = bank_codebooks[bank_idx]
+                if len(cb) < codebook_size:
+                    cb = cb + bytes(codebook_size - len(cb))  # pad
+                bank_data[bank_idx] = bytearray(cb[:codebook_size])
+            else:
+                # VQ bank but no codebook trained — fill with silence
+                bank_data[bank_idx] = bytearray([0x10] * codebook_size)
+        # RAW-only banks: no codebook prefix, data starts at $4000
+    
+    # Sort placements by (first_bank, offset) for correct write ordering
+    sorted_placements = sorted(
+        pack_result.placements.values(),
+        key=lambda p: (p.bank_indices[0], p.offset)
+    )
+    
+    for p in sorted_placements:
+        inst_idx = p.inst_idx
+        is_vq = inst_idx in vq_streams
+        
+        if p.n_banks == 1:
+            bank_idx = p.bank_indices[0]
+            
+            # Use re-encoded data if available
+            key = (inst_idx, bank_idx)
+            if is_vq and key in bank_reencoded:
+                data = bank_reencoded[key]
+            elif is_vq:
+                data = vq_streams[inst_idx]
+            elif inst_idx in raw_blocks:
+                data = raw_blocks[inst_idx]
+            else:
+                logger.warning(f"Bank data: inst {inst_idx} placed but no data found")
+                continue
+            
+            # Offset within bank (already accounts for codebook via bank_packer)
+            offset_in_bank = p.offset - BANK_BASE
+            while len(bank_data[bank_idx]) < offset_in_bank:
+                bank_data[bank_idx].append(0)
+            bank_data[bank_idx].extend(data)
+            if len(bank_data[bank_idx]) > BANK_SIZE:
+                logger.error(f"Bank {bank_idx} overflow: {len(bank_data[bank_idx])} > {BANK_SIZE}")
+        else:
+            # Multi-bank: per-instrument effective size depends on VQ vs RAW
+            inst_cb = codebook_size if is_vq else 0
+            effective_bank_size = BANK_SIZE - inst_cb
+            
+            if is_vq:
+                # Use per-bank re-encoded data
+                for bi in p.bank_indices:
+                    key = (inst_idx, bi)
+                    if key in bank_reencoded:
+                        chunk = bank_reencoded[key]
+                    else:
+                        # Fallback: slice from original stream
+                        bi_offset = p.bank_indices.index(bi)
+                        start = bi_offset * effective_bank_size
+                        chunk = vq_streams[inst_idx][start:start + effective_bank_size]
+                    bank_data[bi].extend(chunk)
+                    if len(bank_data[bi]) > BANK_SIZE:
+                        logger.error(f"Bank {bi} overflow: {len(bank_data[bi])} > {BANK_SIZE}")
+            elif inst_idx in raw_blocks:
+                remaining = bytearray(raw_blocks[inst_idx])
+                for bi in p.bank_indices:
+                    chunk_size = min(len(remaining), effective_bank_size)
+                    chunk = remaining[:chunk_size]
+                    remaining = remaining[chunk_size:]
+                    bank_data[bi].extend(chunk)
+                    if len(bank_data[bi]) > BANK_SIZE:
+                        logger.error(f"Bank {bi} overflow: {len(bank_data[bi])} > {BANK_SIZE}")
+            else:
+                logger.warning(f"Bank data: inst {inst_idx} placed but no data found")
+    
+    # Write .asm files
+    for bank_idx in range(n_banks):
+        data = bank_data[bank_idx]
+        is_vq_bank = bank_idx < len(has_cb) and has_cb[bank_idx]
+        lines = []
+        if is_vq_bank and codebook_size > 0:
+            data_bytes = len(data) - codebook_size
+            lines.append(f"; BANK_DATA_{bank_idx}.asm - Bank {bank_idx} VQ "
+                        f"(codebook: {codebook_size}B + data: {data_bytes}B)")
+        else:
+            lines.append(f"; BANK_DATA_{bank_idx}.asm - Bank {bank_idx} RAW "
+                        f"({len(data)}B data)")
+        lines.append(f"; {len(data)} bytes total")
+        lines.append("")
+        
+        # Write .byte lines (16 bytes per line)
+        for i in range(0, len(data), 16):
+            chunk = data[i:i+16]
+            hex_vals = ','.join(f'${b:02X}' for b in chunk)
+            lines.append(f" .byte {hex_vals}")
+        
+        path = os.path.join(build_dir, f"BANK_DATA_{bank_idx}.asm")
+        with open(path, 'w') as f:
+            f.write('\n'.join(lines))
+
+
+def _generate_mem_err_text(output_dir: str, memory_config: str,
+                           required_banks: int, song_title: str = ""):
+    """Generate MEM_ERR_TEXT.asm — error screen for insufficient memory.
+    
+    Creates a user-friendly error display shown when the XEX detects
+    too few extended RAM banks.  All text is pre-formatted at build time
+    except the FOUND digit pair which is patched at runtime by
+    mem_error_screen in mem_detect.asm.
+    
+    Screen layout (ANTIC Mode 2, 40 cols, vertically centered):
+    
+        Line 1:  "       NOT ENOUGH MEMORY               "
+        Line 2:  (blank)
+        Line 3:  "  THIS PROGRAM NEEDS 320 KB RAM         "
+        Line 4:  (blank)
+        Line 5:  "  REQUIRED: 16  FOUND: ?? BANKS         "
+    
+    The "??" is labelled mem_err_found_digits for runtime patching.
+    
+    Args:
+        output_dir: Build directory (where MEM_ERR_TEXT.asm goes — must be
+                    the MADS CWD so bank_loader.asm can icl 'MEM_ERR_TEXT.asm')
+        memory_config: Human-readable config name (e.g. "320 KB")
+        required_banks: Number of banks needed (e.g. 16)
+        song_title: Song title (shown on error screen if non-empty)
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Helper: pad/truncate string to exactly 40 chars
+    def pad40(s):
+        return s[:40].ljust(40)
+    
+    # Format values for display
+    need_str = f"{required_banks:02d}"
+    mem_str = memory_config.strip().upper()
+    
+    # Clean song title: uppercase, only safe ATASCII chars
+    title = ""
+    if song_title and song_title.strip():
+        raw = song_title.strip().upper()[:30]
+        title = ''.join(c if (c.isalnum() or c in ' .-_!') else ' ' for c in raw)
+        title = title.strip()  # drop if sanitization left only spaces
+    
+    # --- Build the 5 (or 6) text lines ---
+    line1 = pad40("       NOT ENOUGH MEMORY")
+    line2 = pad40("")
+    line3 = pad40(f"  THIS PROGRAM NEEDS {mem_str} RAM")
+    line4 = pad40("")
+    
+    # Line 5 is split across 3 dta directives so mem_err_found_digits
+    # labels the exact 2-byte position for runtime digit patching.
+    line5_pre = f"  REQUIRED: {need_str}  FOUND: "   # 23 chars
+    line5_post_content = " BANKS"                      # 6 chars
+    line5_post_pad = 40 - len(line5_pre) - 2 - len(line5_post_content)
+    line5_post = line5_post_content + " " * max(0, line5_post_pad)
+    
+    # Optional line 6: song title (if provided)
+    has_title = bool(title)
+    if has_title:
+        line6 = pad40("")
+        line7 = pad40(f"  {title}")
+        n_text_lines = 7
+    else:
+        n_text_lines = 5
+    
+    # --- Compute vertical centering ---
+    # ANTIC Mode 2: 8 scanlines per text line, ~240 visible (NTSC)
+    text_scanlines = n_text_lines * 8
+    blank_above = max(48, (240 - text_scanlines) // 2)
+    n_blank_bytes = blank_above // 8  # $70 = 8 blank scanlines each
+    
+    # --- Build the ASM file ---
+    lines = []
+    lines.append("; ==========================================================================")
+    lines.append("; MEM_ERR_TEXT.ASM - Error screen text (generated by build pipeline)")
+    lines.append("; ==========================================================================")
+    lines.append(f"; Memory config: {memory_config}, Required banks: {required_banks}")
+    lines.append("; Only the FOUND digit pair is patched at runtime.")
+    lines.append("; ==========================================================================")
+    lines.append("")
+    lines.append("    ORG $2000")
+    lines.append("")
+    
+    # Display list
+    lines.append("; Display list (ANTIC Mode 2, vertically centered)")
+    lines.append("mem_err_dl:")
+    
+    # Emit blank scanline bytes in groups of 8
+    for i in range(0, n_blank_bytes, 8):
+        chunk = min(8, n_blank_bytes - i)
+        blanks = ','.join(['$70'] * chunk)
+        lines.append(f"    .byte {blanks}")
+    
+    # First text line with LMS
+    lines.append("    .byte $42                       ; Mode 2 + LMS")
+    lines.append("    .word mem_err_text              ; -> text block start")
+    
+    # Continuation lines (contiguous memory, no LMS needed)
+    cont_count = n_text_lines - 1
+    if cont_count > 0:
+        conts = ','.join(['$02'] * cont_count)
+        lines.append(f"    .byte {conts}")
+    
+    # Jump-and-wait-for-VBI
+    lines.append("    .byte $41                       ; JVB")
+    lines.append("    .word mem_err_dl")
+    lines.append("")
+    
+    # Text data
+    lines.append(f"; Screen text ({n_text_lines} x 40 = {n_text_lines * 40}"
+                 f" bytes, ANTIC screen codes via dta d)")
+    lines.append(";          1234567890123456789012345678901234567890")
+    lines.append("mem_err_text:")
+    lines.append(f'    dta d"{line1}"')
+    lines.append(f'    dta d"{line2}"')
+    lines.append(f'    dta d"{line3}"')
+    lines.append(f'    dta d"{line4}"')
+    
+    # Line 5: split so mem_err_found_digits labels the "??" bytes
+    lines.append(f'    dta d"{line5_pre}"')
+    lines.append("mem_err_found_digits:")
+    lines.append(f'    dta d"??"')
+    lines.append(f'    dta d"{line5_post}"')
+    
+    # Optional title lines
+    if has_title:
+        lines.append(f'    dta d"{line6}"')
+        lines.append(f'    dta d"{line7}"')
+    
+    lines.append("")
+    
+    path = os.path.join(output_dir, "MEM_ERR_TEXT.asm")
+    with open(path, 'w') as f:
+        f.write('\n'.join(lines))
+
+
+def _generate_bank_loader(build_dir: str, pack_result):
+    """Generate bank_loader.asm — top-level source for banking mode.
+    
+    This is the main file MADS assembles. It creates a multi-segment
+    XEX with INI blocks for memory detection, bank switching, and data
+    loading, followed by the main player code.
+    """
+    from bank_packer import DBANK_TABLE
+    
+    n_required = pack_result.n_banks_used
+    lines = []
+    lines.append("; ==========================================================================")
+    lines.append("; bank_loader.asm - Multi-Segment XEX with Extended Memory Banking")
+    lines.append("; ==========================================================================")
+    lines.append("; Generated by POKEY VQ Tracker")
+    lines.append("; ==========================================================================")
+    lines.append("")
+    
+    # Segment 1: Memory detection + validation INI
+    # mem_detect.asm places code at $0600 and screen data at $2000.
+    # After the icl, PC is at ~$20D5. The validate stub lands there,
+    # which is fine — it runs via INI then gets overwritten by song_player.
+    lines.append("; --- Segment 1: Memory Detection + Validation (INI) ---")
+    lines.append("    ORG $0600")
+    lines.append(f"REQUIRED_BANKS = {n_required}")
+    lines.append("    icl 'banking/mem_detect.asm'")
+    lines.append("    icl 'MEM_ERR_TEXT.asm'         ; error screen (has own ORG $2000)")
+    lines.append("")
+    lines.append("mem_detect_and_validate:")
+    lines.append("    jsr mem_detect")
+    lines.append("    jsr mem_validate")
+    lines.append("    rts")
+    lines.append("    ini mem_detect_and_validate")
+    lines.append("")
+    
+    # Per-bank: switch INI + data at $4000
+    # Each switch stub can reuse $0600 since mem_detect already ran
+    for bank_idx in range(pack_result.n_banks_used):
+        portb = DBANK_TABLE[bank_idx] if bank_idx < len(DBANK_TABLE) else 0xFF
+        lines.append(f"; --- Bank {bank_idx}: Switch + Data ---")
+        lines.append("    ORG $0600")
+        lines.append(f"switch_bank_{bank_idx}:")
+        lines.append(f"    lda #${portb:02X}")
+        lines.append("    sta $D301")
+        lines.append("    rts")
+        lines.append(f"    ini switch_bank_{bank_idx}")
+        lines.append("")
+        lines.append("    ORG $4000")
+        lines.append(f"    icl 'BANK_DATA_{bank_idx}.asm'")
+        lines.append("")
+    
+    # Restore main RAM INI (keep OS ROM enabled for remaining XEX loading!)
+    lines.append("; --- Restore Main RAM ---")
+    lines.append("    ORG $0600")
+    lines.append("restore_main:")
+    lines.append(f"    lda #$FF              ; deselect banks + OS ROM ON (loading continues)")
+    lines.append("    sta $D301")
+    lines.append("    rts")
+    lines.append("    ini restore_main")
+    lines.append("")
+    
+    # Main player code (song_player.asm handles ORG START_ADDRESS + ORG $8000)
+    lines.append("; --- Main Player Code ---")
+    lines.append("    icl 'song_player.asm'")
+    
+    path = os.path.join(build_dir, "bank_loader.asm")
+    with open(path, 'w') as f:
+        f.write('\n'.join(lines))
+
 
 
 def build_xex_sync(song: Song, output_xex_path: str) -> BuildResult:
@@ -759,27 +2134,38 @@ def build_xex_sync(song: Song, output_xex_path: str) -> BuildResult:
         # Export song data
         _output("\n  Exporting song data...\n")
         song_data_path = os.path.join(build_dir, "SONG_DATA.asm")
-        ok, err = export_song_data(song, song_data_path, _output)
+        # Banking mode: split song data across two regions (I/O gap at $D000)
+        # Region A: $8000-$CFFF = 20,480 bytes
+        # Region B: $D800-$FBFF =  9,216 bytes  (charset at $FC00)
+        REGION_A_SIZE = 0xD000 - 0x8000   # 20480
+        REGION_B_SIZE = 0xFC00 - 0xD800   #  9216
+        BANKING_SONG_BUDGET = REGION_A_SIZE + REGION_B_SIZE  # 29696
+        
+        use_banking = song.memory_config != "64 KB"
+        region_a_limit = REGION_A_SIZE if use_banking else 0
+        ok, err = export_song_data(song, song_data_path,
+                                    region_a_limit=region_a_limit)
         if not ok:
             result.error_message = f"Failed to export song data: {err}"
             _output(f"ERROR: {result.error_message}\n")
             return result
-        _output(f"    + SONG_DATA.asm ({len(song.patterns)} patterns, {len(song.songlines)} songlines)\n")
-        
-        # Show SONG_DATA.asm content for debugging
-        _output("\n  --- SONG_DATA.asm content ---\n")
+        # Show summary with byte count
         try:
-            with open(song_data_path, 'r') as f:
-                content = f.read()
-                # Show first 80 lines or so
-                lines = content.split('\n')
-                for i, line in enumerate(lines[:80]):
-                    _output(f"  {line}\n")
-                if len(lines) > 80:
-                    _output(f"  ... ({len(lines) - 80} more lines)\n")
-        except Exception as e:
-            _output(f"  (Could not read: {e})\n")
-        _output("  --- end SONG_DATA.asm ---\n")
+            song_bytes = _count_asm_bytes(song_data_path)
+            _output(f"    + SONG_DATA.asm ({len(song.patterns)} patterns, "
+                    f"{len(song.songlines)} songlines, ~{song_bytes//1024}KB)\n")
+            # Check for region B overflow
+            if use_banking:
+                path2 = os.path.join(build_dir, "SONG_DATA_2.asm")
+                if os.path.exists(path2):
+                    song2_bytes = _count_asm_bytes(path2)
+                    if song2_bytes > 0:
+                        _output(f"    + SONG_DATA_2.asm ({song2_bytes:,} bytes in region B)\n")
+                    else:
+                        _output(f"    + SONG_DATA_2.asm (empty — all data fits in region A)\n")
+        except Exception:
+            _output(f"    + SONG_DATA.asm ({len(song.patterns)} patterns, "
+                    f"{len(song.songlines)} songlines)\n")
         
         # Copy song_player.asm from our asm/ directory
         # Use runtime.get_asm_dir() which handles both dev and bundled modes
@@ -804,12 +2190,97 @@ def build_xex_sync(song: Song, output_xex_path: str) -> BuildResult:
                     f.write("; copy_os_ram.asm - stub\n")
                     f.write("; OS RAM copy handled by player initialization\n")
         
+        # Banking mode: generate bank data, loader, config
+        if use_banking:
+            _output("\n  Generating banking build files...\n")
+            bank_err = _generate_banking_build(build_dir, vq_output_dir, song, _output)
+            if bank_err:
+                # Check for upgrade suggestion (structured signal from packer)
+                if bank_err.startswith("UPGRADE:"):
+                    # Format: "UPGRADE:config_name:n_banks:total_bytes:current_config"
+                    parts = bank_err.split(":")
+                    if len(parts) >= 5:
+                        result.needs_upgrade = True
+                        result.suggested_config = parts[1]
+                        result.suggested_banks = int(parts[2])
+                        result.total_sample_bytes = int(parts[3])
+                        result.current_config = parts[4]
+                        result.error_message = (
+                            f"Sample data doesn't fit in {result.current_config}.\n\n"
+                            f"Upgrade to \"{result.suggested_config}\" to build.")
+                        return result
+                
+                result.error_message = bank_err
+                _output(f"\nERROR: {bank_err}\n")
+                return result
+        
+        # Pre-compute data sizes for better error reporting
+        data_sizes = _estimate_data_sizes(build_dir, use_banking)
+        total_data = sum(data_sizes.values())
+        _output(f"\n  Estimated data: ~{total_data//1024}KB\n")
+        for name, sz in sorted(data_sizes.items(), key=lambda x: -x[1]):
+            if sz >= 512:
+                _output(f"    {name}: {sz:,}\n")
+        
+        # Pre-flight memory check: catch overflow BEFORE running MADS
+        if use_banking:
+            # Song data spans two regions (I/O gap at $D000-$D7FF):
+            #   Region A: $8000-$CFFF = 20,480 bytes
+            #   Region B: $D800-$FBFF =  9,216 bytes
+            available = (0xD000 - 0x8000) + (0xFC00 - 0xD800)  # 29,696
+            region = "$8000–$CFFF + $D800–$FBFF"
+        else:
+            available = 0xC000 - song.start_address
+            region = f"${song.start_address:04X}–$BFFF"
+        
+        if total_data > available:
+            overflow = total_data - available
+            top = sorted(data_sizes.items(), key=lambda x: -x[1])[:5]
+            breakdown = "\n".join(f"  {n}: {s:,} bytes ({s//1024}KB)" 
+                                  for n, s in top if s >= 256)
+            
+            result.error_message = (
+                f"Memory overflow by ~{overflow:,} bytes ({overflow//1024}KB)!\n\n"
+                f"Available: {available:,} bytes ({available//1024}KB) "
+                f"in {region}.\n"
+                f"Estimated total: ~{total_data:,} bytes ({total_data//1024}KB).\n\n"
+                f"Breakdown:\n{breakdown}\n\n"
+                f"To fix: reduce the number of patterns, use shorter patterns,\n"
+                f"remove unused instruments, or lower the VQ vector size.")
+            _output(f"\nERROR: Data overflow by ~{overflow:,} bytes ({overflow//1024}KB)!\n")
+            _output(f"  Available: {available:,} bytes ({available//1024}KB) in {region}\n")
+            _output(f"  Estimated: {total_data:,} bytes ({total_data//1024}KB)\n")
+            _output(f"  Breakdown:\n")
+            for n, s in sorted(data_sizes.items(), key=lambda x: -x[1]):
+                if s >= 256:
+                    pct = s * 100 // total_data
+                    _output(f"    {n}: {s:,} bytes ({s//1024}KB) — {pct}%\n")
+            if use_banking:
+                _output(f"\n  In banking mode, song data (patterns + songlines) spans\n")
+                _output(f"  {region} (~29KB, split around I/O at $D000).\n")
+                _output(f"  Tables and staging are before $4000. Samples in banks.\n")
+                _output(f"\n  To fix: reduce patterns/songlines, use shorter patterns,\n")
+                _output(f"  disable Volume Control, or remove unused instruments.\n")
+            else:
+                _output(f"\n  The data region ({region}) holds all code, tables,\n")
+                _output(f"  song data, sample data, and codebook.\n")
+                _output(f"\n  To fix: switch to extended memory (128KB+), use VQ mode\n")
+                _output(f"  on large instruments, or lower the sample rate.\n")
+            return result
+        
         # Run MADS
         _output("\n  Assembling with MADS...\n")
-        player_asm = os.path.join(build_dir, "song_player.asm")
         output_xex = os.path.join(build_dir, "song.xex")
         
-        cmd = [mads_path, player_asm, "-o:" + output_xex]
+        if use_banking:
+            # Banking: assemble bank_loader.asm (includes song_player.asm)
+            main_asm = os.path.join(build_dir, "bank_loader.asm")
+            _output(f"    Source: bank_loader.asm (banking mode)\n")
+        else:
+            # 64KB: assemble song_player.asm directly
+            main_asm = os.path.join(build_dir, "song_player.asm")
+        
+        cmd = [mads_path, main_asm, "-o:" + output_xex]
         logger.info(f"Running: {' '.join(cmd)}")
         
         proc = subprocess.run(
@@ -822,14 +2293,67 @@ def build_xex_sync(song: Song, output_xex_path: str) -> BuildResult:
         if proc.returncode != 0:
             # Extract useful error info
             error_output = proc.stdout + "\n" + proc.stderr
-            # Find first error line
             error_lines = [l for l in error_output.split('\n') if 'error' in l.lower()]
-            if error_lines:
-                result.error_message = f"MADS assembly error:\n\n{error_lines[0][:200]}"
+            
+            # Check for our specific memory overflow errors
+            overflow_patterns = ['memory overflow', 'data overflow', 
+                                 'exceeds $4000', 'exceeds $c000',
+                                 'song_data too large', 'too large for']
+            is_overflow = any(any(pat in l.lower() for pat in overflow_patterns)
+                             for l in error_output.split('\n'))
+            
+            if is_overflow:
+                is_bank_code = any('exceeds $4000' in l.lower() for l in error_output.split('\n'))
+                
+                if use_banking and is_bank_code:
+                    code_space = 0x4000 - song.start_address
+                    result.error_message = (
+                        f"Player code overflow!\n\n"
+                        f"Code exceeds bank window at $4000.\n"
+                        f"Available for code: {code_space:,} bytes "
+                        f"(${song.start_address:04X}–$3FFF).\n\n"
+                        f"To fix: lower Start Address to give code more room.")
+                    _output(f"\nERROR: Player code exceeds $4000 bank window!\n")
+                    _output(f"  Available: {code_space:,} bytes (${song.start_address:04X}–$3FFF)\n")
+                    _output(f"  To fix: lower Start Address.\n")
+                else:
+                    if use_banking:
+                        avail = 0xC000 - 0x8000
+                        region = "$8000–$BFFF"
+                    else:
+                        avail = 0xC000 - song.start_address
+                        region = f"${song.start_address:04X}–$BFFF"
+                    
+                    overflow = max(0, total_data - avail)
+                    
+                    # Build top contributors
+                    top = sorted(data_sizes.items(), key=lambda x: -x[1])[:5]
+                    breakdown = ", ".join(f"{n}: {s//1024}KB" for n, s in top if s >= 1024)
+                    breakdown_detail = "\n".join(
+                        f"    {n}: {s:,} bytes ({s//1024}KB) — {s*100//total_data}%"
+                        for n, s in top if s >= 256)
+                    
+                    result.error_message = (
+                        f"Memory overflow by ~{overflow:,} bytes ({overflow//1024}KB)!\n\n"
+                        f"Available: {avail:,} bytes ({avail//1024}KB) "
+                        f"in {region}.\n"
+                        f"Data: ~{total_data:,} bytes ({total_data//1024}KB).\n\n"
+                        f"Biggest: {breakdown}\n\n"
+                        f"To fix: reduce patterns/songlines, use VQ on large instruments,\n"
+                        f"lower sample rate, or switch to extended memory.")
+                    
+                    _output(f"\nERROR: Data overflow by ~{overflow:,} bytes ({overflow//1024}KB)!\n")
+                    _output(f"  Available: {avail:,} bytes ({avail//1024}KB) in {region}\n")
+                    _output(f"  Estimated: {total_data:,} bytes ({total_data//1024}KB)\n")
+                    _output(f"  Breakdown:\n{breakdown_detail}\n")
+            elif error_lines:
+                result.error_message = f"Assembly error:\n\n{error_lines[0][:200]}"
             else:
-                result.error_message = f"MADS assembly failed:\n\n{error_output[:500]}"
+                result.error_message = f"Assembly failed:\n\n{error_output[:500]}"
             _output(f"\nERROR: Assembly failed\n")
-            _output(error_output[:500] + "\n")
+            for line in error_output.split('\n')[:30]:
+                if line.strip():
+                    _output(f"  {line.strip()}\n")
             logger.error(f"MADS failed: {error_output}")
             return result
         

@@ -250,7 +250,7 @@ def show_shortcuts():
 
     vp_w = dpg.get_viewport_width()
     vp_h = dpg.get_viewport_height()
-    w, h = 500, 740
+    w, h = 500, 760
     btn_w = 90
     left_margin = (w - btn_w) // 2 - 8
 
@@ -267,7 +267,7 @@ def show_shortcuts():
         # Navigation (hardcoded)
         dpg.add_text("NAVIGATION", color=COL_ACCENT)
         dpg.add_text("  Arrow Keys       Move cursor")
-        dpg.add_text("  Shift+Up/Down    Extend selection")
+        dpg.add_text("  Shift+Arrows     Extend block selection")
         dpg.add_text("  Ctrl+Up/Down     Jump by Step rows")
         dpg.add_text(_kb("step_up",   "Increase Edit Step"))
         dpg.add_text(_kb("step_down", "Decrease Edit Step"))
@@ -283,6 +283,7 @@ def show_shortcuts():
         dpg.add_text("  Z-M, Q-P         Piano keys (2 octaves)")
         dpg.add_text("  2,3,5,6,7,9,0    Sharp notes (piano mode)")
         dpg.add_text("  ` (backtick)     Note OFF (silence)")
+        dpg.add_text("  ~ (tilde)        Volume change (V--)")
         dpg.add_text("  1                Note OFF (tracker mode)")
         dpg.add_text("  0-9, A-F         Hex mode: inst/vol")
         dpg.add_text("  Delete           Delete row (shift up)")
@@ -304,12 +305,16 @@ def show_shortcuts():
         dpg.add_text(_kb("show_help",        "Show this help"))
         dpg.add_text(_kb("play_stop_toggle", "Play/stop toggle"))
         dpg.add_text(_kb("preview_row",      "Preview current row"))
+        dpg.add_text(_kb("toggle_follow",    "Toggle follow mode"))
 
         dpg.add_spacer(height=8)
-        dpg.add_text("CLIPBOARD", color=COL_ACCENT)
-        dpg.add_text(_kb("copy",  "Copy cells"))
-        dpg.add_text(_kb("cut",   "Cut cells"))
-        dpg.add_text(_kb("paste", "Paste cells"))
+        dpg.add_text("SELECTION & CLIPBOARD", color=COL_ACCENT)
+        dpg.add_text("  Shift+Click      Extend selection to cell")
+        dpg.add_text(_kb("select_all", "Select all (rows × channels)"))
+        dpg.add_text(_kb("copy",  "Copy block (+ OS clipboard)"))
+        dpg.add_text(_kb("cut",   "Cut block"))
+        dpg.add_text(_kb("paste", "Paste block (OS clipboard first)"))
+        dpg.add_text("  Delete           Clear block / delete row")
 
         dpg.add_spacer(height=8)
         dpg.add_text("FILE", color=COL_ACCENT)

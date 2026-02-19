@@ -4,7 +4,8 @@ from typing import List, Optional
 import numpy as np
 from constants import (MAX_CHANNELS, MAX_PATTERNS, MAX_ROWS, MAX_INSTRUMENTS,
                        MAX_SONGLINES, MAX_VOLUME, DEFAULT_SPEED, DEFAULT_LENGTH,
-                       PAL_HZ, MAX_NOTES, NOTE_OFF, FORMAT_VERSION)
+                       PAL_HZ, MAX_NOTES, NOTE_OFF, VOL_CHANGE, FORMAT_VERSION,
+                       DEFAULT_START_ADDRESS, DEFAULT_MEMORY_CONFIG)
 from sample_editor.commands import SampleCommand
 
 @dataclass
@@ -30,8 +31,8 @@ class Row:
         inst = d.get('i', 0)
         vol = d.get('v', MAX_VOLUME)
         # Clamp to valid ranges
-        # Note: NOTE_OFF (255) must be allowed through
-        if note != NOTE_OFF:
+        # Note: NOTE_OFF (255) and VOL_CHANGE (254) must be allowed through
+        if note not in (NOTE_OFF, VOL_CHANGE):
             note = max(0, min(MAX_NOTES, note))
         inst = max(0, min(MAX_INSTRUMENTS - 1, inst))  # 0-127
         vol = max(0, min(MAX_VOLUME, vol))
@@ -74,7 +75,7 @@ class Pattern:
     
     def transpose(self, semitones: int):
         for row in self.rows:
-            if row.note > 0 and row.note != NOTE_OFF:
+            if row.note > 0 and row.note not in (NOTE_OFF, VOL_CHANGE):
                 new_note = row.note + semitones
                 if 1 <= new_note <= MAX_NOTES:
                     row.note = new_note
@@ -122,7 +123,6 @@ class Instrument:
     """
     name: str = "New"
     sample_path: str = ""  # Runtime only - path to .tmp/samples/XX.wav
-    original_sample_path: str = ""  # Original path on user's disk when first imported
     sample_data: Optional[np.ndarray] = None
     sample_rate: int = 44100
     base_note: int = 1  # C-1 = 1.0x pitch (matches Atari pitch table index 0)
@@ -166,7 +166,6 @@ class Instrument:
         return cls(
             name=d.get('name', 'New'),
             sample_path=d.get('sample_path', ''),
-            original_sample_path=d.get('original_sample_path', ''),
             base_note=d.get('base_note', 1),
             sample_rate=d.get('sample_rate', 44100),
             use_vq=d.get('use_vq', True),
@@ -197,6 +196,8 @@ class Song:
     volume_control: bool = False  # Enable volume control in export (requires lower sample rate)
     screen_control: bool = True   # Enable display during playback (costs ~15% CPU cycles)
     keyboard_control: bool = True # Enable keyboard stop/restart during playback
+    start_address: int = DEFAULT_START_ADDRESS  # ORG address for player code ($0800-$3F00)
+    memory_config: str = DEFAULT_MEMORY_CONFIG  # Target memory: "64 KB", "128 KB", etc.
     songlines: List[Songline] = field(default_factory=list)
     patterns: List[Pattern] = field(default_factory=list)
     instruments: List[Instrument] = field(default_factory=list)
@@ -217,6 +218,8 @@ class Song:
         self.volume_control = False
         self.screen_control = True
         self.keyboard_control = True
+        self.start_address = DEFAULT_START_ADDRESS
+        self.memory_config = DEFAULT_MEMORY_CONFIG
         self.songlines = [Songline(patterns=list(range(MAX_CHANNELS)))]
         self.patterns = [Pattern() for _ in range(MAX_CHANNELS)]
         self.instruments = []
@@ -228,6 +231,23 @@ class Song:
     
     def get_instrument(self, idx: int) -> Optional[Instrument]:
         return self.instruments[idx] if 0 <= idx < len(self.instruments) else None
+    
+    def get_used_instrument_indices(self) -> set:
+        """Return set of instrument indices actually referenced in the song.
+        
+        Only scans patterns that are referenced by songlines.
+        """
+        used = set()
+        patterns_in_use = set()
+        for sl in self.songlines:
+            for p in sl.patterns:
+                patterns_in_use.add(p)
+        for ptn_idx in patterns_in_use:
+            pat = self.get_pattern(ptn_idx)
+            for row in pat.rows[:pat.length]:
+                if row.note > 0 and row.note not in (NOTE_OFF, VOL_CHANGE):
+                    used.add(row.instrument)
+        return used
     
     def max_pattern_length(self, songline_idx: int) -> int:
         """Get max pattern length for a songline (for repetition display)."""
@@ -328,10 +348,13 @@ class Song:
             'meta': {
                 'title': self.title,
                 'author': self.author,
+                'speed': self.speed,
                 'system': self.system,
                 'volume_control': self.volume_control,
                 'screen_control': self.screen_control,
                 'keyboard_control': self.keyboard_control,
+                'start_address': self.start_address,
+                'memory_config': self.memory_config,
             },
             'songlines': [
                 {'patterns': sl.patterns.copy(), 'speed': sl.speed}
@@ -348,10 +371,13 @@ class Song:
         song = cls(
             title=meta.get('title', 'Untitled'),
             author=meta.get('author', ''),
+            speed=meta.get('speed', DEFAULT_SPEED),
             system=meta.get('system', PAL_HZ),
             volume_control=meta.get('volume_control', False),
             screen_control=meta.get('screen_control', True),
             keyboard_control=meta.get('keyboard_control', True),
+            start_address=meta.get('start_address', DEFAULT_START_ADDRESS),
+            memory_config=meta.get('memory_config', DEFAULT_MEMORY_CONFIG),
         )
         
         song.songlines = [

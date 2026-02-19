@@ -1,9 +1,19 @@
 ; ==========================================================================
-; TRACKER IRQ HANDLER - SIZE OPTIMIZED (4-channel, Nibble-packed)
+; TRACKER IRQ HANDLER - SIZE OPTIMIZED (4-channel, Nibble-packed VQ only)
 ; ==========================================================================
-; Timer-driven interrupt handler for playing VQ-compressed samples
-; with pitch control on 4 independent POKEY channels.
+; Timer-driven IRQ for nibble-packed VQ samples with pitch control.
+; No RAW mode support. ch:1_raw_xxx aliases provided for process_row.asm.
+;
+; Cycle counts per channel (VOLUME_CONTROL=0):
+;   VQ no-pitch, no boundary: ~35 cycles
+;   VQ pitch, no advance:     ~28 cycles
+;   Inactive channel:          5 cycles
 ; ==========================================================================
+
+; Default MIN_VECTOR for all-RAW builds (converter omits it when algo=raw)
+.ifndef MIN_VECTOR
+    MIN_VECTOR = 8
+.endif
 
 ; Masks for modulo operation (MIN_VECTOR - 1)
 .if MIN_VECTOR = 2
@@ -18,7 +28,6 @@
     .error "MIN_VECTOR must be 2, 4, 8, or 16"
 .endif
 
-; SMC opcodes (defined in song_player.asm; guarded here for standalone use)
 .ifndef OPCODE_BMI
     OPCODE_BMI = $30
 .endif
@@ -26,576 +35,189 @@
     OPCODE_BPL = $10
 .endif
 
+; ==========================================================================
+; CHANNEL_IRQ_SIZE — Per-channel nibble-packed VQ handler
+; ==========================================================================
+; :1 = channel (0-3)
+; :2 = AUDC register (AUDC1..AUDC4)
+;
+; IMPORTANT: Labels visible to process_row.asm use ".def name = *" to
+; force global scope (MADS macro labels are local by default).
+; ==========================================================================
+.macro CHANNEL_IRQ_SIZE
+
+    lda trk:1_active
+    beq ch:1_skip
+
+    ; --- Unpack nibble from sample vector ---
+    lda trk:1_vector_offset
+    lsr
+    tay
+    lda (trk:1_sample_ptr),y
+    tax
+
+    lda trk:1_vector_offset
+    and #$01
+    bne @high_:1
+
+    ; Low nibble
+.if VOLUME_CONTROL = 1
+    lda LUT_NIBBLE_LO,x
+    and #$0F
+    ora trk:1_vol_shift
+    tax
+    lda VOLUME_SCALE,x
+    sta :2
+.else
+    lda LUT_NIBBLE_LO,x
+    sta :2
+.endif
+    jmp @advance_:1
+
+@high_:1:
+    ; High nibble
+.if VOLUME_CONTROL = 1
+    lda LUT_NIBBLE_HI,x
+    and #$0F
+    ora trk:1_vol_shift
+    tax
+    lda VOLUME_SCALE,x
+    sta :2
+.else
+    lda LUT_NIBBLE_HI,x
+    sta :2
+.endif
+
+@advance_:1:
+    ; --- Mode+pitch dispatch (SMC) ---
+.def ch:1_tick_jmp = *+1          ; .def → global (SMC target for process_row)
+    jmp ch:1_vq_no_pitch
+
+    ; =================================================================
+    ; VQ NO-PITCH
+    ; =================================================================
+.def ch:1_vq_no_pitch = *         ; .def → global (jump target for process_row)
+    inc trk:1_vector_offset
+    lda trk:1_vector_offset
+    cmp #MIN_VECTOR
+    bcc ch:1_skip
+
+    lda #0
+    sta trk:1_vector_offset
+    inc trk:1_stream_ptr
+    bne @check_end_:1
+    inc trk:1_stream_ptr+1
+
+@check_end_:1:
+    lda trk:1_stream_ptr+1
+    cmp trk:1_stream_end+1
+    bcc @load_vec_:1
+    bne ch:1_end
+    lda trk:1_stream_ptr
+    cmp trk:1_stream_end
+    bcs ch:1_end
+
+@load_vec_:1:
+    ldy #0
+    lda (trk:1_stream_ptr),y
+    tay
+    lda VQ_LO,y
+    sta trk:1_sample_ptr
+    lda VQ_HI,y
+    sta trk:1_sample_ptr+1
+    jmp ch:1_skip
+
+ch:1_end:
+    lda #0
+    sta trk:1_active
+    lda #$10
+    sta :2
+    bpl ch:1_skip              ; unconditional: $10 has N=0
+
+    ; =================================================================
+    ; VQ PITCH
+    ; =================================================================
+.def ch:1_vq_pitch = *            ; .def → global (jump target for process_row)
+    clc
+    lda trk:1_pitch_frac
+    adc trk:1_pitch_step
+    sta trk:1_pitch_frac
+    lda trk:1_pitch_int
+    adc trk:1_pitch_step+1
+    sta trk:1_pitch_int
+    beq ch:1_skip               ; no whole-sample advance this tick
+
+    clc
+    lda trk:1_vector_offset
+    adc trk:1_pitch_int
+    sta trk:1_vector_offset
+    lda #0
+    sta trk:1_pitch_int
+
+    lda trk:1_vector_offset
+    cmp #MIN_VECTOR
+    bcc ch:1_skip
+
+    tax
+.if MIN_VECTOR = 2
+    lsr
+.elif MIN_VECTOR = 4
+    lsr
+    lsr
+.elif MIN_VECTOR = 8
+    lsr
+    lsr
+    lsr
+.elif MIN_VECTOR = 16
+    lsr
+    lsr
+    lsr
+    lsr
+.endif
+    clc
+    adc trk:1_stream_ptr
+    sta trk:1_stream_ptr
+    bcc @p_nc_:1
+    inc trk:1_stream_ptr+1
+@p_nc_:1:
+    txa
+    and #VECTOR_MASK
+    sta trk:1_vector_offset
+    jmp @check_end_:1
+
+ch:1_skip:
+.endm
+
+; ==========================================================================
+; IRQ ENTRY
+; ==========================================================================
 Tracker_IRQ:
     sta irq_save_a
     stx irq_save_x
     sty irq_save_y
-    
+
     lda #0
     sta IRQEN
     lda #IRQ_MASK
     sta IRQEN
-    
-    ; =========================================================================
-    ; CHANNEL 0 - AUDC1
-    ; =========================================================================
-    lda trk0_active
-    beq @skip_ch0
-    
-    lda trk0_vector_offset
-    lsr
-    tay
-    
-    lda (trk0_sample_ptr),y
-    tax
-    
-    lda trk0_vector_offset
-    and #$01
-    bne @ch0_high
-    
-@ch0_low:
-.if VOLUME_CONTROL = 1
-    lda LUT_NIBBLE_LO,x
-    and #$0F
-    ora trk0_vol_shift
-    tax
-    lda VOLUME_SCALE,x
-    sta AUDC1
-.else
-    lda LUT_NIBBLE_LO,x
-    sta AUDC1
-.endif
-    jmp @ch0_advance
-    
-@ch0_high:
-.if VOLUME_CONTROL = 1
-    lda LUT_NIBBLE_HI,x
-    and #$0F
-    ora trk0_vol_shift
-    tax
-    lda VOLUME_SCALE,x
-    sta AUDC1
-.else
-    lda LUT_NIBBLE_HI,x
-    sta AUDC1
-.endif
 
-@ch0_advance:
-ch0_dispatch = *
-    bmi @ch0_pitch
+    CHANNEL_IRQ_SIZE 0, AUDC1
+    CHANNEL_IRQ_SIZE 1, AUDC2
+    CHANNEL_IRQ_SIZE 2, AUDC3
+    CHANNEL_IRQ_SIZE 3, AUDC4
 
-    inc trk0_vector_offset
-    lda trk0_vector_offset
-    cmp #MIN_VECTOR
-    bcc @skip_ch0
-    
-    lda #0
-    sta trk0_vector_offset
-    inc trk0_stream_ptr
-    bne @ch0_check_end
-    inc trk0_stream_ptr+1
-
-@ch0_check_end:
-    lda trk0_stream_ptr+1
-    cmp trk0_stream_end+1
-    bcc @ch0_load_vector
-    bne @ch0_end
-    lda trk0_stream_ptr
-    cmp trk0_stream_end
-    bcs @ch0_end
-
-@ch0_load_vector:
-    ldy #0
-    lda (trk0_stream_ptr),y
-    tay
-    lda VQ_LO,y
-    sta trk0_sample_ptr
-    lda VQ_HI,y
-    sta trk0_sample_ptr+1
-    jmp @skip_ch0
-
-@ch0_end:
-    lda #0
-    sta trk0_active
-    lda #$10
-    sta AUDC1
-    bpl @skip_ch0
-
-@ch0_pitch:
-    clc
-    lda trk0_pitch_frac
-    adc trk0_pitch_step
-    sta trk0_pitch_frac
-    lda trk0_pitch_int
-    adc trk0_pitch_step+1
-    sta trk0_pitch_int
-    
-    beq @skip_ch0
-    
-    clc
-    lda trk0_vector_offset
-    adc trk0_pitch_int
-    sta trk0_vector_offset
-    
-    lda #0
-    sta trk0_pitch_int
-    
-    lda trk0_vector_offset
-    cmp #MIN_VECTOR
-    bcc @skip_ch0
-    
-    tax
-.if MIN_VECTOR = 2
-    lsr
-.elif MIN_VECTOR = 4
-    lsr
-    lsr
-.elif MIN_VECTOR = 8
-    lsr
-    lsr
-    lsr
-.elif MIN_VECTOR = 16
-    lsr
-    lsr
-    lsr
-    lsr
-.endif
-    
-    clc
-    adc trk0_stream_ptr
-    sta trk0_stream_ptr
-    bcc @ch0_p_nocarry
-    inc trk0_stream_ptr+1
-@ch0_p_nocarry:
-    
-    txa
-    and #VECTOR_MASK
-    sta trk0_vector_offset
-    jmp @ch0_check_end
-
-@skip_ch0:
-
-    ; =========================================================================
-    ; CHANNEL 1 - AUDC2
-    ; =========================================================================
-    lda trk1_active
-    beq @skip_ch1
-    
-    lda trk1_vector_offset
-    lsr
-    tay
-    
-    lda (trk1_sample_ptr),y
-    tax
-    
-    lda trk1_vector_offset
-    and #$01
-    bne @ch1_high
-    
-@ch1_low:
-.if VOLUME_CONTROL = 1
-    lda LUT_NIBBLE_LO,x
-    and #$0F
-    ora trk1_vol_shift
-    tax
-    lda VOLUME_SCALE,x
-    sta AUDC2
-.else
-    lda LUT_NIBBLE_LO,x
-    sta AUDC2
-.endif
-    jmp @ch1_advance
-    
-@ch1_high:
-.if VOLUME_CONTROL = 1
-    lda LUT_NIBBLE_HI,x
-    and #$0F
-    ora trk1_vol_shift
-    tax
-    lda VOLUME_SCALE,x
-    sta AUDC2
-.else
-    lda LUT_NIBBLE_HI,x
-    sta AUDC2
-.endif
-
-@ch1_advance:
-ch1_dispatch = *
-    bmi @ch1_pitch
-
-    inc trk1_vector_offset
-    lda trk1_vector_offset
-    cmp #MIN_VECTOR
-    bcc @skip_ch1
-    
-    lda #0
-    sta trk1_vector_offset
-    inc trk1_stream_ptr
-    bne @ch1_check_end
-    inc trk1_stream_ptr+1
-
-@ch1_check_end:
-    lda trk1_stream_ptr+1
-    cmp trk1_stream_end+1
-    bcc @ch1_load_vector
-    bne @ch1_end
-    lda trk1_stream_ptr
-    cmp trk1_stream_end
-    bcs @ch1_end
-
-@ch1_load_vector:
-    ldy #0
-    lda (trk1_stream_ptr),y
-    tay
-    lda VQ_LO,y
-    sta trk1_sample_ptr
-    lda VQ_HI,y
-    sta trk1_sample_ptr+1
-    jmp @skip_ch1
-
-@ch1_end:
-    lda #0
-    sta trk1_active
-    lda #$10
-    sta AUDC2
-    bpl @skip_ch1
-
-@ch1_pitch:
-    clc
-    lda trk1_pitch_frac
-    adc trk1_pitch_step
-    sta trk1_pitch_frac
-    lda trk1_pitch_int
-    adc trk1_pitch_step+1
-    sta trk1_pitch_int
-    
-    beq @skip_ch1
-    
-    clc
-    lda trk1_vector_offset
-    adc trk1_pitch_int
-    sta trk1_vector_offset
-    
-    lda #0
-    sta trk1_pitch_int
-    
-    lda trk1_vector_offset
-    cmp #MIN_VECTOR
-    bcc @skip_ch1
-    
-    tax
-.if MIN_VECTOR = 2
-    lsr
-.elif MIN_VECTOR = 4
-    lsr
-    lsr
-.elif MIN_VECTOR = 8
-    lsr
-    lsr
-    lsr
-.elif MIN_VECTOR = 16
-    lsr
-    lsr
-    lsr
-    lsr
-.endif
-    
-    clc
-    adc trk1_stream_ptr
-    sta trk1_stream_ptr
-    bcc @ch1_p_nocarry
-    inc trk1_stream_ptr+1
-@ch1_p_nocarry:
-    
-    txa
-    and #VECTOR_MASK
-    sta trk1_vector_offset
-    jmp @ch1_check_end
-
-@skip_ch1:
-
-    ; =========================================================================
-    ; CHANNEL 2 - AUDC3
-    ; =========================================================================
-    lda trk2_active
-    beq @skip_ch2
-    
-    lda trk2_vector_offset
-    lsr
-    tay
-    
-    lda (trk2_sample_ptr),y
-    tax
-    
-    lda trk2_vector_offset
-    and #$01
-    bne @ch2_high
-    
-@ch2_low:
-.if VOLUME_CONTROL = 1
-    lda LUT_NIBBLE_LO,x
-    and #$0F
-    ora trk2_vol_shift
-    tax
-    lda VOLUME_SCALE,x
-    sta AUDC3
-.else
-    lda LUT_NIBBLE_LO,x
-    sta AUDC3
-.endif
-    jmp @ch2_advance
-    
-@ch2_high:
-.if VOLUME_CONTROL = 1
-    lda LUT_NIBBLE_HI,x
-    and #$0F
-    ora trk2_vol_shift
-    tax
-    lda VOLUME_SCALE,x
-    sta AUDC3
-.else
-    lda LUT_NIBBLE_HI,x
-    sta AUDC3
-.endif
-
-@ch2_advance:
-ch2_dispatch = *
-    bmi @ch2_pitch
-
-    inc trk2_vector_offset
-    lda trk2_vector_offset
-    cmp #MIN_VECTOR
-    bcc @skip_ch2
-    
-    lda #0
-    sta trk2_vector_offset
-    inc trk2_stream_ptr
-    bne @ch2_check_end
-    inc trk2_stream_ptr+1
-
-@ch2_check_end:
-    lda trk2_stream_ptr+1
-    cmp trk2_stream_end+1
-    bcc @ch2_load_vector
-    bne @ch2_end
-    lda trk2_stream_ptr
-    cmp trk2_stream_end
-    bcs @ch2_end
-
-@ch2_load_vector:
-    ldy #0
-    lda (trk2_stream_ptr),y
-    tay
-    lda VQ_LO,y
-    sta trk2_sample_ptr
-    lda VQ_HI,y
-    sta trk2_sample_ptr+1
-    jmp @skip_ch2
-
-@ch2_end:
-    lda #0
-    sta trk2_active
-    lda #$10
-    sta AUDC3
-    bpl @skip_ch2
-
-@ch2_pitch:
-    clc
-    lda trk2_pitch_frac
-    adc trk2_pitch_step
-    sta trk2_pitch_frac
-    lda trk2_pitch_int
-    adc trk2_pitch_step+1
-    sta trk2_pitch_int
-    
-    beq @skip_ch2
-    
-    clc
-    lda trk2_vector_offset
-    adc trk2_pitch_int
-    sta trk2_vector_offset
-    
-    lda #0
-    sta trk2_pitch_int
-    
-    lda trk2_vector_offset
-    cmp #MIN_VECTOR
-    bcc @skip_ch2
-    
-    tax
-.if MIN_VECTOR = 2
-    lsr
-.elif MIN_VECTOR = 4
-    lsr
-    lsr
-.elif MIN_VECTOR = 8
-    lsr
-    lsr
-    lsr
-.elif MIN_VECTOR = 16
-    lsr
-    lsr
-    lsr
-    lsr
-.endif
-    
-    clc
-    adc trk2_stream_ptr
-    sta trk2_stream_ptr
-    bcc @ch2_p_nocarry
-    inc trk2_stream_ptr+1
-@ch2_p_nocarry:
-    
-    txa
-    and #VECTOR_MASK
-    sta trk2_vector_offset
-    jmp @ch2_check_end
-
-@skip_ch2:
-
-    ; =========================================================================
-    ; CHANNEL 3 - AUDC4
-    ; =========================================================================
-    lda trk3_active
-    beq @skip_ch3
-    
-    lda trk3_vector_offset
-    lsr
-    tay
-    
-    lda (trk3_sample_ptr),y
-    tax
-    
-    lda trk3_vector_offset
-    and #$01
-    bne @ch3_high
-    
-@ch3_low:
-.if VOLUME_CONTROL = 1
-    lda LUT_NIBBLE_LO,x
-    and #$0F
-    ora trk3_vol_shift
-    tax
-    lda VOLUME_SCALE,x
-    sta AUDC4
-.else
-    lda LUT_NIBBLE_LO,x
-    sta AUDC4
-.endif
-    jmp @ch3_advance
-    
-@ch3_high:
-.if VOLUME_CONTROL = 1
-    lda LUT_NIBBLE_HI,x
-    and #$0F
-    ora trk3_vol_shift
-    tax
-    lda VOLUME_SCALE,x
-    sta AUDC4
-.else
-    lda LUT_NIBBLE_HI,x
-    sta AUDC4
-.endif
-
-@ch3_advance:
-ch3_dispatch = *
-    bmi @ch3_pitch
-
-    inc trk3_vector_offset
-    lda trk3_vector_offset
-    cmp #MIN_VECTOR
-    bcc @skip_ch3
-    
-    lda #0
-    sta trk3_vector_offset
-    inc trk3_stream_ptr
-    bne @ch3_check_end
-    inc trk3_stream_ptr+1
-
-@ch3_check_end:
-    lda trk3_stream_ptr+1
-    cmp trk3_stream_end+1
-    bcc @ch3_load_vector
-    bne @ch3_end
-    lda trk3_stream_ptr
-    cmp trk3_stream_end
-    bcs @ch3_end
-
-@ch3_load_vector:
-    ldy #0
-    lda (trk3_stream_ptr),y
-    tay
-    lda VQ_LO,y
-    sta trk3_sample_ptr
-    lda VQ_HI,y
-    sta trk3_sample_ptr+1
-    jmp @skip_ch3
-
-@ch3_end:
-    lda #0
-    sta trk3_active
-    lda #$10
-    sta AUDC4
-    bpl @skip_ch3
-
-@ch3_pitch:
-    clc
-    lda trk3_pitch_frac
-    adc trk3_pitch_step
-    sta trk3_pitch_frac
-    lda trk3_pitch_int
-    adc trk3_pitch_step+1
-    sta trk3_pitch_int
-    
-    beq @skip_ch3
-    
-    clc
-    lda trk3_vector_offset
-    adc trk3_pitch_int
-    sta trk3_vector_offset
-    
-    lda #0
-    sta trk3_pitch_int
-    
-    lda trk3_vector_offset
-    cmp #MIN_VECTOR
-    bcc @skip_ch3
-    
-    tax
-.if MIN_VECTOR = 2
-    lsr
-.elif MIN_VECTOR = 4
-    lsr
-    lsr
-.elif MIN_VECTOR = 8
-    lsr
-    lsr
-    lsr
-.elif MIN_VECTOR = 16
-    lsr
-    lsr
-    lsr
-    lsr
-.endif
-    
-    clc
-    adc trk3_stream_ptr
-    sta trk3_stream_ptr
-    bcc @ch3_p_nocarry
-    inc trk3_stream_ptr+1
-@ch3_p_nocarry:
-    
-    txa
-    and #VECTOR_MASK
-    sta trk3_vector_offset
-    jmp @ch3_check_end
-
-@skip_ch3:
-
-    ; =========================================================================
-    ; EXIT
-    ; =========================================================================
+    ; === Exit ===
     lda irq_save_a
     ldx irq_save_x
     ldy irq_save_y
     rti
+
+; RAW label aliases (size handler is VQ-only; needed for process_row.asm)
+ch0_raw_no_pitch = ch0_vq_no_pitch
+ch0_raw_pitch    = ch0_vq_pitch
+ch1_raw_no_pitch = ch1_vq_no_pitch
+ch1_raw_pitch    = ch1_vq_pitch
+ch2_raw_no_pitch = ch2_vq_no_pitch
+ch2_raw_pitch    = ch2_vq_pitch
+ch3_raw_no_pitch = ch3_vq_no_pitch
+ch3_raw_pitch    = ch3_vq_pitch

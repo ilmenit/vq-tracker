@@ -1,0 +1,11 @@
+# POKEY VQ Tracker — Runtime dependencies
+dearpygui>=1.9
+numpy>=1.24
+scipy>=1.10
+sounddevice>=0.4
+soundfile>=0.12
+pydub>=0.25
+pyperclip>=1.8
+
+# Build-only (not needed at runtime):
+# pyinstaller>=5.0

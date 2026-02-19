@@ -17,13 +17,13 @@ import numpy as np
 logger = logging.getLogger("tracker.browser")
 
 # Audio playback (optional - graceful fallback if not available)
+# Decoding uses pydub; playback goes through AudioEngine (no sd.play()!)
 AUDIO_PREVIEW_AVAILABLE = False
 try:
-    import sounddevice as sd
     from pydub import AudioSegment
     AUDIO_PREVIEW_AVAILABLE = True
 except (ImportError, OSError) as e:
-    logger.warning(f"Audio preview disabled: {e}")
+    logger.warning(f"Audio preview disabled (pydub not available): {e}")
 
 
 # =========================================================================
@@ -411,18 +411,25 @@ class FileBrowser:
     # =====================================================================
 
     def play_file(self, path: str):
-        """Play an audio file for preview."""
+        """Play an audio file for preview (through main AudioEngine)."""
         if not AUDIO_PREVIEW_AVAILABLE:
             return
         try:
-            sd.stop()
+            from state import state
+            if not state.audio.running:
+                dpg.set_value(self.tag_status, "Audio engine not available")
+                return
+            state.audio.stop_preview()
             audio = AudioSegment.from_file(path)
             samples = np.array(audio.get_array_of_samples())
             if audio.channels == 2:
                 samples = samples.reshape((-1, 2))
             max_val = float(2 ** (audio.sample_width * 8 - 1))
             samples = samples.astype(np.float32) / max_val
-            sd.play(samples, audio.frame_rate)
+            # Route through engine — no sd.play()!
+            if samples.ndim > 1:
+                samples = samples.mean(axis=1)  # mix to mono for engine
+            state.audio.play_preview(samples, audio.frame_rate)
             dpg.set_value(self.tag_status, f"\u25b6 Playing: {os.path.basename(path)}")
         except Exception as e:
             logger.warning(f"Playback error: {e}")
@@ -430,8 +437,11 @@ class FileBrowser:
 
     def stop_playback(self):
         """Stop audio preview playback and restore status bar."""
-        if AUDIO_PREVIEW_AVAILABLE:
-            sd.stop()
+        try:
+            from state import state
+            state.audio.stop_preview()
+        except Exception:
+            pass
         if dpg.does_item_exist(self.tag_status):
             self._update_status(self._num_dirs, self._num_files)
 

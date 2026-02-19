@@ -38,6 +38,20 @@
     .ifndef VOLUME_CONTROL
         VOLUME_CONTROL = 0      ; Default: no volume control
     .endif
+    ; Tracker mode requires these — default if converter omitted them
+    ; (happens when converter runs in algo=raw mode)
+    .ifndef ALGO_FIXED
+        ALGO_FIXED = 1
+    .endif
+    .ifndef MULTI_SAMPLE
+        MULTI_SAMPLE = 1
+    .endif
+    .ifndef PITCH_CONTROL
+        PITCH_CONTROL = 1
+    .endif
+    .ifndef MIN_VECTOR
+        MIN_VECTOR = 8          ; Default vector size for VQ code paths
+    .endif
     
 ; ==========================================================================
 ; CONFIGURATION VALIDATION
@@ -65,7 +79,10 @@
 ; ==========================================================================
 ; CODE START
 ; ==========================================================================
-    ORG $2000
+    .ifndef START_ADDRESS
+        START_ADDRESS = $2000   ; Default if not set by SONG_CFG
+    .endif
+    ORG START_ADDRESS
 
 ; ==========================================================================
 ; CONSTANTS
@@ -73,6 +90,10 @@
 SILENCE     = $10               ; AUDC value for silence (volume-only, vol=0)
 COL_STOPPED = $00               ; Background color when stopped (black)
 COL_PLAYING = $74               ; Background color when playing (blue)
+
+.ifdef USE_BANKING
+PORTB_MAIN  = $FE               ; PORTB: main RAM visible, OS ROM disabled
+.endif
 
 ; ==========================================================================
 ; DISPLAY LIST AND TEXT
@@ -161,6 +182,8 @@ start:
     sta DLISTL
     lda #>dlist
     sta DLISTH
+    lda #$FC
+    sta $D409                   ; CHBASE=$FC → charset at $FC00 (relocated)
     lda #$22                    ; Enable DL DMA ($20) + normal playfield ($02)
     sta DMACTL                  ; User sees "press SPACE to play"
     lda #$C0                    ; Enable VBI + DLI
@@ -199,6 +222,18 @@ start:
     
     cli                         ; Enable interrupts
     jmp wait_loop               ; Enter idle state (wait for SPACE to play)
+
+; ==========================================================================
+; IRQ HANDLER — placed before process_row.asm so CHANNEL_IRQ macro labels
+; (chN_vq_no_pitch, chN_raw_pitch, etc.) are defined before process_row
+; references them.  The IRQ handler is entered via the interrupt vector
+; ($FFFE), not sequential code flow, so its source position is irrelevant.
+; ==========================================================================
+.ifdef USE_BANKING
+    icl "tracker/tracker_irq_banked.asm"
+.else
+    icl "tracker/tracker_irq_speed.asm"
+.endif
 
 ; ==========================================================================
 ; PROCESS ROW - Called from main_loop when a new row is due
@@ -466,31 +501,40 @@ nmi_stub:
     icl "common/pokey_setup.asm"        ; POKEY initialization
 
 ; ==========================================================================
-; INCLUDE IRQ HANDLER
-; ==========================================================================
-    icl "tracker/tracker_irq_speed.asm"
-
-; ==========================================================================
 ; INCLUDE DATA TABLES
 ; ==========================================================================
+
+.ifdef USE_BANKING
+; --- Banking Mode Memory Layout ---
+; $2000-$3BFF: code + read-only tables + staging (main RAM, always visible)
+; $3C00-$3FFF: free (charset relocated to $FC00)
+; $4000-$7FFF: bank window (sample audio data, swapped per bank)
+; $8000-$CFFF: song data region A (patterns + songlines, 20KB)
+; $D000-$D7FF: hardware I/O (untouchable)
+; $D800-$FBFF: song data region B (overflow patterns, 9KB)
+; $FC00-$FFFF: relocated charset (CHBASE=$FC)
+;
+; Total song data capacity: 29,696 bytes (~29KB)
+; Read-only tables go BEFORE $4000 to leave maximum space for song data.
+; These are accessed via absolute addressing so their address doesn't matter.
+
+_CODE_END_ = *
+; --- Read-only lookup tables (placed after code, before bank window) ---
     icl "pitch/pitch_tables.asm"
-
+_AFTER_PITCH_ = *
     icl "pitch/VOLUME_SCALE.asm"
-
-; ==========================================================================
-; INCLUDE SONG AND SAMPLE DATA
-; ==========================================================================
-    icl "SONG_DATA.asm"
-    icl "SAMPLE_DIR.asm"        ; SAMPLE_START/END + SAMPLE_MODE tables
+_AFTER_VOLSCALE_ = *
+    icl "SAMPLE_DIR.asm"            ; SAMPLE_START/END + SAMPLE_MODE tables
+_AFTER_SAMPLEDIR_ = *
     icl "VQ_LO.asm"
     icl "VQ_HI.asm"
-    icl "VQ_BLOB.asm"
-    icl "VQ_INDICES.asm"
-    icl "RAW_SAMPLES.asm"       ; Page-aligned RAW AUDC data (may be empty)
+_AFTER_VQ_ = *
+    icl "BANK_CFG.asm"              ; SAMPLE_PORTB, SAMPLE_BANK_SEQ, etc.
+_AFTER_BANKCFG_ = *
 
-; ==========================================================================
-; STAGING AREA - Regular memory (used at row rate only, not IRQ rate)
-; ==========================================================================
+; --- Staging and channel variables (read/write, row-rate access) ---
+
+; Staging area (used by process_row at row rate, not IRQ rate)
 ; Channel 0 staging
 prep0_pitch_lo:   .byte 0
 prep0_pitch_hi:   .byte 0
@@ -501,6 +545,7 @@ prep0_end_hi:     .byte 0
 prep0_vq_lo:      .byte 0
 prep0_vq_hi:      .byte 0
 prep0_mode:       .byte 0     ; 0=VQ, non-zero=RAW
+prep0_has_pitch:  .byte 0     ; 0=no pitch, $FF=has pitch
 ; Channel 1 staging
 prep1_pitch_lo:   .byte 0
 prep1_pitch_hi:   .byte 0
@@ -511,6 +556,7 @@ prep1_end_hi:     .byte 0
 prep1_vq_lo:      .byte 0
 prep1_vq_hi:      .byte 0
 prep1_mode:       .byte 0
+prep1_has_pitch:  .byte 0
 ; Channel 2 staging
 prep2_pitch_lo:   .byte 0
 prep2_pitch_hi:   .byte 0
@@ -521,6 +567,7 @@ prep2_end_hi:     .byte 0
 prep2_vq_lo:      .byte 0
 prep2_vq_hi:      .byte 0
 prep2_mode:       .byte 0
+prep2_has_pitch:  .byte 0
 ; Channel 3 staging
 prep3_pitch_lo:   .byte 0
 prep3_pitch_hi:   .byte 0
@@ -531,10 +578,9 @@ prep3_end_hi:     .byte 0
 prep3_vq_lo:      .byte 0
 prep3_vq_hi:      .byte 0
 prep3_mode:       .byte 0
+prep3_has_pitch:  .byte 0
 
-; ==========================================================================
-; VOLUME CONTROL VARIABLES (not in zero-page)
-; ==========================================================================
+; Volume control variables
 .if VOLUME_CONTROL = 1
 prep0_vol:        .byte $F0
 prep1_vol:        .byte $F0
@@ -542,6 +588,206 @@ prep2_vol:        .byte $F0
 prep3_vol:        .byte $F0
 trk2_vol_shift:   .byte $F0    ; Channel 2 volume (pre-shifted)
 trk3_vol_shift:   .byte $F0    ; Channel 3 volume (pre-shifted)
+.endif
+
+; Per-channel bank tracking (cold path — accessed at boundary rate ~17ms)
+ch0_bank_seq_idx: .byte 0     ; Index into SAMPLE_BANK_SEQ for current bank
+ch0_banks_left:   .byte 0     ; Remaining bank crossings (0 = in last bank)
+ch0_data_hi:      .byte $40   ; Hi byte of data start (VQ=$48, RAW=$40)
+ch1_bank_seq_idx: .byte 0
+ch1_banks_left:   .byte 0
+ch1_data_hi:      .byte $40
+ch2_bank_seq_idx: .byte 0
+ch2_banks_left:   .byte 0
+ch2_data_hi:      .byte $40
+ch3_bank_seq_idx: .byte 0
+ch3_banks_left:   .byte 0
+ch3_data_hi:      .byte $40
+
+; Staging for bank setup during note trigger (process_row)
+prep0_portb:      .byte PORTB_MAIN
+prep1_portb:      .byte PORTB_MAIN
+prep2_portb:      .byte PORTB_MAIN
+prep3_portb:      .byte PORTB_MAIN
+prep0_seq_off:    .byte 0     ; Offset into SAMPLE_BANK_SEQ
+prep1_seq_off:    .byte 0
+prep2_seq_off:    .byte 0
+prep3_seq_off:    .byte 0
+prep0_n_banks:    .byte 1     ; Number of banks (for banks_left = n-1)
+prep1_n_banks:    .byte 1
+prep2_n_banks:    .byte 1
+prep3_n_banks:    .byte 1
+prep0_data_hi:    .byte $40   ; Hi byte of data start in bank (VQ=$48, RAW=$40)
+prep1_data_hi:    .byte $40
+prep2_data_hi:    .byte $40
+prep3_data_hi:    .byte $40
+
+; Code + tables + staging must not reach bank window ($4000)
+    .if * > $4000
+        .error "Code+tables exceed $4000 bank window! Lower start address or reduce tables."
+    .endif
+
+; =========================================================================
+; SONG DATA — Split across two regions (I/O gap at $D000-$D7FF)
+; =========================================================================
+; Region A: $8000-$CFFF  (20,480 bytes) — metadata + patterns
+; Region B: $D800-$FBFF  ( 9,216 bytes) — overflow patterns (if any)
+; Gap:      $D000-$D7FF  (hardware I/O, untouchable)
+; Charset:  $FC00-$FFFF  (relocated from $E000 by copy_os_ram.asm)
+; Total:    29,696 bytes — nearly double the old 16KB limit
+; =========================================================================
+
+; --- Region A: $8000-$CFFF ---
+    ORG $8000
+    icl "SONG_DATA.asm"
+_AFTER_SONG_A_ = *
+
+    .if _AFTER_SONG_A_ > $D000
+        .error "SONG_DATA.asm overflows region A ($8000-$CFFF)! Split required."
+    .endif
+
+; --- Region B: $D800-$FBFF (overflow patterns, may be empty) ---
+    ORG $D800
+    icl "SONG_DATA_2.asm"
+_AFTER_SONG_B_ = *
+
+    .if _AFTER_SONG_B_ > $FC00
+        .error "Song data exceeds 29KB! Region B ($D800-$FBFF) overflowed into charset."
+    .endif
+
+.else
+; --- 64KB Mode: everything contiguous ---
+
+_DATA_START_ = *
+    icl "pitch/pitch_tables.asm"
+_AFTER_PITCH_ = *
+
+    icl "pitch/VOLUME_SCALE.asm"
+_AFTER_VOLSCALE_ = *
+
+; ==========================================================================
+; INCLUDE SONG AND SAMPLE DATA
+; ==========================================================================
+    icl "SONG_DATA.asm"
+_AFTER_SONG_ = *
+    icl "SAMPLE_DIR.asm"        ; SAMPLE_START/END + SAMPLE_MODE tables
+_AFTER_SAMPLEDIR_ = *
+
+    ; 64KB mode: global codebook in main RAM
+    icl "VQ_LO.asm"
+    icl "VQ_HI.asm"
+    icl "VQ_BLOB.asm"           ; Codebook data (always in main RAM)
+_AFTER_VQ_ = *
+    ; 64KB mode: all sample data inline in main memory.
+    icl "VQ_INDICES.asm"
+    icl "RAW_SAMPLES.asm"       ; Page-aligned RAW AUDC data (may be empty)
+.endif
+
+; ==========================================================================
+; STAGING AREA - 64KB mode only (banking mode places these before $4000)
+; ==========================================================================
+.ifndef USE_BANKING
+; Channel 0 staging
+prep0_pitch_lo:   .byte 0
+prep0_pitch_hi:   .byte 0
+prep0_stream_lo:  .byte 0
+prep0_stream_hi:  .byte 0
+prep0_end_lo:     .byte 0
+prep0_end_hi:     .byte 0
+prep0_vq_lo:      .byte 0
+prep0_vq_hi:      .byte 0
+prep0_mode:       .byte 0     ; 0=VQ, non-zero=RAW
+prep0_has_pitch:  .byte 0     ; 0=no pitch, $FF=has pitch
+; Channel 1 staging
+prep1_pitch_lo:   .byte 0
+prep1_pitch_hi:   .byte 0
+prep1_stream_lo:  .byte 0
+prep1_stream_hi:  .byte 0
+prep1_end_lo:     .byte 0
+prep1_end_hi:     .byte 0
+prep1_vq_lo:      .byte 0
+prep1_vq_hi:      .byte 0
+prep1_mode:       .byte 0
+prep1_has_pitch:  .byte 0
+; Channel 2 staging
+prep2_pitch_lo:   .byte 0
+prep2_pitch_hi:   .byte 0
+prep2_stream_lo:  .byte 0
+prep2_stream_hi:  .byte 0
+prep2_end_lo:     .byte 0
+prep2_end_hi:     .byte 0
+prep2_vq_lo:      .byte 0
+prep2_vq_hi:      .byte 0
+prep2_mode:       .byte 0
+prep2_has_pitch:  .byte 0
+; Channel 3 staging
+prep3_pitch_lo:   .byte 0
+prep3_pitch_hi:   .byte 0
+prep3_stream_lo:  .byte 0
+prep3_stream_hi:  .byte 0
+prep3_end_lo:     .byte 0
+prep3_end_hi:     .byte 0
+prep3_vq_lo:      .byte 0
+prep3_vq_hi:      .byte 0
+prep3_mode:       .byte 0
+prep3_has_pitch:  .byte 0
+
+; Volume control variables
+.if VOLUME_CONTROL = 1
+prep0_vol:        .byte $F0
+prep1_vol:        .byte $F0
+prep2_vol:        .byte $F0
+prep3_vol:        .byte $F0
+trk2_vol_shift:   .byte $F0    ; Channel 2 volume (pre-shifted)
+trk3_vol_shift:   .byte $F0    ; Channel 3 volume (pre-shifted)
+.endif
+.endif ; .ifndef USE_BANKING
+
+; ==========================================================================
+; ASSEMBLY VALIDATION
+; ==========================================================================
+
+.ifdef USE_BANKING
+    ; --- Banking mode validation ---
+    
+    ; Per-bank codebooks: VQ_BLOB not in main RAM (codebook lives in each bank).
+    .ifndef CODEBOOK_SIZE
+        .error "CODEBOOK_SIZE not defined. tracker_irq_banked.asm must define it."
+    .endif
+    
+    ; Song data overflow checks are inline after SONG_DATA.asm and SONG_DATA_2.asm.
+    ; Region A: $8000-$CFFF (20,480 bytes)
+    ; Region B: $D800-$FBFF (9,216 bytes, charset at $FC00)
+    ; Tables, staging, and BANK_CFG are below $4000 (checked there too).
+    
+    ; Verify REQUIRED_BANKS is defined (comes from BANK_CFG.asm)
+    .ifndef REQUIRED_BANKS
+        .error "REQUIRED_BANKS not defined. BANK_CFG.asm missing or empty."
+    .endif
+    
+    ; Verify bank configuration tables exist
+    .ifndef SAMPLE_BANK_SEQ
+        .error "SAMPLE_BANK_SEQ not defined. BANK_CFG.asm incomplete."
+    .endif
+    
+.else
+    ; --- 64KB mode validation ---
+    
+    .if * > $C000
+        .if _AFTER_SONG_ > $C000
+            .error "SONG_DATA too large! Song data alone exceeds $C000. Reduce patterns or use extended memory."
+        .else
+            .error "Memory overflow! All data exceeds $C000. Reduce samples, use VQ, or switch to extended memory."
+        .endif
+    .endif
+    
+.endif
+
+; Common: verify SAMPLE_COUNT matches expectations
+.ifdef SAMPLE_COUNT
+    .if SAMPLE_COUNT > 127
+        .error "Too many instruments (max 127)."
+    .endif
 .endif
 
 ; ==========================================================================

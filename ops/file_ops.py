@@ -18,6 +18,21 @@ from ops.base import ui, save_undo, fmt
 logger = logging.getLogger("tracker.ops.file")
 
 
+def _sync_editor_grid():
+    """Rebuild editor grid to match current song settings.
+    
+    Must be called after state.song changes when volume_control
+    or hex_mode may differ from the previous song's settings.
+    The grid layout (column count, widths) depends on these flags.
+    """
+    try:
+        from ui_callbacks import _rebuild_editor_grid
+        if _rebuild_editor_grid:
+            _rebuild_editor_grid()
+    except (ImportError, AttributeError):
+        pass
+
+
 # =============================================================================
 # HELPERS
 # =============================================================================
@@ -61,6 +76,7 @@ def _do_new():
     if file_io.work_dir:
         file_io.work_dir.clear_all()
     state.audio.set_song(state.song)
+    _sync_editor_grid()  # Reset grid (volume_control may have changed)
     ui.refresh_all()
     ui.update_title()
     ui.show_status("New project created")
@@ -109,6 +125,7 @@ def _load_file(path: str):
 
         state.selection.clear()
         state.audio.set_song(state.song)
+        _sync_editor_grid()  # Rebuild grid if volume_control changed
         ui.refresh_all()
         ui.update_title()
         ui.show_status(msg)
@@ -125,27 +142,32 @@ def _load_file(path: str):
 
 
 def _restore_editor_state(editor_state: EditorState):
-    """Restore editor state from loaded project."""
+    """Restore project-specific state from loaded .pvq file.
+    
+    Only cursor position and VQ settings are per-project.
+    Editor preferences (hex_mode, follow, octave, step) are personal
+    settings stored in local config — never overwritten by .pvq load.
+    """
+    # Project state: where the cursor was
     state.songline = editor_state.songline
     state.row = editor_state.row
     state.channel = editor_state.channel
     state.column = editor_state.column
     state.song_cursor_row = editor_state.song_cursor_row
     state.song_cursor_col = editor_state.song_cursor_col
-    state.octave = editor_state.octave
-    state.step = editor_state.step
+    state.selected_pattern = editor_state.selected_pattern
     state.instrument = editor_state.instrument
     state.volume = editor_state.volume
-    state.selected_pattern = editor_state.selected_pattern
-    state.hex_mode = editor_state.hex_mode
-    state.follow = editor_state.follow
+    # Editor preferences NOT restored: hex_mode, follow, octave, step
+    # (these are personal settings from local config)
 
     # Restore VQ settings
     state.vq.settings.rate = editor_state.vq_rate
     state.vq.settings.vector_size = editor_state.vq_vector_size
     state.vq.settings.smoothness = editor_state.vq_smoothness
     state.vq.settings.enhance = editor_state.vq_enhance
-    state.vq.settings.memory_limit = editor_state.vq_memory_limit_kb * 1024
+    # memory_limit removed — now auto-computed from start_address + memory_config
+    state.vq.settings.used_only = editor_state.vq_used_only
     state.vq.invalidate()
 
 
@@ -161,7 +183,7 @@ def _reset_editor_state():
 def _trigger_auto_conversion():
     """Auto-trigger VQ conversion after loading a project.
 
-    Uses sample_path (extracted files in work_dir) rather than original_sample_path,
+    Uses sample_path (extracted files in work_dir) for sample loading,
     since the original files may no longer exist on the user's disk.
     Writes processed WAVs for instruments with effects.
     """
@@ -171,11 +193,17 @@ def _trigger_auto_conversion():
     from ui_callbacks import _prepare_conversion_files, show_vq_conversion_window
     import ui_callbacks
 
-    input_files, proc_files, error = _prepare_conversion_files(state.song.instruments)
+    used_indices = None
+    if state.vq.settings.used_only:
+        used_indices = state.song.get_used_instrument_indices()
+    
+    input_files, proc_files, error = _prepare_conversion_files(
+        state.song.instruments, used_indices=used_indices)
     if not input_files:
         return
 
     ui_callbacks._vq_proc_files = proc_files
+    ui_callbacks._vq_used_indices = used_indices
     show_vq_conversion_window(input_files)
 
 
@@ -240,7 +268,7 @@ def _build_editor_state() -> EditorState:
         vq_vector_size=state.vq.vector_size,
         vq_smoothness=state.vq.smoothness,
         vq_enhance=state.vq.settings.enhance,
-        vq_memory_limit_kb=state.vq.settings.memory_limit // 1024,
+        vq_used_only=state.vq.settings.used_only,
     )
 
 
@@ -269,6 +297,63 @@ def _do_export_binary(path: str):
         ui.show_error("Export Error", msg)
 
 
+def export_wav(*args):
+    """Export song to WAV file via native OS dialog."""
+    path = native_dialog.save_file(
+        title="Export WAV",
+        start_dir=_project_start_dir(),
+        filters={"WAV Files": "wav"},
+    )
+    if path:
+        _do_export_wav(path)
+
+
+def _do_export_wav(path: str):
+    """Render entire song to a WAV file."""
+    if not path:
+        return
+    if not path.lower().endswith('.wav'):
+        path += '.wav'
+
+    # Check that song has instruments loaded
+    if not state.song.instruments:
+        ui.show_error("Export Error", "No instruments loaded — nothing to render.")
+        return
+
+    ui.show_status("Rendering WAV...")
+
+    try:
+        audio_data = state.audio.render_offline()
+    except Exception as e:
+        ui.show_error("Export Error", f"Render failed: {e}")
+        return
+
+    if audio_data is None or len(audio_data) == 0:
+        ui.show_error("Export Error", "Render produced no audio.")
+        return
+
+    # Write WAV
+    try:
+        import wave
+        from audio_engine import SAMPLE_RATE
+        import numpy as np
+
+        # Convert float32 to int16, normalized to peak
+        peak = max(abs(audio_data.max()), abs(audio_data.min()), 1e-10)
+        int16_data = np.clip(audio_data / peak * 32767, -32768, 32767).astype('<i2')
+
+        with wave.open(path, 'w') as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(SAMPLE_RATE)
+            wf.writeframes(int16_data.tobytes())
+
+        duration = len(audio_data) / SAMPLE_RATE
+        ui.show_status(f"Exported WAV: {duration:.1f}s → {os.path.basename(path)}")
+    except Exception as e:
+        ui.show_error("Export Error", f"Failed to write WAV: {e}")
+
+
 def import_mod(*args):
     """Import Amiga MOD file via native OS dialog."""
     paths = native_dialog.open_files(
@@ -278,10 +363,17 @@ def import_mod(*args):
         allow_multi=False,
     )
     if paths:
-        _do_import_mod(paths[0])
+        # Quick-scan for features, then show options dialog
+        from mod_import import scan_mod_features
+        features = scan_mod_features(paths[0])
+        if features.get('error'):
+            ui.show_error("Import Error", features['error'])
+            return
+        from ui_callbacks import show_mod_import_options
+        show_mod_import_options(paths[0], features)
 
 
-def _do_import_mod(path: str):
+def _do_import_mod(path: str, options: dict = None):
     """Import a .MOD file, replacing the current song."""
     if not path:
         return
@@ -302,7 +394,7 @@ def _do_import_mod(path: str):
     # Import MOD — writes WAV samples to work_dir.samples
     # Do NOT clear_all first: if import fails, old song's files stay intact.
     # The new WAVs overwrite any same-numbered old files; leftovers are harmless.
-    song, import_log = import_mod_file(path, file_io.work_dir)
+    song, import_log = import_mod_file(path, file_io.work_dir, options)
     if song:
         # Success — clear VQ/build (now invalid), adopt new song
         file_io.work_dir.clear_vq_output()
@@ -313,6 +405,7 @@ def _do_import_mod(path: str):
         state.selection.clear()
         state.vq.invalidate()
         state.audio.set_song(state.song)
+        _sync_editor_grid()  # Rebuild grid if volume_control changed
         ui.refresh_all()
         ui.update_title()
         ui.show_status(import_log.summary_line())
@@ -339,18 +432,42 @@ def _auto_optimize():
     if not loaded:
         return
     
+    # Determine which instruments to consider
+    used_indices = None
+    if state.vq.settings.used_only:
+        used_indices = state.song.get_used_instrument_indices()
+    
+    # Determine banking mode and memory budget
+    from constants import compute_memory_budget
+    use_banking = state.song.memory_config != "64 KB"
+    budget = compute_memory_budget(
+        start_address=state.song.start_address,
+        memory_config=state.song.memory_config,
+        n_songlines=len(state.song.songlines),
+        n_patterns=len(state.song.patterns),
+        pattern_lengths=[p.length for p in state.song.patterns],
+        n_instruments=len(state.song.instruments),
+        vector_size=state.vq.settings.vector_size,
+    )
+    banking_budget = budget if use_banking else 0
+    
     result = analyze_instruments(
         instruments=state.song.instruments,
         target_rate=state.vq.settings.rate,
         vector_size=state.vq.settings.vector_size,
-        memory_budget=state.vq.settings.memory_limit,
+        memory_budget=budget,
         song=state.song,
         volume_control=state.song.volume_control,
         system_hz=state.song.system,
+        used_indices=used_indices,
+        use_banking=use_banking,
+        banking_budget=banking_budget,
     )
     
     n_changed = 0
     for a in result.analyses:
+        if a.skipped:
+            continue
         if a.index < len(state.song.instruments):
             inst = state.song.instruments[a.index]
             new_use_vq = not a.suggest_raw

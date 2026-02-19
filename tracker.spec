@@ -12,7 +12,7 @@ How bundling works:
   - asm/ and bin/ are NOT bundled (distributed alongside the executable)
 
 Requirements:
-  pip install pyinstaller dearpygui numpy scipy sounddevice pydub soundfile
+  pip install pyinstaller dearpygui numpy scipy sounddevice pydub soundfile pyperclip
 """
 
 import os
@@ -299,6 +299,9 @@ hiddenimports = collected + [
     # --- Audio/GUI ---
     'sounddevice', 'soundfile', 'pydub',
     'dearpygui', 'dearpygui.dearpygui',
+    
+    # --- Clipboard ---
+    'pyperclip',
     
     # --- Stdlib that may be lazy-loaded ---
     'queue', 'threading', 'json', 'zipfile', 'wave', 'tempfile',

@@ -250,9 +250,9 @@ class DmaModel:
         hdr = (f"  {'Rate':>6s}  {'Mach':>5s}  "
                f"{'Avg':>5s} {'Worst':>5s} {'VBlnk':>5s}  "
                f"{'%Avg':>5s} {'%Wrst':>6s}  {'Status':>8s}")
-        sep = (f"  {'─'*6}  {'─'*5}  "
-               f"{'─'*5} {'─'*5} {'─'*5}  "
-               f"{'─'*5} {'─'*6}  {'─'*8}")
+        sep = (f"  {'-'*6}  {'-'*5}  "
+               f"{'-'*5} {'-'*5} {'-'*5}  "
+               f"{'-'*5} {'-'*6}  {'-'*8}")
         lines.append(hdr)
         lines.append(sep)
 
@@ -1038,8 +1038,8 @@ Examples:
 
         print(f"  {'VOL':>3s} {'VEC':>3s}  {'Min':>5s} {'Max':>5s}  "
               f"{'@5K avg':>7s} {'@6K avg':>7s} {'@6K wst':>7s}  {'Note':>6s}")
-        print(f"  {'─'*3} {'─'*3}  {'─'*5} {'─'*5}  "
-              f"{'─'*7} {'─'*7} {'─'*7}  {'─'*6}")
+        print(f"  {'-'*3} {'-'*3}  {'-'*5} {'-'*5}  "
+              f"{'-'*7} {'-'*7} {'-'*7}  {'-'*6}")
 
         for cfg in configs:
             merged = {**defines, **cfg}

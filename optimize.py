@@ -24,7 +24,8 @@ from dataclasses import dataclass, field
 from collections import Counter
 
 from constants import (
-    MEMORY_LIMIT_DEFAULT_KB, MAX_CHANNELS, NOTE_OFF, MAX_NOTES
+    MAX_CHANNELS, NOTE_OFF, MAX_NOTES,
+    compute_memory_budget
 )
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,8 @@ IRQ_OVERHEAD_CYCLES = 48    # Register save/restore, IRQEN, process_row check, R
 CH_BASE_NOVOL = 35          # Active channel, no volume scaling
 CH_BASE_VOL = 46            # Active channel, with volume scaling
 CH_INACTIVE = 8             # Inactive channel (lda + bne-not-taken + jmp)
+
+BANKING_OVERHEAD_CYCLES = 24 # 6 cycles × 4 channels for PORTB bank switching
 CH_PITCH_EXTRA = 9          # Average extra for pitch accumulation
 VQ_BOUNDARY_CYCLES = 53     # VQ codebook lookup (every vector_size samples)
 RAW_BOUNDARY_CYCLES = 20    # RAW page advance (every 256 samples)
@@ -67,6 +70,7 @@ class InstrumentAnalysis:
     cpu_cost_vq: float = 0.0
     cpu_cost_raw: float = 0.0
     cpu_saving: float = 0.0
+    skipped: bool = False  # True if unused (Used Samples mode)
     # Song usage (filled by simulation)
     overrun_irqs_if_vq: int = 0     # How many overrun-IRQs this inst participates in
     overrun_irqs_fixed: int = 0     # How many of those switching to RAW would fix
@@ -91,7 +95,7 @@ class OptimizeResult:
     total_raw_size: int = 0
     total_vq_size: int = 0
     total_mixed_size: int = 0
-    memory_budget: int = MEMORY_LIMIT_DEFAULT_KB * 1024
+    memory_budget: int = 0  # Set by caller from compute_memory_budget()
     fits_all_raw: bool = False
     summary: str = ""
     cpu: CpuAnalysis = field(default_factory=CpuAnalysis)
@@ -383,12 +387,28 @@ def _count_overrun_irqs_involving(all_rows: List[List[_Segment]],
 # =============================================================================
 
 def analyze_instruments(instruments, target_rate: int, vector_size: int,
-                        memory_budget: int = MEMORY_LIMIT_DEFAULT_KB * 1024,
+                        memory_budget: int = 0,
                         vq_result=None,
                         song=None,
                         volume_control: bool = False,
-                        system_hz: int = 50) -> OptimizeResult:
-    """Analyze instruments and suggest RAW vs VQ for each."""
+                        system_hz: int = 50,
+                        used_indices: set = None,
+                        use_banking: bool = False,
+                        banking_budget: int = 0) -> OptimizeResult:
+    """Analyze instruments and suggest RAW vs VQ for each.
+    
+    Args:
+        used_indices: If not None, only these instrument indices are considered
+                      for memory budget and mode optimization. Unused instruments
+                      get suggest_raw=False (VQ, minimal overhead) and are excluded
+                      from size totals.
+        use_banking: If True, adds banking overhead to cycle budget.
+        banking_budget: Override memory budget for banking mode (n_banks × 16KB).
+    """
+    # In banking mode, override memory budget with bank capacity
+    if use_banking and banking_budget > 0:
+        memory_budget = banking_budget
+    
     result = OptimizeResult(memory_budget=memory_budget)
 
     if not instruments:
@@ -397,6 +417,11 @@ def analyze_instruments(instruments, target_rate: int, vector_size: int,
 
     cpu_clock = CPU_CLOCK_PAL if system_hz == 50 else CPU_CLOCK_NTSC
     irq_period = cpu_clock / target_rate
+    
+    # Banking mode: reduce effective IRQ period by bank-switching overhead
+    if use_banking:
+        irq_period -= BANKING_OVERHEAD_CYCLES
+    
     result.cpu.sample_rate = target_rate
     result.cpu.irq_period = irq_period
 
@@ -408,7 +433,21 @@ def analyze_instruments(instruments, target_rate: int, vector_size: int,
     for i, inst in enumerate(instruments):
         a = InstrumentAnalysis(index=i, name=inst.name or f"inst_{i}")
 
+        # Mark unused instruments when used_only filtering is active
+        if used_indices is not None and i not in used_indices:
+            a.skipped = True
+            a.reason = "unused in song"
+
         if inst.is_loaded():
+            # Get effects-processed audio (Sustain, trim, etc.)
+            # processed_data is a lazy cache — may be None after effect edits
+            if inst.effects and inst.processed_data is None:
+                try:
+                    from sample_editor.pipeline import run_pipeline
+                    inst.processed_data = run_pipeline(
+                        inst.sample_data, inst.sample_rate, inst.effects)
+                except Exception:
+                    pass  # Fall back to raw sample_data below
             data = (inst.processed_data if inst.processed_data is not None
                     else inst.sample_data)
             sr = inst.sample_rate
@@ -431,9 +470,10 @@ def analyze_instruments(instruments, target_rate: int, vector_size: int,
 
         result.analyses.append(a)
 
-    # --- Totals ---
-    result.total_raw_size = sum(a.raw_size_aligned for a in result.analyses)
-    result.total_vq_size = (sum(a.vq_size for a in result.analyses)
+    # --- Totals (only count non-skipped instruments) ---
+    active = [a for a in result.analyses if not a.skipped]
+    result.total_raw_size = sum(a.raw_size_aligned for a in active)
+    result.total_vq_size = (sum(a.vq_size for a in active)
                             + codebook_size)
     result.fits_all_raw = result.total_raw_size <= memory_budget
 
@@ -497,10 +537,13 @@ def _assign_modes(result: OptimizeResult, mode_map: Dict[int, bool],
     """Assign RAW/VQ modes. Priority: fix overruns first, then quality."""
     analyses = result.analyses
     budget = result.memory_budget
+    
+    # Filter out skipped (unused) instruments — they stay VQ, no budget impact
+    active_analyses = [a for a in analyses if not a.skipped]
 
     # === TRIVIAL: all RAW fits ===
     if result.fits_all_raw:
-        for a in analyses:
+        for a in active_analyses:
             a.suggest_raw = True
             a.reason = "Fits in memory"
             mode_map[a.index] = True
@@ -511,7 +554,7 @@ def _assign_modes(result: OptimizeResult, mode_map: Dict[int, bool],
 
     # === Even all-VQ overflows memory ===
     if result.total_vq_size > budget:
-        for a in analyses:
+        for a in active_analyses:
             a.suggest_raw = False
             a.reason = "Budget exceeded even with VQ"
         result.total_mixed_size = result.total_vq_size
@@ -550,7 +593,7 @@ def _assign_modes(result: OptimizeResult, mode_map: Dict[int, bool],
             best_b_severity = 0.0
             best_b_mem = 0
 
-            for a in analyses:
+            for a in active_analyses:
                 if mode_map[a.index]:
                     continue
                 extra_mem = max(a.raw_size_aligned - a.vq_size, 0)
@@ -611,7 +654,7 @@ def _assign_modes(result: OptimizeResult, mode_map: Dict[int, bool],
     # === PHASE 2: Quality promotion (remaining budget) ===
     # Sort remaining VQ instruments by extra memory cost ascending
     remaining_vq = [(a.index, a.raw_size_aligned - a.vq_size, a)
-                    for a in analyses if not mode_map[a.index]]
+                    for a in active_analyses if not mode_map[a.index]]
     remaining_vq.sort(key=lambda t: t[1])
 
     for idx, extra_mem, a in remaining_vq:
@@ -628,17 +671,17 @@ def _assign_modes(result: OptimizeResult, mode_map: Dict[int, bool],
             if not a.reason:
                 a.reason = "VQ saves memory"
 
-    # Fill in reasons for any instrument still without one
-    for a in analyses:
+    # Fill in reasons for any active instrument still without one
+    for a in active_analyses:
         if not a.reason:
             a.reason = "VQ saves memory"
 
-    # === Compute final totals ===
+    # === Compute final totals (only active instruments) ===
     result.total_mixed_size = sum(
         a.raw_size_aligned if a.suggest_raw else a.vq_size
-        for a in analyses
+        for a in active_analyses
     )
-    if any(not a.suggest_raw for a in analyses):
+    if any(not a.suggest_raw for a in active_analyses):
         result.total_mixed_size += codebook_size
 
     _build_summary(result, mode_map, all_rows, vector_size,
@@ -651,9 +694,11 @@ def _build_summary(result: OptimizeResult, mode_map: Dict[int, bool],
                    irq_period: float):
     """Build human-readable summary string."""
     analyses = result.analyses
+    active = [a for a in analyses if not a.skipped]
     budget = result.memory_budget
-    n_raw = sum(1 for a in analyses if a.suggest_raw)
-    n_vq = len(analyses) - n_raw
+    n_raw = sum(1 for a in active if a.suggest_raw)
+    n_vq = len(active) - n_raw
+    n_skipped = len(analyses) - len(active)
 
     parts = []
 
@@ -664,6 +709,8 @@ def _build_summary(result: OptimizeResult, mode_map: Dict[int, bool],
         parts.append(f"Hybrid: {n_raw} RAW + {n_vq} VQ "
                      f"({_fmt_size(result.total_mixed_size)} / "
                      f"{_fmt_size(budget)})")
+    if n_skipped:
+        parts.append(f"{n_skipped} unused skipped")
 
     # Post-optimization CPU
     if all_rows:

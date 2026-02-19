@@ -325,8 +325,7 @@ class TestImportAudioFileNumbering(unittest.TestCase):
 
 class TestImportSamplesMultiCompleteness(unittest.TestCase):
     """Structural fix: import_samples_multi must produce fully-initialized
-    Instruments.  This test catches the original divergence where the
-    folder path never set original_sample_path."""
+    Instruments with all required fields set."""
 
     def setUp(self):
         self.test_dir = tempfile.mkdtemp()
@@ -346,21 +345,6 @@ class TestImportSamplesMultiCompleteness(unittest.TestCase):
             wf.setsampwidth(2)
             wf.setframerate(44100)
             wf.writeframes(samples.tobytes())
-
-    def test_original_sample_path_set(self):
-        """import_samples_multi must set original_sample_path on every instrument."""
-        from file_io import import_samples_multi
-        src1 = os.path.join(self.src_dir, "kick.wav")
-        src2 = os.path.join(self.src_dir, "snare.wav")
-        self._create_test_wav(src1)
-        self._create_test_wav(src2)
-
-        results = import_samples_multi([src1, src2], self.test_dir, start_index=0)
-        for inst, ok, msg in results:
-            self.assertTrue(ok, msg)
-            self.assertNotEqual(inst.original_sample_path, "",
-                                "original_sample_path must be set by import_samples_multi")
-            self.assertTrue(os.path.exists(inst.original_sample_path))
 
     def test_all_fields_initialized(self):
         """Every field needed for a working instrument must be set."""
@@ -382,23 +366,9 @@ class TestImportSamplesMultiCompleteness(unittest.TestCase):
         self.assertTrue(inst.sample_path.endswith(".wav"))
         self.assertTrue(os.path.exists(inst.sample_path))
 
-        # original_sample_path: points to user's source file
-        self.assertEqual(inst.original_sample_path, src)
-
         # sample_data: loaded
         self.assertTrue(inst.is_loaded())
         self.assertGreater(len(inst.sample_data), 0)
-
-    def test_failed_import_still_has_original_path(self):
-        """Even failed imports should record which source file was attempted."""
-        from file_io import import_samples_multi
-        fake = os.path.join(self.src_dir, "nonexistent.wav")
-
-        results = import_samples_multi([fake], self.test_dir, start_index=0)
-        inst, ok, msg = results[0]
-        self.assertFalse(ok)
-        self.assertEqual(inst.original_sample_path, fake,
-                         "Failed imports should still record the source path attempted")
 
     def test_file_and_folder_paths_produce_identical_results(self):
         """The structural invariant: given the same source files, both
@@ -423,7 +393,6 @@ class TestImportSamplesMultiCompleteness(unittest.TestCase):
 
             # All significant fields must match
             self.assertEqual(inst1.name, inst2.name)
-            self.assertEqual(inst1.original_sample_path, inst2.original_sample_path)
             self.assertEqual(inst1.sample_rate, inst2.sample_rate)
             self.assertEqual(inst1.is_loaded(), inst2.is_loaded())
         finally:
@@ -523,8 +492,6 @@ class TestReplaceInstrument(unittest.TestCase):
 
         self.assertTrue(ok, msg)
         self.assertEqual(new_inst.name, 'my_snare')
-        self.assertEqual(new_inst.original_sample_path,
-                         os.path.join(self.src_dir, 'my_snare.wav'))
         self.assertTrue(new_inst.is_loaded())
         self.assertTrue(os.path.exists(new_inst.sample_path))
 
