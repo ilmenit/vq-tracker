@@ -8,8 +8,10 @@
 ; (idle state), never from main_loop (screen is off during playback).
 ;
 ; Display Format:
-;   "VQ TRACKER - [SPACE] play/stop [R] reset"
-;   "      SONG:XX   ROW:XX   SPD:XX         "
+;   Line 1: Song Name (centered)
+;   Line 2: Author Name (centered)
+;   Line 3: "VQ TRACKER [SPACE] play/stop [R] reset"
+;   Line 4: "       SONG:XX   ROW:XX   SPD:XX        "
 ;
 ; Input:  seq_songline, seq_row, seq_speed
 ; Output: Display text updated

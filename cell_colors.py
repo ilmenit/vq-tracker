@@ -157,6 +157,29 @@ def create_cell_color_themes():
                         dpg.add_theme_color(dpg.mvThemeCol_Text, color)
                 count += 1
 
+            # Instrument list themes: palette text + converted/normal backgrounds
+            # Normal (not converted) — gray bg with hover/active
+            tag_norm = _inst_list_tag(pal_name, ci, False)
+            if not dpg.does_item_exist(tag_norm):
+                with dpg.theme(tag=tag_norm):
+                    with dpg.theme_component(dpg.mvButton):
+                        dpg.add_theme_color(dpg.mvThemeCol_Button, (32, 35, 42))
+                        dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (42, 46, 55))
+                        dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (50, 55, 65))
+                        dpg.add_theme_color(dpg.mvThemeCol_Text, color)
+                count += 1
+
+            # Converted — dark green bg with hover/active
+            tag_conv = _inst_list_tag(pal_name, ci, True)
+            if not dpg.does_item_exist(tag_conv):
+                with dpg.theme(tag=tag_conv):
+                    with dpg.theme_component(dpg.mvButton):
+                        dpg.add_theme_color(dpg.mvThemeCol_Button, (25, 45, 35))
+                        dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (32, 58, 45))
+                        dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (40, 70, 55))
+                        dpg.add_theme_color(dpg.mvThemeCol_Text, color)
+                count += 1
+
     _themes_created = True
     logger.info(f"Created {count} cell color themes")
 
@@ -169,6 +192,26 @@ def _theme_tag(palette: str, index: int, variant: str) -> str:
 def _combo_tag(palette: str, index: int) -> str:
     """Build a combo (text-only) theme tag string."""
     return f"theme_ct_{palette}_{index}"
+
+
+def _inst_list_tag(palette: str, index: int, converted: bool) -> str:
+    """Build an instrument list theme tag string."""
+    suffix = "cv" if converted else "nc"
+    return f"theme_il_{palette}_{index}_{suffix}"
+
+
+def get_inst_list_color_theme(instrument: int, is_converted: bool, palette: str):
+    """Get theme tag for an instrument list button with palette color + correct bg.
+    
+    Returns theme tag string, or None if palette is 'None'.
+    """
+    if palette == "None":
+        return None
+    index = instrument % 16
+    tag = _inst_list_tag(palette, index, is_converted)
+    if dpg is not None and dpg.does_item_exist(tag):
+        return tag
+    return None
 
 
 def get_note_color_theme(note: int, palette: str, variant: str = "n"):

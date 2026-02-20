@@ -281,6 +281,23 @@ def show_settings_dialog(*args):
             dpg.add_separator()
             dpg.add_text("ON: entering a note stamps instrument + volume.")
             dpg.add_text("OFF: only changes the note (edit mask).")
+        dpg.add_spacer(height=5)
+
+        def _on_viz_toggle(sender, value):
+            G.viz_enabled = value
+            G.save_config()
+            # Show/hide the viz panel
+            if dpg.does_item_exist("viz_panel"):
+                dpg.configure_item("viz_panel", show=value)
+
+        dpg.add_checkbox(tag="viz_enabled_cb", label="Show Visualization",
+                         default_value=G.viz_enabled,
+                         callback=_on_viz_toggle)
+        with dpg.tooltip(dpg.last_item()):
+            dpg.add_text("Visualization", color=(255, 255, 150))
+            dpg.add_separator()
+            dpg.add_text("Show channel VU bars and frequency spectrum.")
+            dpg.add_text("Disable to reduce CPU usage.")
 
         dpg.add_spacer(height=10)
         dpg.add_separator()
@@ -567,7 +584,10 @@ def rebuild_editor_grid():
 
 
 # Height of the right-side top row (SONG + PATTERN + SONG INFO panels)
-RIGHT_TOP_HEIGHT = 245
+RIGHT_TOP_HEIGHT = 195
+
+# Height of the visualization section
+VIZ_HEIGHT = 85
 
 
 def build_main_area():
@@ -832,10 +852,90 @@ def build_main_area():
                             dpg.add_text("Clear all song data. Instruments kept.")
                         dpg.add_spacer(width=5)
                         dpg.add_text(tag="build_status_label", default_value="", color=COL_DIM)
-
-                    # VU meters: 4 vertical bars at bottom of SONG INFO
-                    dpg.add_spacer(height=4)
-                    dpg.add_drawlist(tag="vu_drawlist", width=-1, height=55)
+            
+            dpg.add_spacer(height=2)
+            
+            # -----------------------------------------------------------------
+            # Right MIDDLE: VISUALIZATION (Channel VU + Spectrum)
+            # -----------------------------------------------------------------
+            with dpg.child_window(tag="viz_panel", height=VIZ_HEIGHT, border=True,
+                                  no_scrollbar=True, no_scroll_with_mouse=True):
+                with dpg.group(horizontal=True):
+                    # --- Left half: Channel VU bars ---
+                    _vu_colors = [
+                        (200, 60, 60),     # Ch1 red
+                        (60, 180, 80),     # Ch2 green
+                        (60, 120, 220),    # Ch3 blue
+                        (200, 165, 50),    # Ch4 amber
+                    ]
+                    
+                    # Create VU plot theme (dark, no decorations)
+                    with dpg.theme(tag="theme_viz_plot"):
+                        with dpg.theme_component(dpg.mvPlot):
+                            dpg.add_theme_color(dpg.mvPlotCol_PlotBg, (15, 15, 25, 255))
+                            dpg.add_theme_color(dpg.mvPlotCol_FrameBg, (15, 15, 25, 255))
+                            dpg.add_theme_style(dpg.mvPlotStyleVar_PlotPadding, 4, 4)
+                            dpg.add_theme_style(dpg.mvPlotStyleVar_FitPadding, 0, 0)
+                    
+                    with dpg.plot(tag="vu_plot", width=120, height=-1,
+                                  no_title=True, no_menus=True, no_box_select=True,
+                                  no_mouse_pos=True, no_highlight=True,
+                                  no_child=True):
+                        dpg.bind_item_theme("vu_plot", "theme_viz_plot")
+                        
+                        dpg.add_plot_axis(dpg.mvXAxis, tag="vu_x_axis",
+                                          no_gridlines=True, no_tick_labels=True,
+                                          no_tick_marks=True)
+                        dpg.set_axis_limits("vu_x_axis", -0.5, 3.5)
+                        
+                        with dpg.plot_axis(dpg.mvYAxis, tag="vu_y_axis",
+                                           no_gridlines=True, no_tick_labels=True,
+                                           no_tick_marks=True):
+                            dpg.set_axis_limits("vu_y_axis", 0.0, 1.05)
+                            for ch in range(4):
+                                r, g, b = _vu_colors[ch]
+                                with dpg.theme(tag=f"theme_vu_ch{ch}"):
+                                    with dpg.theme_component(dpg.mvBarSeries):
+                                        dpg.add_theme_color(dpg.mvPlotCol_Fill,
+                                                            (r, g, b, 200))
+                                dpg.add_bar_series([ch], [0.0],
+                                                   tag=f"vu_bar_{ch}",
+                                                   weight=0.7)
+                                dpg.bind_item_theme(f"vu_bar_{ch}",
+                                                    f"theme_vu_ch{ch}")
+                    
+                    dpg.add_spacer(width=3)
+                    
+                    # --- Right half: Frequency Spectrum ---
+                    N_SPECTRUM_BARS = 24
+                    with dpg.theme(tag="theme_spectrum_bar"):
+                        with dpg.theme_component(dpg.mvBarSeries):
+                            dpg.add_theme_color(dpg.mvPlotCol_Fill,
+                                                (80, 180, 255, 180))
+                    
+                    with dpg.plot(tag="spectrum_plot", width=-1, height=-1,
+                                  no_title=True, no_menus=True, no_box_select=True,
+                                  no_mouse_pos=True, no_highlight=True,
+                                  no_child=True):
+                        dpg.bind_item_theme("spectrum_plot", "theme_viz_plot")
+                        
+                        dpg.add_plot_axis(dpg.mvXAxis, tag="spectrum_x_axis",
+                                          no_gridlines=True, no_tick_labels=True,
+                                          no_tick_marks=True)
+                        dpg.set_axis_limits("spectrum_x_axis", -0.5,
+                                            N_SPECTRUM_BARS - 0.5)
+                        
+                        with dpg.plot_axis(dpg.mvYAxis, tag="spectrum_y_axis",
+                                           no_gridlines=True, no_tick_labels=True,
+                                           no_tick_marks=True):
+                            dpg.set_axis_limits("spectrum_y_axis", 0.0, 1.05)
+                            dpg.add_bar_series(
+                                list(range(N_SPECTRUM_BARS)),
+                                [0.0] * N_SPECTRUM_BARS,
+                                tag="spectrum_bars",
+                                weight=0.8)
+                            dpg.bind_item_theme("spectrum_bars",
+                                                "theme_spectrum_bar")
             
             dpg.add_spacer(height=2)
             

@@ -556,6 +556,10 @@ def main():
     B.rebuild_editor_grid()
     R.refresh_editor()
     
+    # Apply visualization visibility from config
+    if dpg.does_item_exist("viz_panel"):
+        dpg.configure_item("viz_panel", show=G.viz_enabled)
+    
     # Start audio
     try:
         state.audio.start()
@@ -581,7 +585,7 @@ def main():
             C.poll_vq_conversion()  # Poll VQ conversion status (thread-safe)
             C.poll_build_progress()  # Poll build progress (thread-safe)
             C.poll_button_blink()   # Update blinking attention buttons
-            R.update_vu_meters()   # Update VU meter bars
+            R.update_visualization()   # Update VU + spectrum bars
             # Periodically check audio stream health (~every 2s at 60fps)
             _stream_check_counter += 1
             if _stream_check_counter >= 120:

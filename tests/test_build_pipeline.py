@@ -448,5 +448,85 @@ class TestMemErrTextGeneration(unittest.TestCase):
         self.assertNotIn("mem_err_need_digits:", asm)
 
 
+class TestSongInfoGeneration(unittest.TestCase):
+    """Verify SONG_INFO.asm generated splash screen text."""
+
+    def setUp(self):
+        import tempfile
+        self.tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _generate_and_read(self, title, author):
+        from build import _generate_song_info
+        _generate_song_info(self.tmpdir, title, author)
+        path = os.path.join(self.tmpdir, "SONG_INFO.asm")
+        self.assertTrue(os.path.exists(path))
+        with open(path) as f:
+            return f.read()
+
+    def test_both_lines_40_chars(self):
+        """Both dta d lines must be exactly 40 characters."""
+        import re
+        content = self._generate_and_read("My Song", "The Author")
+        parts = re.findall(r'dta d"(.+?)"', content)
+        self.assertEqual(len(parts), 2)
+        for p in parts:
+            self.assertEqual(len(p), 40)
+
+    def test_total_80_bytes(self):
+        """Total text output must be exactly 80 bytes (2 × 40)."""
+        import re
+        content = self._generate_and_read("Test", "Author")
+        parts = re.findall(r'dta d"(.+?)"', content)
+        self.assertEqual(sum(len(p) for p in parts), 80)
+
+    def test_title_uppercased(self):
+        """Title is converted to uppercase."""
+        content = self._generate_and_read("axel f", "")
+        self.assertIn("AXEL F", content)
+
+    def test_author_uppercased(self):
+        """Author is converted to uppercase."""
+        content = self._generate_and_read("", "john smith")
+        self.assertIn("JOHN SMITH", content)
+
+    def test_empty_author_blank_line(self):
+        """Empty author produces 40-space blank line."""
+        import re
+        content = self._generate_and_read("Song", "")
+        parts = re.findall(r'dta d"(.+?)"', content)
+        self.assertEqual(parts[1].strip(), "")
+        self.assertEqual(len(parts[1]), 40)
+
+    def test_long_title_truncated(self):
+        """Title longer than 40 chars is truncated."""
+        import re
+        content = self._generate_and_read("A" * 60, "")
+        parts = re.findall(r'dta d"(.+?)"', content)
+        self.assertEqual(len(parts[0]), 40)
+
+    def test_special_chars_sanitized(self):
+        """Special characters are replaced with spaces."""
+        import re
+        content = self._generate_and_read('Test "quotes"', "Author")
+        parts = re.findall(r'dta d"(.+?)"', content)
+        self.assertNotIn('"', parts[0][:40])
+
+    def test_song_player_includes_song_info(self):
+        """song_player.asm must include SONG_INFO.asm."""
+        path = os.path.join(os.path.dirname(__file__), "..", "asm",
+                            "song_player.asm")
+        if not os.path.exists(path):
+            self.skipTest("ASM files not present")
+        with open(path) as f:
+            asm = f.read()
+        self.assertIn('icl "SONG_INFO.asm"', asm)
+        # Display list must have 3 continuation bytes for 4 text lines
+        self.assertIn("$02,$02,$02", asm)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,5 +1,6 @@
 """POKEY VQ Tracker - UI Refresh Functions"""
 import dearpygui.dearpygui as dpg
+import logging
 from constants import (MAX_CHANNELS, MAX_VOLUME, note_to_str, FOCUS_SONG,
                        COL_NOTE, COL_INST, COL_VOL)
 from state import state
@@ -8,8 +9,11 @@ from cell_colors import (get_note_color_theme as _get_note_color,
                          get_inst_color_theme as _get_inst_color,
                          get_vol_color_theme as _get_vol_color,
                          get_ptn_color_theme as _get_ptn_color,
-                         get_combo_color_theme as _get_combo_color)
+                         get_combo_color_theme as _get_combo_color,
+                         get_inst_list_color_theme as _get_inst_list_color)
 import ui_globals as G
+
+logger = logging.getLogger("ui_refresh")
 
 # Callbacks set by main module to avoid circular imports
 _preview_callback = None
@@ -215,9 +219,17 @@ def refresh_instruments():
             is_current = (i == state.instrument)
             theme = get_inst_theme(is_current, is_converted)
             
+            # Get palette color for this instrument number
+            inst_color = (100, 100, 110)  # default dim gray
+            if G.inst_palette != "None":
+                from cell_colors import PALETTES
+                pal = PALETTES.get(G.inst_palette)
+                if pal:
+                    inst_color = pal[i % 16]
+            
             with dpg.group(horizontal=True, parent="instlist"):
-                # Instrument number
-                dpg.add_text(f"{G.fmt(i)}", color=(100,100,110))
+                # Instrument number (palette-colored)
+                dpg.add_text(f"{G.fmt(i)}", color=inst_color)
                 dpg.add_spacer(width=2)
                 
                 # Preview button
@@ -342,7 +354,13 @@ def refresh_instruments():
                             lines.append(f"Mode: {'VQ' if inst.use_vq else 'RAW'}")
                         for line in lines:
                             dpg.add_text(line)
-                    dpg.bind_item_theme(btn, theme)
+                    # Selected instrument: highlight theme (green or blue bg)
+                    # Non-selected: palette text + converted/normal bg
+                    if is_current:
+                        dpg.bind_item_theme(btn, theme)
+                    else:
+                        il_theme = _get_inst_list_color(i, is_converted, G.inst_palette)
+                        dpg.bind_item_theme(btn, il_theme or theme)
     
     # Update VQ UI elements
     _update_vq_ui()
@@ -688,106 +706,120 @@ def update_validation_indicator():
 
 
 # =============================================================================
-# VU METERS — vertical bars per channel
+# VISUALIZATION — channel VU bars + frequency spectrum
 # =============================================================================
 
 _vu_display = [0.0] * MAX_CHANNELS  # Smoothed display levels (0.0–1.0)
-_vu_was_silent = True  # Track if we already cleared
+_spectrum_display = None  # Smoothed spectrum bars
 
-_VU_DECAY = 0.92   # Per-frame decay (~60fps: full→10% in ~0.6s)
-_VU_TAG = "vu_drawlist"
+_VU_DECAY = 0.97     # Per-frame decay for VU (slow fall for short bars)
+_SPEC_DECAY = 0.85    # Per-frame decay for spectrum (faster = snappier)
+_N_SPECTRUM_BARS = 24
 
-# Bar colors (RGBA) — match channel header colors
-_VU_BAR = [
-    (200, 60, 60, 180),    # Ch1 red
-    (60, 180, 80, 180),    # Ch2 green
-    (60, 120, 220, 180),   # Ch3 blue
-    (200, 165, 50, 180),   # Ch4 amber
-]
-_VU_PEAK = [
-    (255, 140, 140, 255),  # Ch1 bright red
-    (140, 255, 160, 255),  # Ch2 bright green
-    (140, 190, 255, 255),  # Ch3 bright blue
-    (255, 220, 120, 255),  # Ch4 bright amber
-]
-_VU_GLOW = [
-    (255, 80, 80, 60),     # Ch1 glow
-    (80, 255, 100, 60),    # Ch2 glow
-    (80, 150, 255, 60),    # Ch3 glow
-    (255, 200, 60, 60),    # Ch4 glow
-]
+# Precomputed log-spaced frequency bin edges (20Hz to ~20kHz)
+_SPEC_EDGES = None  # Initialized on first call
 
 
-def update_vu_meters():
-    """Update VU meter drawlist — vertical bars per channel.
+def _init_spectrum_edges():
+    """Compute log-spaced frequency bin edges for spectrum bars."""
+    global _SPEC_EDGES
+    import numpy as np
+    low = 60.0     # Hz — skip sub-bass/DC region
+    high = 18000.0  # Hz
+    _SPEC_EDGES = np.logspace(
+        np.log10(low), np.log10(high), _N_SPECTRUM_BARS + 1)
+
+
+def update_visualization():
+    """Update both channel VU bars and frequency spectrum.
     
-    Called every frame from main loop.  Each bar spikes up on note
-    trigger and decays smoothly downward.
+    Called every frame from main loop.
     """
-    global _vu_display, _vu_was_silent
-    if not dpg.does_item_exist(_VU_TAG):
+    global _vu_display, _spectrum_display
+    
+    if not G.viz_enabled:
+        return
+    
+    has_vu = dpg.does_item_exist("vu_bar_0")
+    has_spec = dpg.does_item_exist("spectrum_bars")
+    if not has_vu and not has_spec:
         return
 
-    # Read engine levels and apply peak-hold + decay
+    # --- Channel VU ---
     engine_levels = state.audio.get_vu_levels()
     for i in range(MAX_CHANNELS):
         fresh = engine_levels[i] if i < len(engine_levels) else 0.0
         _vu_display[i] = max(fresh, _vu_display[i] * _VU_DECAY)
-        # Let engine level decay too so next frame sees lower value
-        if i < len(state.audio.channels):
-            state.audio.channels[i].vu_level *= _VU_DECAY
+        # Consume spike
+        if fresh > 0.0 and i < len(state.audio.channels):
+            state.audio.channels[i].vu_level = 0.0
 
-    # Skip drawing when all silent
-    if all(v < 0.005 for v in _vu_display):
-        if not _vu_was_silent:
-            children = dpg.get_item_children(_VU_TAG, slot=2)
-            if children:
-                dpg.delete_item(_VU_TAG, children_only=True)
-            _vu_was_silent = True
-        return
-    _vu_was_silent = False
+    if has_vu:
+        for i in range(MAX_CHANNELS):
+            tag = f"vu_bar_{i}"
+            if dpg.does_item_exist(tag):
+                dpg.set_value(tag, [[i], [min(1.0, _vu_display[i])]])
 
-    # Get actual rendered dimensions (not configured -1 values)
-    try:
-        rect = dpg.get_item_rect_size(_VU_TAG)
-        w, h = int(rect[0]), int(rect[1])
-    except Exception:
-        w, h = 0, 0
-    if w < 20 or h < 10:
-        return
+    # --- Frequency Spectrum ---
+    if has_spec:
+        _update_spectrum()
 
-    dpg.delete_item(_VU_TAG, children_only=True)
 
-    pad = 4
-    gap = 5
-    bar_w = max(6, (w - 2 * pad - (MAX_CHANNELS - 1) * gap) // MAX_CHANNELS)
-    max_h = h - pad * 2   # usable vertical pixels
-    peak_h = 3            # bright cap at top of bar
+def _update_spectrum():
+    """Compute FFT spectrum from audio engine's capture buffer."""
+    global _spectrum_display, _SPEC_EDGES
+    import numpy as np
+    
+    if _SPEC_EDGES is None:
+        _init_spectrum_edges()
+    
+    if _spectrum_display is None:
+        _spectrum_display = np.zeros(_N_SPECTRUM_BARS, dtype=np.float32)
 
-    for i in range(MAX_CHANNELS):
-        level = min(1.0, _vu_display[i])
-        x = pad + i * (bar_w + gap)
-        bar_h = int(max_h * level)
-
-        if bar_h < 1:
-            continue
-
-        y_top = pad + (max_h - bar_h)
-        y_bot = pad + max_h
-
-        # Glow behind bar (wider, translucent)
-        if bar_h > 4:
-            dpg.draw_rectangle(
-                (x - 1, y_top + 1), (x + bar_w + 1, y_bot),
-                fill=_VU_GLOW[i], color=(0, 0, 0, 0), parent=_VU_TAG)
-
-        # Main bar body
-        dpg.draw_rectangle(
-            (x, y_top), (x + bar_w, y_bot),
-            fill=_VU_BAR[i], color=(0, 0, 0, 0), parent=_VU_TAG)
-
-        # Peak cap (bright line at top)
-        cap_bot = min(y_top + peak_h, y_bot)
-        dpg.draw_rectangle(
-            (x, y_top), (x + bar_w, cap_bot),
-            fill=_VU_PEAK[i], color=(0, 0, 0, 0), parent=_VU_TAG)
+    # Get audio snapshot
+    samples = state.audio.get_fft_snapshot()
+    
+    # Remove DC offset before FFT
+    samples = samples - np.mean(samples)
+    
+    # Apply Hann window and FFT
+    window = np.hanning(len(samples))
+    windowed = samples * window
+    fft_data = np.abs(np.fft.rfft(windowed))
+    
+    # Zero out bin 0 (DC) explicitly
+    fft_data[0] = 0.0
+    
+    # Convert to frequency bins
+    from audio_engine import SAMPLE_RATE
+    fft_size = len(samples)
+    freq_per_bin = SAMPLE_RATE / fft_size
+    
+    bars = np.zeros(_N_SPECTRUM_BARS, dtype=np.float32)
+    for i in range(_N_SPECTRUM_BARS):
+        lo_idx = max(1, int(_SPEC_EDGES[i] / freq_per_bin))
+        hi_idx = min(len(fft_data), int(_SPEC_EDGES[i + 1] / freq_per_bin))
+        if hi_idx > lo_idx:
+            bars[i] = np.mean(fft_data[lo_idx:hi_idx])
+    
+    # Convert to dB scale with noise gate
+    # For 2048-pt Hann-windowed FFT, full-scale sine peak ≈ 512
+    # Average per-band magnitudes for loud signals: ~20-200
+    noise_floor = 0.01     # Below this = silence
+    db_range = 50.0        # Dynamic range in dB
+    ref_level = 100.0      # "Full loudness" reference magnitude
+    
+    bars = np.where(bars > noise_floor,
+                    np.clip((20.0 * np.log10(bars / ref_level) + db_range) / db_range,
+                            0.0, 1.0),
+                    0.0)
+    
+    # Smooth with decay
+    _spectrum_display = np.maximum(bars, _spectrum_display * _SPEC_DECAY)
+    
+    # Update plot
+    if dpg.does_item_exist("spectrum_bars"):
+        dpg.set_value("spectrum_bars", [
+            list(range(_N_SPECTRUM_BARS)),
+            _spectrum_display.tolist()
+        ])

@@ -85,6 +85,12 @@ class AudioEngine:
         self._pending_callbacks: List[Tuple] = []
         
         self.master_volume = 0.8
+        
+        # FFT capture buffer for spectrum visualization
+        # Ring buffer storing recent mixed output samples
+        self._fft_size = 2048
+        self._fft_buf = np.zeros(self._fft_size, dtype=np.float32)
+        self._fft_write_pos = 0
     
     def start(self) -> bool:
         """Start audio stream."""
@@ -189,6 +195,20 @@ class AudioEngine:
                 mono_out = np.tanh(output * self.master_volume)
                 out[:, 0] = mono_out  # Left
                 out[:, 1] = mono_out  # Right
+                
+                # Capture into FFT ring buffer (lock-free: single writer)
+                n = len(mono_out)
+                pos = self._fft_write_pos
+                buf = self._fft_buf
+                size = len(buf)
+                end = pos + n
+                if end <= size:
+                    buf[pos:end] = mono_out
+                else:
+                    first = size - pos
+                    buf[pos:size] = mono_out[:first]
+                    buf[0:n - first] = mono_out[first:]
+                self._fft_write_pos = end % size
         except Exception as e:
             # Output silence on error — keeps the stream alive
             out[:] = 0
@@ -452,6 +472,14 @@ class AudioEngine:
     def get_vu_levels(self):
         """Get current VU levels for all channels. Thread-safe."""
         return [ch.vu_level for ch in self.channels[:MAX_CHANNELS]]
+    
+    def get_fft_snapshot(self):
+        """Get a copy of the FFT ring buffer for spectrum analysis. Thread-safe."""
+        # Read the whole buffer — single-writer so we get a consistent-enough snapshot
+        pos = self._fft_write_pos
+        buf = self._fft_buf
+        # Reorder so newest samples are at end
+        return np.roll(buf, -pos).copy()
     
     def is_playing(self) -> bool:
         return self.playing

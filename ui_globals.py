@@ -42,6 +42,9 @@ MAX_VISIBLE_ROWS = 50
 SONG_VISIBLE_ROWS = 5
 SONG_PANEL_WIDTH = 340
 
+# Visualization toggle (local setting, not saved to song)
+viz_enabled = True
+
 
 def compute_editor_width(hex_mode, show_volume):
     """Calculate the correct editor panel width for current settings.
@@ -153,7 +156,7 @@ def parse_int_value(text: str, default: int = 0) -> int:
 def load_config():
     """Load configuration from disk."""
     global autosave_enabled, recent_files, piano_keys_mode, highlight_interval, coupled_entry
-    global note_palette, inst_palette, vol_palette, ptn_palette
+    global note_palette, inst_palette, vol_palette, ptn_palette, viz_enabled
     logger.debug(f"Loading config from: {CONFIG_FILE}")
     try:
         AUTOSAVE_DIR.mkdir(parents=True, exist_ok=True)
@@ -171,6 +174,7 @@ def load_config():
                 piano_keys_mode = ed.get('piano_keys_mode', True)
                 highlight_interval = ed.get('highlight_interval', 4)
                 coupled_entry = ed.get('coupled_entry', True)
+                viz_enabled = ed.get('viz_enabled', True)
                 # Cell color palettes
                 colors = ed.get('cell_colors', {})
                 note_palette = colors.get('note', 'Chromatic')
@@ -214,6 +218,7 @@ def save_config():
                 'piano_keys_mode': piano_keys_mode,
                 'highlight_interval': highlight_interval,
                 'coupled_entry': coupled_entry,
+                'viz_enabled': viz_enabled,
                 'cell_colors': {
                     'note': note_palette,
                     'instrument': inst_palette,

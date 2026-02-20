@@ -719,5 +719,85 @@ class TestPerBankVQReEncoding(unittest.TestCase):
                            f"Codebook[{idx_b}][{j}] should be $1F (loud)")
 
 
+class TestVerifyBankingFit(unittest.TestCase):
+    """Tests for optimizer's trial-pack verification with bank packer."""
+
+    def test_fragmentation_demotion(self):
+        """Large RAW instruments that cause fragmentation should be demoted to VQ."""
+        from optimize import _verify_banking_fit, OptimizeResult, InstrumentAnalysis
+
+        # Reproduce the user's exact scenario: 22 instruments, 16 banks
+        inst_data = [
+            (0, 1024, False), (1, 3840, False), (2, 4096, False),
+            (3, 5120, False), (4, 6656, False), (5, 7424, False),
+            (6, 38912, False), (7, 2816, False), (8, 3584, False),
+            (9, 3584, False), (10, 1024, False), (11, 5376, False),
+            (12, 6144, False),
+            (13, 10570, True), (14, 69376, False),
+            (15, 10176, True), (16, 9503, True), (17, 12720, True),
+            (18, 12800, False), (19, 8960, False),
+            (20, 12544, False), (21, 17664, False),
+        ]
+
+        max_banks = 16
+        codebook_size = 2048
+        vector_size = 8
+        result = OptimizeResult(memory_budget=max_banks * BANK_SIZE)
+        mode_map = {}
+
+        for idx, sz, is_vq in inst_data:
+            a = InstrumentAnalysis(index=idx, name=f"inst_{idx}")
+            a.raw_size_aligned = sz
+            a.vq_size = sz // 8 if not is_vq else sz
+            a.suggest_raw = not is_vq
+            mode_map[idx] = not is_vq
+            result.analyses.append(a)
+
+        # Without verification: 18 RAW, packer needs 18 banks > 16
+        self.assertEqual(sum(1 for a in result.analyses if a.suggest_raw), 18)
+
+        _verify_banking_fit(result, mode_map, codebook_size, max_banks,
+                            [], vector_size, False, 30000)
+
+        # After verification: some instruments demoted to VQ
+        n_raw = sum(1 for a in result.analyses if a.suggest_raw)
+        self.assertLess(n_raw, 18, "Should have demoted at least one RAW to VQ")
+
+        # Final state must pack successfully
+        inst_sizes = [(a.index, a.raw_size_aligned if a.suggest_raw else a.vq_size)
+                      for a in result.analyses
+                      if (a.raw_size_aligned if a.suggest_raw else a.vq_size) > 0]
+        vq_set = {a.index for a in result.analyses if not a.suggest_raw}
+        pack = pack_into_banks(inst_sizes, max_banks,
+                               codebook_size=codebook_size,
+                               vq_instruments=vq_set)
+        self.assertTrue(pack.success, f"Pack should succeed after demotion: {pack.error}")
+        self.assertLessEqual(pack.n_banks_used, max_banks)
+
+    def test_no_demotion_when_fits(self):
+        """No instruments should be demoted if pack already succeeds."""
+        from optimize import _verify_banking_fit, OptimizeResult, InstrumentAnalysis
+
+        max_banks = 16
+        codebook_size = 2048
+        result = OptimizeResult(memory_budget=max_banks * BANK_SIZE)
+        mode_map = {}
+
+        # 4 small RAW instruments — easily fits
+        for i in range(4):
+            a = InstrumentAnalysis(index=i, name=f"inst_{i}")
+            a.raw_size_aligned = 4096
+            a.vq_size = 512
+            a.suggest_raw = True
+            mode_map[i] = True
+            result.analyses.append(a)
+
+        _verify_banking_fit(result, mode_map, codebook_size, max_banks,
+                            [], 8, False, 30000)
+
+        # All should remain RAW
+        self.assertTrue(all(a.suggest_raw for a in result.analyses))
+
+
 if __name__ == '__main__':
     unittest.main()

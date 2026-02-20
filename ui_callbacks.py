@@ -1743,6 +1743,12 @@ def on_optimize_click(sender, app_data):
     # Determine banking mode and memory budget
     from constants import MEMORY_CONFIGS, compute_memory_budget
     use_banking = state.song.memory_config != "64 KB"
+    n_banks = 0
+    if use_banking:
+        for cfg_name, cfg_banks, _ in MEMORY_CONFIGS:
+            if cfg_name == state.song.memory_config:
+                n_banks = cfg_banks
+                break
     budget = compute_memory_budget(
         start_address=state.song.start_address,
         memory_config=state.song.memory_config,
@@ -1767,6 +1773,7 @@ def on_optimize_click(sender, app_data):
         used_indices=used_indices,
         use_banking=use_banking,
         banking_budget=banking_budget,
+        max_banks=n_banks,
     )
     
     # Apply suggestions directly to instrument checkboxes
@@ -2611,7 +2618,7 @@ def show_build_progress_window(xex_path: str):
         dpg.add_spacer(height=5)
         
         # Buttons
-        with dpg.group(horizontal=True):
+        with dpg.group(tag="build_btn_area", horizontal=True):
             dpg.add_spacer(width=550)
             dpg.add_button(tag="build_close_btn", label="Close", width=100, 
                            callback=on_close, enabled=False)
@@ -2619,6 +2626,101 @@ def show_build_progress_window(xex_path: str):
     # Start async build
     build.start_build_async(state.song, xex_path)
     G.show_status("Building XEX...")
+
+
+def _try_find_memory_upgrade(result):
+    """Check if a larger memory config could fix a build failure.
+    
+    Called as a fallback when the build fails without the explicit
+    UPGRADE: signal from the bank packer (e.g. pre-flight overflow,
+    MADS assembly errors, or non-banking builds).
+    
+    Reads instrument sizes from the converter's ASM output files
+    (same source data that _generate_banking_build uses).
+    
+    Returns a BuildResult with needs_upgrade=True if upgrade would help,
+    or None if not.
+    """
+    import build
+    from constants import MEMORY_CONFIGS
+    from bank_packer import pack_into_banks, BANK_SIZE
+    
+    current_cfg = state.song.memory_config
+    
+    # Don't suggest upgrade if already at max config
+    if current_cfg == MEMORY_CONFIGS[-1][0]:
+        return None
+    
+    # Get current config's bank count
+    current_banks = 0
+    for name, banks, _ in MEMORY_CONFIGS:
+        if name == current_cfg:
+            current_banks = banks
+            break
+    
+    # Check if VQ conversion data exists
+    if not state.vq.converted or not state.vq.result:
+        return None
+    
+    vq_dir = state.vq.result.output_dir
+    if not vq_dir:
+        return None
+    
+    # Read instrument sizes from the converter's ASM files
+    # (same parsing that _generate_banking_build uses)
+    n_inst = len(state.song.instruments)
+    vq_indices_path = os.path.join(vq_dir, "VQ_INDICES.asm")
+    raw_samples_path = os.path.join(vq_dir, "RAW_SAMPLES.asm")
+    sample_dir_path = os.path.join(vq_dir, "SAMPLE_DIR.asm")
+    
+    try:
+        vq_streams = build._extract_vq_streams(vq_indices_path, sample_dir_path, n_inst)
+        raw_blocks = build._extract_raw_blocks(raw_samples_path)
+    except Exception as e:
+        logger.debug(f"_try_find_memory_upgrade: failed to extract data: {e}")
+        return None
+    
+    inst_sizes = []
+    vq_set = set()
+    for i in range(n_inst):
+        if i in vq_streams:
+            inst_sizes.append((i, len(vq_streams[i])))
+            vq_set.add(i)
+        elif i in raw_blocks:
+            inst_sizes.append((i, len(raw_blocks[i])))
+        else:
+            inst_sizes.append((i, 0))
+    
+    total = sum(sz for _, sz in inst_sizes if sz > 0)
+    if total == 0:
+        return None
+    
+    # Determine codebook size from VQ settings
+    vec_size = build._get_vec_size_from_cfg(vq_dir)
+    codebook_size = 256 * vec_size
+    
+    # Try each larger config
+    for cfg_name, cfg_banks, _ in MEMORY_CONFIGS:
+        if cfg_banks <= current_banks or cfg_banks == 0:
+            continue
+        
+        test_result = pack_into_banks(inst_sizes, cfg_banks,
+                                       codebook_size=codebook_size,
+                                       vq_instruments=vq_set)
+        if test_result.success:
+            # Found a working config — build an upgrade result
+            upgrade = build.BuildResult()
+            upgrade.needs_upgrade = True
+            upgrade.suggested_config = cfg_name
+            upgrade.suggested_banks = cfg_banks
+            upgrade.total_sample_bytes = total
+            upgrade.current_config = current_cfg
+            upgrade.error_message = (
+                f"Sample data doesn't fit in {current_cfg}.\n\n"
+                f"Upgrade to \"{cfg_name}\" to build.")
+            return upgrade
+    
+    return None
 
 
 def _show_memory_upgrade_dialog(result):
@@ -2658,9 +2760,9 @@ def _show_memory_upgrade_dialog(result):
         state.set_input_active(False)
         if dpg.does_item_exist(tag):
             dpg.delete_item(tag)
-        G.show_status("Build cancelled — change Memory setting manually if needed")
+        G.show_status("Build cancelled")
     
-    with dpg.window(tag=tag, label="Memory Upgrade Needed", modal=True,
+    with dpg.window(tag=tag, label="Insufficient Memory", modal=True,
                     no_resize=True, no_collapse=True,
                     width=dlg_w, height=dlg_h,
                     pos=[(vp_w - dlg_w) // 2, (vp_h - dlg_h) // 2],
@@ -2671,19 +2773,19 @@ def _show_memory_upgrade_dialog(result):
                      f"{result.current_config}.",
                      color=(255, 200, 100))
         dpg.add_spacer(height=12)
-        dpg.add_text(f"Upgrade Memory to \"{result.suggested_config}\" "
-                     f"({result.suggested_banks} banks)?")
+        dpg.add_text(f"Change Memory to \"{result.suggested_config}\" "
+                     f"({result.suggested_banks} banks) and rebuild?")
         dpg.add_spacer(height=6)
         dpg.add_text(f"The built XEX will require a {result.suggested_config} Atari.",
                      color=(180, 180, 180))
         dpg.add_spacer(height=20)
         
         with dpg.group(horizontal=True):
-            dpg.add_spacer(width=80)
-            dpg.add_button(label="Upgrade & Rebuild", width=160,
+            dpg.add_spacer(width=100)
+            dpg.add_button(label="Yes", width=120,
                            callback=on_upgrade)
             dpg.add_spacer(width=10)
-            dpg.add_button(label="Cancel", width=100,
+            dpg.add_button(label="No", width=100,
                            callback=on_cancel)
 
 
@@ -2719,36 +2821,92 @@ def poll_build_progress():
         if dpg.does_item_exist("build_close_btn"):
             dpg.configure_item("build_close_btn", enabled=True)
         
-        # Check for memory upgrade suggestion FIRST
-        if result and result.needs_upgrade:
-            # Close progress window
-            if dpg.does_item_exist("build_progress_window"):
-                state.set_input_active(False)
-                dpg.delete_item("build_progress_window")
-            # Show upgrade dialog
-            _show_memory_upgrade_dialog(result)
-            build.build_state.build_complete = False
-            return
-        
-        # Update status
         if result and result.success:
+            # === SUCCESS — auto-close and run ===
             G.show_status(f"Build complete: {os.path.basename(result.xex_path)}")
-            # Store XEX path for run
             _last_built_xex = result.xex_path
-            
-            # Auto-run the XEX after successful build
-            # Close the progress window first
             if dpg.does_item_exist("build_progress_window"):
                 state.set_input_active(False)
                 dpg.delete_item("build_progress_window")
-            # Run the built XEX
             on_run_click(None, None)
         else:
-            error_msg = result.error_message if result else "Unknown error"
-            G.show_status(f"Build failed: {error_msg[:50]}...")
+            # === FAILURE — keep log window open ===
+            # Check for memory upgrade (direct UPGRADE: signal or fallback scan)
+            upgrade = None
+            if result and result.needs_upgrade:
+                upgrade = result
+            else:
+                upgrade = _try_find_memory_upgrade(result)
+            
+            if upgrade:
+                # Show upgrade offer inside the log window
+                _show_upgrade_in_build_window(upgrade)
+            else:
+                error_msg = result.error_message if result else "Unknown error"
+                G.show_status(f"Build failed: {error_msg[:60]}")
         
         # Reset completion flag so we don't keep triggering
         build.build_state.build_complete = False
+
+
+def _show_upgrade_in_build_window(upgrade_result):
+    """Show memory upgrade offer inside the existing build progress window.
+    
+    Appends the upgrade message to the build log and replaces the Close
+    button with Yes/No upgrade buttons.
+    """
+    if not dpg.does_item_exist("build_progress_window"):
+        return
+    
+    total_kb = upgrade_result.total_sample_bytes / 1024
+    
+    # Append upgrade message to log output
+    if dpg.does_item_exist("build_output_text"):
+        current = dpg.get_value("build_output_text")
+        msg = (f"\n{'='*60}\n"
+               f"  Sample data ({total_kb:.0f} KB) does not fit in "
+               f"{upgrade_result.current_config}.\n\n"
+               f"  Suggestion: Change Memory to \"{upgrade_result.suggested_config}\" "
+               f"({upgrade_result.suggested_banks} banks).\n"
+               f"{'='*60}\n")
+        dpg.set_value("build_output_text", current + msg)
+        if dpg.does_item_exist("build_output_scroll"):
+            dpg.set_y_scroll("build_output_scroll", 
+                             dpg.get_y_scroll_max("build_output_scroll"))
+    
+    def on_upgrade():
+        state.set_input_active(False)
+        if dpg.does_item_exist("build_progress_window"):
+            dpg.delete_item("build_progress_window")
+        # Update the song's memory config
+        state.song.memory_config = upgrade_result.suggested_config
+        if dpg.does_item_exist("memory_config_combo"):
+            dpg.set_value("memory_config_combo", upgrade_result.suggested_config)
+        logger.info(f"Memory upgraded to {upgrade_result.suggested_config} — rebuilding")
+        G.show_status(f"Memory → {upgrade_result.suggested_config}. Rebuilding...")
+        on_build_click(None, None)
+    
+    def on_close():
+        state.set_input_active(False)
+        if dpg.does_item_exist("build_progress_window"):
+            dpg.delete_item("build_progress_window")
+        G.show_status("Build cancelled")
+    
+    # Replace the button area with upgrade buttons
+    if dpg.does_item_exist("build_btn_area"):
+        dpg.delete_item("build_btn_area")
+    
+    # Add upgrade buttons in the existing button area
+    with dpg.group(tag="build_upgrade_btns", horizontal=True,
+                   parent="build_progress_window"):
+        dpg.add_spacer(width=200)
+        dpg.add_button(label=f"Upgrade to {upgrade_result.suggested_config} & Rebuild",
+                       width=250, callback=lambda: on_upgrade())
+        dpg.add_spacer(width=10)
+        dpg.add_button(label="Close", width=100,
+                       callback=lambda: on_close())
+    
+    G.show_status(f"Build failed — upgrade to {upgrade_result.suggested_config}?")
 
 
 def on_run_click(sender, app_data):

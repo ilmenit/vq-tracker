@@ -394,7 +394,8 @@ def analyze_instruments(instruments, target_rate: int, vector_size: int,
                         system_hz: int = 50,
                         used_indices: set = None,
                         use_banking: bool = False,
-                        banking_budget: int = 0) -> OptimizeResult:
+                        banking_budget: int = 0,
+                        max_banks: int = 0) -> OptimizeResult:
     """Analyze instruments and suggest RAW vs VQ for each.
     
     Args:
@@ -404,10 +405,15 @@ def analyze_instruments(instruments, target_rate: int, vector_size: int,
                       from size totals.
         use_banking: If True, adds banking overhead to cycle budget.
         banking_budget: Override memory budget for banking mode (n_banks × 16KB).
+        max_banks: Number of physical 16KB banks available. Used for trial-pack
+                   verification when use_banking=True. If 0, derived from
+                   banking_budget.
     """
     # In banking mode, override memory budget with bank capacity
     if use_banking and banking_budget > 0:
         memory_budget = banking_budget
+        if max_banks == 0:
+            max_banks = banking_budget // 16384
     
     result = OptimizeResult(memory_budget=memory_budget)
 
@@ -526,6 +532,14 @@ def analyze_instruments(instruments, target_rate: int, vector_size: int,
     # --- Assign modes ---
     _assign_modes(result, mode_map, all_rows, codebook_size,
                   vector_size, volume_control, irq_period)
+
+    # --- Banking: verify the result actually fits in banks ---
+    # The flat-budget check in _assign_modes doesn't account for bin-packing
+    # fragmentation (multi-bank instruments waste partial banks) and per-bank
+    # codebook overhead.  Run a trial pack to catch overcommit.
+    if use_banking and max_banks > 0:
+        _verify_banking_fit(result, mode_map, codebook_size, max_banks,
+                            all_rows, vector_size, volume_control, irq_period)
 
     return result
 
@@ -748,3 +762,116 @@ def _fmt_size(n: int) -> str:
     if n < 1024:
         return f"{n} B"
     return f"{n / 1024:.1f} KB"
+
+
+def _verify_banking_fit(result: OptimizeResult, mode_map: Dict[int, bool],
+                        codebook_size: int, max_banks: int,
+                        all_rows: List[List[_Segment]],
+                        vector_size: int, volume_control: bool,
+                        irq_period: float):
+    """Verify optimized modes actually fit in banks; demote RAW→VQ if not.
+    
+    The flat-budget check in _assign_modes doesn't account for:
+    - Multi-bank instruments wasting partial banks (fragmentation)
+    - Page alignment waste (~128 bytes per instrument)
+    - Per-bank codebook overhead (2048 bytes per VQ bank)
+    
+    This function runs a trial bin-pack.  If it fails, it iteratively
+    demotes the largest RAW instruments to VQ (biggest fragmentation
+    savings) until the pack succeeds.
+    """
+    logger = logging.getLogger("optimize")
+    
+    try:
+        from bank_packer import pack_into_banks, BANK_SIZE
+    except ImportError:
+        logger.warning("bank_packer not available — skipping trial pack")
+        return
+    
+    active = [a for a in result.analyses if not a.skipped]
+    if not active:
+        return
+    
+    def _build_inst_sizes():
+        """Build (inst_idx, size) list from current mode_map."""
+        sizes = []
+        for a in active:
+            sz = a.raw_size_aligned if mode_map[a.index] else a.vq_size
+            if sz > 0:
+                sizes.append((a.index, sz))
+        return sizes
+    
+    def _vq_set():
+        """Set of instrument indices currently in VQ mode."""
+        return {a.index for a in active if not mode_map[a.index]}
+    
+    # Trial pack with current modes
+    inst_sizes = _build_inst_sizes()
+    pack = pack_into_banks(inst_sizes, max_banks,
+                           codebook_size=codebook_size,
+                           vq_instruments=_vq_set())
+    
+    if pack.success:
+        return  # Fits — nothing to do
+    
+    logger.info(f"Trial pack failed with {max_banks} banks: {pack.error}")
+    logger.info("Demoting RAW instruments to VQ to reduce fragmentation...")
+    
+    # Iteratively demote the RAW instrument that saves the most bank space.
+    # Large multi-bank RAW instruments cause the most fragmentation because
+    # ceil(size/16384) × 16384 ≫ size.  Converting to VQ shrinks the data
+    # so it fits in fewer banks with less waste.
+    max_demotions = sum(1 for a in active if mode_map.get(a.index, False))
+    
+    for iteration in range(max_demotions):
+        # Find the RAW instrument whose demotion saves the most bytes
+        # (i.e. biggest difference between raw_size_aligned and vq_size)
+        best_idx = -1
+        best_saving = -1
+        for a in active:
+            if not mode_map.get(a.index, False):
+                continue  # already VQ
+            saving = a.raw_size_aligned - a.vq_size
+            if saving > best_saving:
+                best_saving = saving
+                best_idx = a.index
+        
+        if best_idx < 0:
+            break  # No more RAW instruments to demote
+        
+        # Demote this instrument to VQ
+        mode_map[best_idx] = False
+        a_demoted = result.analyses[best_idx]
+        a_demoted.suggest_raw = False
+        a_demoted.reason = "VQ (bank fragmentation)"
+        
+        logger.info(f"  Demoted inst {best_idx} ({a_demoted.name}): "
+                     f"RAW {a_demoted.raw_size_aligned} → VQ {a_demoted.vq_size} "
+                     f"(saves {best_saving})")
+        
+        # Retry trial pack
+        inst_sizes = _build_inst_sizes()
+        pack = pack_into_banks(inst_sizes, max_banks,
+                               codebook_size=codebook_size,
+                               vq_instruments=_vq_set())
+        
+        if pack.success:
+            logger.info(f"  Trial pack succeeded after {iteration + 1} demotion(s): "
+                         f"{pack.n_banks_used}/{max_banks} banks used")
+            break
+    
+    if not pack.success:
+        logger.warning(f"Trial pack still fails after all demotions: {pack.error}")
+    
+    # Recompute totals and summary with updated modes
+    result.total_mixed_size = sum(
+        a.raw_size_aligned if a.suggest_raw else a.vq_size
+        for a in active
+    )
+    if any(not a.suggest_raw for a in active):
+        result.total_mixed_size += codebook_size
+    
+    result.fits_all_raw = False  # We had to demote — not all-RAW anymore
+    
+    _build_summary(result, mode_map, all_rows, vector_size,
+                   volume_control, irq_period)

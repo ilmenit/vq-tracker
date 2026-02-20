@@ -213,13 +213,13 @@ mem_error_screen:
     lda #>mem_err_dl
     sta SDLSTH
 
-    ; Set colors — red scheme for error visibility
+    ; Set colors — red scheme matching splash.asm error style
+    lda #$30
+    sta COLOR4                  ; COLBK = dark red border
+    lda #$3E
+    sta COLOR1                  ; COLPF1 = bright red text
     lda #$00
-    sta COLOR4                  ; COLBK = black border
-    lda #$0E
-    sta COLOR1                  ; COLPF1 = white text
-    lda #$46
-    sta COLOR2                  ; COLPF2 = dark red background
+    sta COLOR2                  ; COLPF2 = black background
 
     ; Enable display via shadow
     lda #$22
@@ -230,11 +230,11 @@ mem_error_screen:
     sta $D402                   ; DLISTL
     lda #>mem_err_dl
     sta $D403                   ; DLISTH
-    lda #$00
+    lda #$30
     sta $D01A                   ; COLBK
-    lda #$0E
+    lda #$3E
     sta $D016                   ; COLPF1
-    lda #$46
+    lda #$00
     sta $D017                   ; COLPF2
     lda #$22
     sta $D400                   ; DMACTL

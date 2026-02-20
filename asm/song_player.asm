@@ -99,16 +99,19 @@ PORTB_MAIN  = $FE               ; PORTB: main RAM visible, OS ROM disabled
 ; DISPLAY LIST AND TEXT
 ; ==========================================================================
 .if BLANK_SCREEN = 0
-; --- Normal display: 2 text lines (always visible) ---
+; --- Normal display: 4 text lines (always visible) ---
+; Line 1: Song name (centered, from SONG_INFO.asm)
+; Line 2: Author name (centered, from SONG_INFO.asm)
+; Line 3: VQ TRACKER banner
+; Line 4: SONG/ROW/SPD status
+text_line1:
+    icl "SONG_INFO.asm"             ; lines 1+2: name (40) + author (40)
 .if KEY_CONTROL = 1
-text_line1:
-    dta d"VQ TRACKER - [SPACE] play/stop [R] reset"  ; 40 chars
+    dta d"VQ TRACKER - [SPACE] play/stop [R] reset"  ; line 3 (40 chars)
 .else
-text_line1:
-    dta d"   VQ TRACKER - [SPACE] to play         "  ; 40 chars
+    dta d"               VQ TRACKER               "  ; line 3 (40 chars)
 .endif
-text_line2:
-    dta d"      SONG:"
+    dta d"       SONG:"
 song_pos_display:
     dta d"00"
     dta d"   ROW:"
@@ -117,23 +120,22 @@ row_display:
     dta d"   SPD:"
 speed_display:
     dta d"06"
-    dta d"         "
+    dta d"        "
 dlist:
     .byte $70,$70,$70           ; 24 blank lines
     .byte $42,<text_line1,>text_line1  ; Mode 2 text line 1
-    .byte $02                   ; Mode 2 text line 2 (continues from prev)
+    .byte $02,$02,$02           ; Mode 2 text lines 2, 3, 4
     .byte $41,<dlist,>dlist     ; Jump and wait for VBL
 .else
 ; --- Blank screen mode: display visible when stopped, blank when playing ---
+text_line1:
+    icl "SONG_INFO.asm"             ; lines 1+2: name (40) + author (40)
 .if KEY_CONTROL = 1
-text_line1:
-    dta d"VQ TRACKER - [SPACE] play/stop [R] reset"  ; 40 chars
+    dta d"VQ TRACKER - [SPACE] play/stop [R] reset"  ; line 3 (40 chars)
 .else
-text_line1:
-    dta d"   VQ TRACKER - [SPACE] to play         "  ; 40 chars
+    dta d"               VQ TRACKER               "  ; line 3 (40 chars)
 .endif
-text_line2:
-    dta d"      SONG:"
+    dta d"       SONG:"
 song_pos_display:
     dta d"00"
     dta d"   ROW:"
@@ -142,11 +144,11 @@ row_display:
     dta d"   SPD:"
 speed_display:
     dta d"06"
-    dta d"         "
+    dta d"        "
 dlist:
     .byte $70,$70,$70           ; 24 blank lines
     .byte $42,<text_line1,>text_line1  ; Mode 2 text line 1
-    .byte $02                   ; Mode 2 text line 2
+    .byte $02,$02,$02           ; Mode 2 text lines 2, 3, 4
     .byte $41,<dlist,>dlist     ; Jump and wait for VBL
 .endif
 
