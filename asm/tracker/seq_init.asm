@@ -58,6 +58,27 @@ seq_init:
     sta trk2_active
     sta trk3_active
     
+.ifdef USE_BANKING
+    ; Initialize bank SMC to main RAM (silence)
+    lda #PORTB_MAIN
+    sta ch0_bank
+    sta ch1_bank
+    sta ch2_bank
+    sta ch3_bank
+    lda #0
+    sta ch0_bank_seq_idx
+    sta ch0_banks_left
+    sta ch1_bank_seq_idx
+    sta ch1_banks_left
+    sta ch2_bank_seq_idx
+    sta ch2_banks_left
+    sta ch3_bank_seq_idx
+    sta ch3_banks_left
+    ; Restore PORTB to main RAM
+    lda #PORTB_MAIN
+    sta PORTB
+.endif
+    
     lda #SILENCE
     sta AUDC1
     sta AUDC2

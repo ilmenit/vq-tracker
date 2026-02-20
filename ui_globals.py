@@ -42,6 +42,9 @@ MAX_VISIBLE_ROWS = 50
 SONG_VISIBLE_ROWS = 5
 SONG_PANEL_WIDTH = 340
 
+# Visualization toggle (local setting, not saved to song)
+viz_enabled = True
+
 
 def compute_editor_width(hex_mode, show_volume):
     """Calculate the correct editor panel width for current settings.
@@ -102,6 +105,12 @@ piano_keys_mode = True  # True: number keys play sharps; False: 1-3 select octav
 highlight_interval = 4  # Row highlight interval: 2, 4, 8, or 16
 coupled_entry = True    # True: note entry always stamps inst+vol; False: only change note in occupied cells
 
+# Cell color palettes (stored in local config, not .pvq)
+note_palette = "Chromatic"  # Palette for note column coloring
+inst_palette = "Chromatic"  # Palette for instrument column coloring
+vol_palette = "Chromatic"   # Palette for volume column coloring
+ptn_palette = "Chromatic"   # Palette for pattern number coloring (Song grid, combos)
+
 
 # =============================================================================
 # FORMATTING FUNCTIONS
@@ -147,6 +156,7 @@ def parse_int_value(text: str, default: int = 0) -> int:
 def load_config():
     """Load configuration from disk."""
     global autosave_enabled, recent_files, piano_keys_mode, highlight_interval, coupled_entry
+    global note_palette, inst_palette, vol_palette, ptn_palette, viz_enabled
     logger.debug(f"Loading config from: {CONFIG_FILE}")
     try:
         AUTOSAVE_DIR.mkdir(parents=True, exist_ok=True)
@@ -164,6 +174,23 @@ def load_config():
                 piano_keys_mode = ed.get('piano_keys_mode', True)
                 highlight_interval = ed.get('highlight_interval', 4)
                 coupled_entry = ed.get('coupled_entry', True)
+                viz_enabled = ed.get('viz_enabled', True)
+                # Cell color palettes
+                colors = ed.get('cell_colors', {})
+                note_palette = colors.get('note', 'Chromatic')
+                inst_palette = colors.get('instrument', 'Chromatic')
+                vol_palette = colors.get('volume', 'Chromatic')
+                ptn_palette = colors.get('pattern', 'Chromatic')
+                # Validate
+                from cell_colors import PALETTE_NAMES
+                if note_palette not in PALETTE_NAMES:
+                    note_palette = 'Chromatic'
+                if inst_palette not in PALETTE_NAMES:
+                    inst_palette = 'Chromatic'
+                if vol_palette not in PALETTE_NAMES:
+                    vol_palette = 'Chromatic'
+                if ptn_palette not in PALETTE_NAMES:
+                    ptn_palette = 'Chromatic'
                 # Validate highlight_interval
                 if highlight_interval not in [2, 4, 8, 16]:
                     highlight_interval = 4
@@ -191,6 +218,13 @@ def save_config():
                 'piano_keys_mode': piano_keys_mode,
                 'highlight_interval': highlight_interval,
                 'coupled_entry': coupled_entry,
+                'viz_enabled': viz_enabled,
+                'cell_colors': {
+                    'note': note_palette,
+                    'instrument': inst_palette,
+                    'volume': vol_palette,
+                    'pattern': ptn_palette,
+                },
             }
         }
         with open(CONFIG_FILE, 'w') as f:

@@ -23,7 +23,7 @@ The distribution folder contains everything needed to run the tracker:
     â””â”€â”€ CHANGELOG.md           # Version history
 
 Requirements:
-    pip install pyinstaller dearpygui numpy scipy sounddevice pydub soundfile
+    pip install pyinstaller dearpygui numpy scipy sounddevice pydub soundfile pyperclip
 """
 
 import os
@@ -54,6 +54,7 @@ def check_dependencies():
         ('sounddevice', 'sounddevice'),
         ('soundfile', 'soundfile'),
         ('pydub', 'pydub'),
+        ('pyperclip', 'pyperclip'),
         ('PyInstaller', 'PyInstaller'),
     ]
     
@@ -61,16 +62,16 @@ def check_dependencies():
     for name, package in required:
         try:
             __import__(package.split('.')[0])
-            print(f"  âœ“ {name}")
+            print(f"  [OK] {name}")
         except (ImportError, OSError):
-            print(f"  âœ— {name} - MISSING")
+            print(f"  [X] {name} - MISSING")
             missing.append(name)
     
     # Check for vq_converter folder
     if os.path.isdir("vq_converter/pokey_vq"):
-        print(f"  âœ“ vq_converter folder found")
+        print(f"  [OK] vq_converter folder found")
     else:
-        print(f"  â—‹ vq_converter folder not found (needed for CONVERT functionality)")
+        print(f"  [ ] vq_converter folder not found (needed for CONVERT functionality)")
     
     if missing:
         print(f"\nMissing required packages: {', '.join(missing)}")
@@ -97,16 +98,16 @@ def check_bin_directory():
         plat_dir = "windows_x86_64"
         binary = "mads.exe"
     else:
-        print(f"  âœ— Unsupported platform: {system}")
+        print(f"  [X] Unsupported platform: {system}")
         return False
     
     mads_path = os.path.join("bin", plat_dir, binary)
     
     if os.path.exists(mads_path):
-        print(f"  âœ“ Found: {mads_path}")
+        print(f"  [OK] Found: {mads_path}")
         return True
     else:
-        print(f"  âœ— Not found: {mads_path}")
+        print(f"  [X] Not found: {mads_path}")
         print(f"\nPlease download MADS from http://mads.atari8.info/")
         print(f"and place {binary} in bin/{plat_dir}/")
         return False
@@ -117,7 +118,7 @@ def check_asm_directory():
     print("\nChecking ASM templates...")
     
     if not os.path.isdir("asm"):
-        print("  âœ— asm/ directory not found")
+        print("  [X] asm/ directory not found")
         return False
     
     # Count files recursively
@@ -129,7 +130,7 @@ def check_asm_directory():
     expected_subdirs = ["common", "tracker", "pitch"]
     found_subdirs = [d for d in expected_subdirs if os.path.isdir(os.path.join("asm", d))]
     
-    print(f"  âœ“ Found asm/ directory with {total_files} files")
+    print(f"  [OK] Found asm/ directory with {total_files} files")
     print(f"    Subdirectories: {', '.join(found_subdirs)}")
     
     return len(found_subdirs) >= 2  # At least common and tracker
@@ -142,10 +143,10 @@ def check_samples_directory():
     if os.path.isdir("samples"):
         samples = [f for f in os.listdir("samples") 
                    if f.lower().endswith(('.wav', '.mp3', '.ogg', '.flac'))]
-        print(f"  âœ“ Found samples/ directory with {len(samples)} audio files")
+        print(f"  [OK] Found samples/ directory with {len(samples)} audio files")
         return True, len(samples)
     else:
-        print("  â—‹ samples/ directory not found (optional - example samples)")
+        print("  [ ] samples/ directory not found (optional - example samples)")
         return False, 0
 
 
@@ -229,7 +230,7 @@ def build_executable():
     
     if os.path.exists(exe_path):
         size = os.path.getsize(exe_path) / (1024 * 1024)
-        print(f"\nâœ“ Executable built: {exe_path}")
+        print(f"\n[OK] Executable built: {exe_path}")
         print(f"  Size: {size:.1f} MB")
         return exe_path
     else:
@@ -271,16 +272,50 @@ def create_distribution(exe_path: str):
         warnings.append("  âš  asm/ folder missing - BUILD will not work!")
     
     # 3. Copy bin/ folder (REQUIRED for BUILD - contains MADS)
+    #    Only include binaries for the current platform
     if os.path.isdir("bin"):
-        shutil.copytree("bin", os.path.join(release_dir, "bin"))
-        # Count MADS executables
-        mads_count = 0
-        for root, dirs, files in os.walk("bin"):
-            mads_count += len([f for f in files if f.startswith('mads')])
-        copied_items.append(f"  âœ“ bin/ ({mads_count} MADS executables)")
+        dest_bin = os.path.join(release_dir, "bin")
+        os.makedirs(dest_bin, exist_ok=True)
+        
+        # Copy README if present
+        bin_readme = os.path.join("bin", "README.md")
+        if os.path.isfile(bin_readme):
+            shutil.copy2(bin_readme, os.path.join(dest_bin, "README.md"))
+        
+        # Determine which platform dirs to include
+        machine = platform.machine().lower()
+        if system == "Windows":
+            plat_dirs = ["windows_x86_64"]
+        elif system == "Darwin":
+            # Include both macOS architectures for universal distribution
+            plat_dirs = ["macos_aarch64", "macos_x86_64"]
+        elif system == "Linux":
+            plat_dirs = ["linux_x86_64"]
+        else:
+            plat_dirs = []
+        
+        bin_file_count = 0
+        for plat_dir in plat_dirs:
+            src = os.path.join("bin", plat_dir)
+            if os.path.isdir(src):
+                dst = os.path.join(dest_bin, plat_dir)
+                shutil.copytree(src, dst)
+                for f in os.listdir(dst):
+                    fp = os.path.join(dst, f)
+                    if os.path.isfile(fp) and not f.startswith('.'):
+                        bin_file_count += 1
+                        # Ensure executables have +x on Unix
+                        if system != "Windows":
+                            os.chmod(fp, 0o755)
+        
+        all_plat_dirs = [d for d in os.listdir("bin") if os.path.isdir(os.path.join("bin", d))]
+        skipped = [d for d in all_plat_dirs if d not in plat_dirs]
+        copied_items.append(f"  \u2714 bin/ ({bin_file_count} files for {system})")
+        if skipped:
+            copied_items.append(f"    Skipped other platforms: {', '.join(skipped)}")
     else:
-        warnings.append("  âš  bin/ folder missing - BUILD will not work!")
-    
+        warnings.append("  \u26a0 bin/ folder missing - BUILD will not work!")
+
     # 4. Copy samples/ folder (OPTIONAL - example samples for users)
     if os.path.isdir("samples"):
         shutil.copytree("samples", os.path.join(release_dir, "samples"))
@@ -444,12 +479,12 @@ Examples:
             print("Some checks failed. Please fix issues above.")
             if not deps_ok:
                 print("\nInstall missing packages with:")
-                print("  pip install pyinstaller dearpygui numpy scipy sounddevice pydub soundfile")
+                print("  pip install pyinstaller dearpygui numpy scipy sounddevice pydub soundfile pyperclip")
         return
     
     if not deps_ok:
         print("\nCannot build due to missing Python dependencies.")
-        print("Install with: pip install pyinstaller dearpygui numpy scipy sounddevice pydub soundfile")
+        print("Install with: pip install pyinstaller dearpygui numpy scipy sounddevice pydub soundfile pyperclip")
         sys.exit(1)
     
     if not (bin_ok and asm_ok):

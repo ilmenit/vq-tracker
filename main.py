@@ -499,6 +499,15 @@ def main():
     create_themes()
     logger.debug("UI themes created")
     
+    # Resolve platform-dependent key constants (needs DPG context)
+    import dpg_keys
+    dpg_keys.init()
+    logger.debug(dpg_keys.dump_key_codes())
+    
+    # Build KEY_MAP from resolved constants
+    from keyboard import init_keys
+    init_keys()
+    
     # Load configurable keyboard bindings (needs DPG for key codes)
     kc = key_config.init()
     if kc.errors:
@@ -506,7 +515,7 @@ def main():
     logger.debug(f"Key config: {len(kc.bindings)} bindings from {kc.source}")
     
     # Initialize modules with cross-references
-    R.set_instrument_callbacks(C.preview_instrument, C.select_inst_click)
+    R.set_instrument_callbacks(C.preview_instrument, C.select_inst_click, C.effects_inst_click)
     C.init_callbacks(B.rebuild_editor_grid, B.show_confirm_centered)
     
     # Build UI
@@ -547,6 +556,10 @@ def main():
     B.rebuild_editor_grid()
     R.refresh_editor()
     
+    # Apply visualization visibility from config
+    if dpg.does_item_exist("viz_panel"):
+        dpg.configure_item("viz_panel", show=G.viz_enabled)
+    
     # Start audio
     try:
         state.audio.start()
@@ -564,6 +577,7 @@ def main():
     logger.info("-" * 60)
     
     # Main loop with autosave check
+    _stream_check_counter = 0
     try:
         while dpg.is_dearpygui_running():
             state.audio.process_callbacks()  # Process audio engine callbacks
@@ -571,6 +585,12 @@ def main():
             C.poll_vq_conversion()  # Poll VQ conversion status (thread-safe)
             C.poll_build_progress()  # Poll build progress (thread-safe)
             C.poll_button_blink()   # Update blinking attention buttons
+            R.update_visualization()   # Update VU + spectrum bars
+            # Periodically check audio stream health (~every 2s at 60fps)
+            _stream_check_counter += 1
+            if _stream_check_counter >= 120:
+                _stream_check_counter = 0
+                state.audio.ensure_stream()
             dpg.render_dearpygui_frame()
     except Exception as e:
         logger.exception(f"Error in main loop: {e}")

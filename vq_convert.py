@@ -11,14 +11,13 @@ import sys
 import threading
 import queue
 import logging
-import io
 from contextlib import redirect_stdout, redirect_stderr
 from typing import Optional, List
 from dataclasses import dataclass, field
 
 import runtime
 from constants import (VQ_RATE_DEFAULT, VQ_VECTOR_DEFAULT, VQ_SMOOTHNESS_DEFAULT,
-                       VQ_VECTOR_SIZES, MEMORY_LIMIT_DEFAULT_KB)
+                       VQ_VECTOR_SIZES)
 
 # Valid vector sizes (must be even for ASM nibble-packing)
 VALID_VECTOR_SIZES = {2, 4, 8, 16}
@@ -141,7 +140,8 @@ class VQSettings:
     vector_size: int = VQ_VECTOR_DEFAULT
     smoothness: int = VQ_SMOOTHNESS_DEFAULT
     enhance: bool = True
-    memory_limit: int = MEMORY_LIMIT_DEFAULT_KB * 1024  # Bytes
+    memory_limit: int = 0  # DEPRECATED — computed from song settings now. Kept for load compat.
+    used_only: bool = False  # Only convert/optimize instruments used in song
     
     def __post_init__(self):
         if self.vector_size not in VALID_VECTOR_SIZES:
@@ -161,7 +161,9 @@ class VQResult:
     """Result of VQ conversion."""
     success: bool = False
     output_dir: Optional[str] = None
-    vq_data_size: int = 0        # Actual binary size for Atari (from builder.stats)
+    vq_data_size: int = 0        # Total binary size for Atari (VQ + RAW combined)
+    vq_only_size: int = 0        # VQ portion only (blob + indices + tables)
+    raw_only_size: int = 0       # RAW portion only (page-aligned sample data)
     converted_wavs: List[str] = field(default_factory=list)
     error_message: str = ""
     # Per-instrument sizes (populated after conversion)
@@ -250,6 +252,31 @@ class VQConverter:
     
     def _queue_output(self, text: str):
         self.vq_state.output_queue.put(text)
+    
+    def _make_stream(self):
+        """Create a file-like stream that queues output lines in real-time."""
+        q = self.vq_state.output_queue
+
+        class _QueueWriter:
+            """File-like object that sends each line to a Queue immediately."""
+            def __init__(self):
+                self._buf = ""
+
+            def write(self, text):
+                if not text:
+                    return 0
+                self._buf += text
+                while "\n" in self._buf:
+                    line, self._buf = self._buf.split("\n", 1)
+                    q.put(line + "\n")
+                return len(text)
+
+            def flush(self):
+                if self._buf:
+                    q.put(self._buf)
+                    self._buf = ""
+
+        return _QueueWriter()
     
     def convert(self, input_files: List[str], sample_modes: Optional[List[int]] = None):
         """Start VQ conversion in a background thread.
@@ -355,13 +382,13 @@ class VQConverter:
                 sample_modes=self._sample_modes,
             )
             
-            # Capture builder's stdout/stderr
-            output_buffer = io.StringIO()
+            # Stream builder's stdout/stderr to the UI in real-time
+            stream = self._make_stream()
             return_code = 1
             builder = None
             
             try:
-                with redirect_stdout(output_buffer), redirect_stderr(output_buffer):
+                with redirect_stdout(stream), redirect_stderr(stream):
                     builder = PokeyVQBuilder(args)
                     return_code = builder.run()
             except SystemExit as e:
@@ -376,11 +403,7 @@ class VQConverter:
                 result.error_message = str(e)
                 return_code = 1
             finally:
-                captured = output_buffer.getvalue()
-                if captured:
-                    for line in captured.split('\n'):
-                        if line:
-                            self._queue_output(line + '\n')
+                stream.flush()
             
             if return_code != 0:
                 result.success = False
@@ -398,6 +421,8 @@ class VQConverter:
                     # Get stats directly from builder instance
                     if builder and builder.stats:
                         result.vq_data_size = builder.stats.get('size_bytes', 0)
+                        result.vq_only_size = builder.stats.get('vq_size_bytes', 0)
+                        result.raw_only_size = builder.stats.get('raw_size_bytes', 0)
                     
                     result.success = True
                     self.vq_state.output_dir = result.output_dir
@@ -405,7 +430,12 @@ class VQConverter:
                     self._queue_output(f"SUCCESS: Conversion complete!\n")
                     self._queue_output(f"Output: {result.output_dir}\n")
                     if result.vq_data_size > 0:
-                        self._queue_output(f"Atari data: {format_size(result.vq_data_size)}\n")
+                        self._queue_output(f"Atari data: {format_size(result.vq_data_size)}")
+                        if result.vq_only_size > 0 and result.raw_only_size > 0:
+                            self._queue_output(
+                                f" (VQ: {format_size(result.vq_only_size)}"
+                                f", RAW: {format_size(result.raw_only_size)})")
+                        self._queue_output("\n")
                     self._queue_output(f"Preview WAVs: {len(result.converted_wavs)} files\n")
                 else:
                     result.success = False

@@ -145,8 +145,7 @@ except ImportError:
 from constants import (PROJECT_EXT, BINARY_EXT, DEFAULT_SPEED, DEFAULT_OCTAVE,
                        DEFAULT_STEP, MAX_VOLUME, MAX_CHANNELS, PAL_HZ, FOCUS_EDITOR,
                        NOTE_OFF, APP_VERSION, FORMAT_VERSION, VQ_RATE_DEFAULT,
-                       VQ_VECTOR_DEFAULT, VQ_SMOOTHNESS_DEFAULT,
-                       MEMORY_LIMIT_DEFAULT_KB)
+                       VQ_VECTOR_DEFAULT, VQ_SMOOTHNESS_DEFAULT)
 from data_model import Song, Instrument, Pattern, Row
 
 # =============================================================================
@@ -199,7 +198,12 @@ class EditorState:
     vq_vector_size: int = VQ_VECTOR_DEFAULT
     vq_smoothness: int = VQ_SMOOTHNESS_DEFAULT
     vq_enhance: bool = True
-    vq_memory_limit_kb: int = MEMORY_LIMIT_DEFAULT_KB  # Sample data memory budget in KB
+    vq_memory_limit_kb: int = 35  # DEPRECATED — kept for loading old projects
+    vq_used_only: bool = False  # Only convert/optimize instruments used in song
+    
+    # Song target settings
+    start_address: int = 0x2000
+    memory_config: str = "64 KB"
     
     def to_dict(self) -> dict:
         return asdict(self)
@@ -775,6 +779,109 @@ def load_sample(inst: Instrument, path: str,
         return False, f"Load failed: {e}"
 
 
+def get_export_extensions() -> List[str]:
+    """Get list of supported export file extensions.
+    
+    WAV is always supported.
+    Other formats (MP3, OGG, FLAC, AIFF) require pydub + ffmpeg.
+    """
+    exts = ['.wav']
+    if PYDUB_OK and FFMPEG_OK:
+        exts.extend(['.flac', '.ogg', '.mp3', '.aiff'])
+    return exts
+
+
+def get_export_filters() -> dict:
+    """Get file dialog filter dict for export formats."""
+    filters = {"WAV Audio": "wav"}
+    if PYDUB_OK and FFMPEG_OK:
+        filters["FLAC Audio"] = "flac"
+        filters["OGG Vorbis"] = "ogg"
+        filters["MP3 Audio"] = "mp3"
+        filters["AIFF Audio"] = "aiff"
+    return filters
+
+
+def export_sample(audio: np.ndarray, sample_rate: int, path: str) -> Tuple[bool, str]:
+    """Export audio data to a file.
+    
+    Supports WAV natively. Other formats (MP3, OGG, FLAC, AIFF) require
+    pydub + ffmpeg.
+    
+    Args:
+        audio: Float32 audio array (mono, -1.0 to 1.0)
+        sample_rate: Sample rate in Hz
+        path: Output file path (extension determines format)
+        
+    Returns:
+        (success, message)
+    """
+    if audio is None or len(audio) == 0:
+        return False, "No audio data to export"
+    
+    ext = os.path.splitext(path)[1].lower()
+    
+    try:
+        # Convert float32 to int16
+        audio_int16 = np.clip(audio * 32767, -32768, 32767).astype(np.int16)
+        
+        if ext == '.wav':
+            # WAV export — always available, no dependencies
+            import wave
+            with wave.open(path, 'wb') as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)  # 16-bit
+                wf.setframerate(sample_rate)
+                wf.writeframes(audio_int16.tobytes())
+            
+            duration = len(audio) / sample_rate
+            size_kb = os.path.getsize(path) / 1024
+            return True, f"Exported WAV: {duration:.2f}s, {sample_rate}Hz, {size_kb:.0f} KB"
+        
+        elif ext in ('.mp3', '.ogg', '.flac', '.aiff', '.aif'):
+            if not PYDUB_OK:
+                return False, "pydub not installed — only WAV export available"
+            if not FFMPEG_OK and ext != '.wav':
+                return False, "ffmpeg not found — only WAV export available"
+            
+            # Create AudioSegment from raw int16 data
+            seg = AudioSegment(
+                data=audio_int16.tobytes(),
+                sample_width=2,
+                frame_rate=sample_rate,
+                channels=1,
+            )
+            
+            # Map extension to pydub format name
+            fmt_map = {
+                '.mp3': 'mp3', '.ogg': 'ogg', '.flac': 'flac',
+                '.aiff': 'aiff', '.aif': 'aiff',
+            }
+            fmt = fmt_map.get(ext, ext.lstrip('.'))
+            
+            # Export with reasonable quality settings
+            export_params = {}
+            if fmt == 'mp3':
+                export_params = {'bitrate': '192k'}
+            elif fmt == 'ogg':
+                export_params = {'parameters': ['-q:a', '6']}
+            
+            seg.export(path, format=fmt, **export_params)
+            
+            duration = len(audio) / sample_rate
+            size_kb = os.path.getsize(path) / 1024
+            return True, f"Exported {ext.upper().lstrip('.')}: {duration:.2f}s, {sample_rate}Hz, {size_kb:.0f} KB"
+        
+        else:
+            return False, f"Unsupported export format: {ext}"
+    
+    except FileNotFoundError:
+        return False, "ffmpeg not found — install ffmpeg for non-WAV export"
+    except Exception as e:
+        logger.error(f"Export failed: {e}")
+        return False, f"Export failed: {e}"
+
+
 def _read_wav(path: str) -> Tuple[int, Optional[np.ndarray]]:
     """Read WAV file using scipy or wave module."""
     if SCIPY_OK:
@@ -820,7 +927,6 @@ def import_samples_multi(paths: List[str], dest_dir: str,
     that a working Instrument needs is set before returning:
       - name (from original filename)
       - sample_path (numbered WAV in dest_dir)
-      - original_sample_path (user's source file)
       - sample_data / sample_rate (loaded audio)
     
     Args:
@@ -835,7 +941,6 @@ def import_samples_multi(paths: List[str], dest_dir: str,
     
     for i, path in enumerate(paths):
         inst = Instrument()
-        inst.original_sample_path = path
         
         # Import and convert to WAV if needed
         dest_path, display_name, import_msg = import_audio_file(path, dest_dir, start_index + i)
@@ -935,101 +1040,6 @@ def export_binary(song: Song, path: str) -> Tuple[bool, str]:
         return True, f"Exported: {os.path.basename(path)}"
     except Exception as e:
         return False, f"Export failed: {e}"
-
-
-# =============================================================================
-# ASM EXPORT - Song Data
-# =============================================================================
-
-def export_asm(song: Song, out_dir: str) -> Tuple[bool, str]:
-    """Export song data to ASM include files."""
-    try:
-        os.makedirs(out_dir, exist_ok=True)
-        
-        with open(os.path.join(out_dir, "SONG_DATA.asm"), 'w') as f:
-            f.write("; ==========================================================================\n")
-            f.write("; SONG DATA - Generated by POKEY VQ Tracker\n")
-            f.write("; ==========================================================================\n")
-            f.write(f"; Song: {song.title}\n")
-            f.write(f"; Author: {song.author}\n")
-            f.write("; ==========================================================================\n\n")
-            
-            # Configuration flags
-            vol_val = 1 if song.volume_control else 0
-            f.write("; Configuration\n")
-            f.write(f"VOLUME_CONTROL = {vol_val}  ; 1=enable volume scaling, 0=disable\n\n")
-            
-            # Song length and channels
-            num_songlines = len(song.songlines)
-            f.write(f"SONG_LENGTH = {num_songlines}\n")
-            f.write(f"NUM_CHANNELS = {MAX_CHANNELS}\n\n")
-            
-            # Speed per songline
-            f.write("; Speed per songline\n")
-            f.write("SONG_SPEED:\n    .byte ")
-            f.write(",".join(f"${sl.speed:02X}" for sl in song.songlines))
-            f.write("\n\n")
-            
-            # Pattern assignments per channel
-            for ch in range(MAX_CHANNELS):
-                f.write(f"SONG_PTN_CH{ch}:\n    .byte ")
-                f.write(",".join(f"${(sl.patterns[ch] if ch < len(sl.patterns) else 0):02X}" for sl in song.songlines))
-                f.write("\n\n")
-            
-            # Pattern directory
-            num_patterns = len(song.patterns)
-            f.write(f"PATTERN_COUNT = {num_patterns}\n\n")
-            
-            f.write("PATTERN_LEN:\n    .byte ")
-            f.write(",".join(f"${p.length:02X}" for p in song.patterns))
-            f.write("\n\n")
-            
-            f.write("PATTERN_PTR_LO:\n    .byte ")
-            f.write(",".join(f"<PTN_{i:02X}" for i in range(num_patterns)))
-            f.write("\n\n")
-            
-            f.write("PATTERN_PTR_HI:\n    .byte ")
-            f.write(",".join(f">PTN_{i:02X}" for i in range(num_patterns)))
-            f.write("\n\n")
-            
-            # Pattern data (variable-length events)
-            f.write("; Pattern event data\n")
-            
-            for i, ptn in enumerate(song.patterns):
-                f.write(f"PTN_{i:02X}:\n")
-                
-                last_inst = -1
-                last_vol = -1
-                
-                for row_num, row in enumerate(ptn.rows):
-                    if row_num >= ptn.length or row.note == 0:
-                        continue
-                    
-                    # Handle NOTE_OFF: export as note=0 (ASM player interprets as silence)
-                    export_note = 0 if row.note == NOTE_OFF else row.note
-                    
-                    # Build event bytes
-                    if last_inst == -1:
-                        # Full event
-                        f.write(f"    .byte ${row_num:02X},${export_note|0x80:02X},${row.instrument|0x80:02X},${row.volume:02X}\n")
-                        last_inst = row.instrument
-                        last_vol = row.volume
-                    elif row.instrument != last_inst or row.volume != last_vol:
-                        if row.volume != last_vol:
-                            f.write(f"    .byte ${row_num:02X},${export_note|0x80:02X},${row.instrument|0x80:02X},${row.volume:02X}\n")
-                        else:
-                            f.write(f"    .byte ${row_num:02X},${export_note|0x80:02X},${row.instrument:02X}\n")
-                        last_inst = row.instrument
-                        last_vol = row.volume
-                    else:
-                        f.write(f"    .byte ${row_num:02X},${export_note:02X}\n")
-                
-                f.write("    .byte $FF\n\n")
-        
-        return True, f"Exported to {out_dir}/"
-    except Exception as e:
-        return False, f"Export failed: {e}"
-
 
 # =============================================================================
 # VQ_CONVERTER IMPORT (Legacy compatibility)

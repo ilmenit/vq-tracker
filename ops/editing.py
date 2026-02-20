@@ -4,8 +4,8 @@ Cell editing, note entry, copy/paste, undo/redo.
 """
 import logging
 
-from constants import (MAX_NOTES, MAX_VOLUME, MAX_INSTRUMENTS, NOTE_OFF,
-                       MAX_OCTAVES)
+from constants import (MAX_NOTES, MAX_VOLUME, MAX_INSTRUMENTS, MAX_CHANNELS,
+                       NOTE_OFF, VOL_CHANGE, MAX_OCTAVES)
 from state import state
 from ops.base import ui, save_undo, fmt
 
@@ -76,12 +76,52 @@ def enter_note_off():
     move_cursor(state.step, 0)
 
 
+def enter_vol_change():
+    """Enter volume-change marker at cursor position.
+
+    Sets the note to VOL_CHANGE (V--) and stamps the current brush
+    volume.  Requires volume_control to be enabled on the song.
+    """
+    if not state.song.volume_control:
+        ui.show_status("Volume control is disabled - enable in Song Info")
+        return
+
+    save_undo("Enter volume change")
+    state.clear_pending()
+    state.selection.clear()
+
+    ptn = state.current_pattern()
+    row = ptn.get_row(state.row)
+    row.note = VOL_CHANGE
+    row.volume = state.volume
+
+    from ops.navigation import move_cursor
+    move_cursor(state.step, 0)
+
+
 # =============================================================================
 # CELL EDITING
 # =============================================================================
 
 def clear_cell(*args):
-    """Clear current cell."""
+    """Clear current cell or selected block."""
+    block = state.selection.get_block()
+    if block:
+        # Clear entire selected rectangle
+        save_undo("Clear block")
+        row_lo, row_hi, ch_lo, ch_hi = block
+        target_chs = set(range(ch_lo, ch_hi + 1))
+        _unshare_patterns(target_chs)
+        ptns = state.song.songlines[state.songline].patterns
+        for ch in range(ch_lo, ch_hi + 1):
+            ptn = state.song.get_pattern(ptns[ch])
+            for r in range(row_lo, row_hi + 1):
+                if r < ptn.length:
+                    ptn.get_row(r).clear()
+        state.selection.clear()
+        ui.refresh_editor()
+        return
+
     save_undo("Clear")
     state.clear_pending()
     ptn = state.current_pattern()
@@ -120,7 +160,12 @@ def insert_row(*args):
 
 
 def delete_row(*args):
-    """Delete row at cursor."""
+    """Delete row at cursor, or clear selected block."""
+    block = state.selection.get_block()
+    if block:
+        # Delete with selection = clear the block
+        clear_cell()
+        return
     save_undo("Delete row")
     state.clear_pending()
     state.current_pattern().delete_row(state.row)
@@ -153,6 +198,9 @@ def enter_digit(d: int):
     else:  # Volume (1 hex digit)
         save_undo("Enter volume")
         row.volume = min(d & 0xF, MAX_VOLUME)
+        # Auto-insert VOL_CHANGE on empty rows
+        if row.note == 0 and state.song.volume_control:
+            row.note = VOL_CHANGE
         state.clear_pending()
         from ops.navigation import move_cursor
         move_cursor(state.step, 0)
@@ -192,6 +240,9 @@ def enter_digit_decimal(d: int):
         if state.pending_digit is not None and state.pending_col == 2:
             val = state.pending_digit * 10 + d
             row.volume = min(val, MAX_VOLUME)
+            # Auto-insert VOL_CHANGE on empty rows
+            if row.note == 0 and state.song.volume_control:
+                row.note = VOL_CHANGE
             state.clear_pending()
             from ops.navigation import move_cursor
             move_cursor(state.step, 0)
@@ -201,6 +252,9 @@ def enter_digit_decimal(d: int):
             state.pending_digit = d
             state.pending_col = 2
             row.volume = min(d, MAX_VOLUME)
+            # Auto-insert VOL_CHANGE on empty rows
+            if row.note == 0 and state.song.volume_control:
+                row.note = VOL_CHANGE
 
     ui.refresh_editor()
 
@@ -269,34 +323,92 @@ def set_pattern_length(length: int, ptn_idx: int = None):
 # COPY / PASTE
 # =============================================================================
 
-def copy_cells(*args):
-    """Copy selected cells or current row."""
-    ptn = state.current_pattern()
-    sel_range = state.selection.get_range()
+def _unshare_patterns(target_chs: set) -> bool:
+    """Auto-clone patterns that are shared between target and non-target channels.
 
-    if sel_range:
-        start, end = sel_range
-        rows = [ptn.get_row(i) for i in range(start, end + 1)]
-        state.clipboard.copy(rows, state.channel)
-        ui.show_status(f"Copied {len(rows)} rows")
+    When editing (paste/cut/clear) a multi-channel block, if a target channel's
+    pattern index is also used by a channel outside the target set, cloning the
+    pattern first prevents the edit from "leaking" to unrelated channels.
+
+    Returns True if any pattern was cloned (caller should refresh combos).
+    """
+    songline = state.song.songlines[state.songline]
+    ptns = songline.patterns
+    cloned = False
+    for ch in target_chs:
+        ptn_idx = ptns[ch]
+        shared = any(ptns[other] == ptn_idx
+                     for other in range(MAX_CHANNELS)
+                     if other not in target_chs)
+        if shared:
+            new_idx = state.song.clone_pattern(ptn_idx)
+            if new_idx >= 0:
+                ptns[ch] = new_idx
+                cloned = True
+    if cloned:
+        try:
+            ui.refresh_all_pattern_combos()
+        except Exception:
+            pass
+    return cloned
+
+def copy_cells(*args):
+    """Copy selected block (or current row) to clipboard + OS clipboard."""
+    import clipboard_text
+    block = state.selection.get_block()
+
+    if block:
+        row_lo, row_hi, ch_lo, ch_hi = block
+        ptns = state.get_patterns()
+        data = []  # data[ch_offset][row_offset]
+        for ch in range(ch_lo, ch_hi + 1):
+            ptn = state.song.get_pattern(ptns[ch])
+            ch_rows = []
+            for r in range(row_lo, row_hi + 1):
+                ch_rows.append(ptn.get_row(r % ptn.length).copy())
+            data.append(ch_rows)
+        state.clipboard.copy_block(data)
+        num_ch = ch_hi - ch_lo + 1
+        num_rows = row_hi - row_lo + 1
+        # Also set OS clipboard
+        try:
+            text = clipboard_text.rows_to_text(data)
+            clipboard_text.set_os_clipboard(text)
+        except Exception:
+            pass
+        ui.show_status(f"Copied {num_rows} rows × {num_ch} ch")
     else:
-        state.clipboard.copy([ptn.get_row(state.row)], state.channel)
+        # No selection: copy current row, current channel only
+        ptn = state.current_pattern()
+        data = [[ptn.get_row(state.row).copy()]]
+        state.clipboard.copy_block(data)
+        try:
+            text = clipboard_text.rows_to_text(data)
+            clipboard_text.set_os_clipboard(text)
+        except Exception:
+            pass
         ui.show_status("Copied row")
 
 
 def cut_cells(*args):
-    """Cut selected cells or current row."""
+    """Cut selected block (or current row)."""
     copy_cells()
 
-    ptn = state.current_pattern()
-    sel_range = state.selection.get_range()
-
+    block = state.selection.get_block()
     save_undo("Cut")
-    if sel_range:
-        start, end = sel_range
-        for i in range(start, end + 1):
-            ptn.get_row(i).clear()
+
+    if block:
+        row_lo, row_hi, ch_lo, ch_hi = block
+        target_chs = set(range(ch_lo, ch_hi + 1))
+        _unshare_patterns(target_chs)
+        ptns = state.song.songlines[state.songline].patterns
+        for ch in range(ch_lo, ch_hi + 1):
+            ptn = state.song.get_pattern(ptns[ch])
+            for r in range(row_lo, row_hi + 1):
+                if r < ptn.length:
+                    ptn.get_row(r).clear()
     else:
+        ptn = state.current_pattern()
         ptn.get_row(state.row).clear()
 
     state.selection.clear()
@@ -305,21 +417,58 @@ def cut_cells(*args):
 
 
 def paste_cells(*args):
-    """Paste cells at cursor."""
-    rows = state.clipboard.paste()
-    if not rows:
+    """Paste block at cursor.
+
+    Priority:
+    1. OS clipboard (if it contains valid PVQT text — user may have edited
+       the data in Notepad since the last internal copy).
+    2. Internal clipboard (always available, set by Ctrl+C within tracker).
+
+    Pastes multi-channel blocks starting at (state.row, state.channel).
+    Auto-clones shared patterns so the paste doesn't leak to channels
+    outside the target range.
+    """
+    import clipboard_text
+
+    data = None
+    # Try OS clipboard first (may contain user-edited PVQT text)
+    try:
+        text = clipboard_text.get_os_clipboard()
+        if text:
+            check = text.lstrip("\ufeff\xef\xbb\xbf")
+            if check.startswith(clipboard_text.MAGIC):
+                result = clipboard_text.text_to_rows(text)
+                if result:
+                    data, _, _ = result
+    except Exception:
+        pass
+    # Fall back to internal clipboard
+    if not data and state.clipboard.has_data():
+        data = state.clipboard.paste_block()
+
+    if not data:
+        ui.show_status("Nothing to paste")
         return
 
     save_undo("Paste")
-    ptn = state.current_pattern()
-    for i, row in enumerate(rows):
-        target_row = state.row + i
-        if target_row < ptn.length:
-            ptn.rows[target_row] = row
+    num_ch = min(len(data), MAX_CHANNELS - state.channel)
+    num_rows = len(data[0]) if data else 0
+    target_chs = set(range(state.channel, state.channel + num_ch))
+
+    _unshare_patterns(target_chs)
+
+    ptns = state.song.songlines[state.songline].patterns
+    for ch_offset in range(num_ch):
+        target_ch = state.channel + ch_offset
+        ptn = state.song.get_pattern(ptns[target_ch])
+        for r_offset in range(num_rows):
+            target_row = state.row + r_offset
+            if target_row < ptn.length:
+                ptn.rows[target_row] = data[ch_offset][r_offset]
 
     state.selection.clear()
     ui.refresh_editor()
-    ui.show_status(f"Pasted {len(rows)} rows")
+    ui.show_status(f"Pasted {num_rows} rows × {num_ch} ch")
 
 
 # =============================================================================

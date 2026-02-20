@@ -14,6 +14,8 @@
         "copy": "Ctrl+C",
         "cut": "Ctrl+X",
         "paste": "Ctrl+V",
+        "select_all": "Ctrl+A",
+        "toggle_follow": "F4",
 
         "_comment_nav": "--- Navigation ---",
         "jump_first_songline": "Ctrl+Home",

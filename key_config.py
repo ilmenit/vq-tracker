@@ -98,6 +98,8 @@ DEFAULT_BINDINGS: Dict[str, str] = {
     "copy":                 "Ctrl+C",
     "cut":                  "Ctrl+X",
     "paste":                "Ctrl+V",
+    "select_all":           "Ctrl+A",
+    "toggle_follow":        "F4",
     "jump_first_songline":  "Ctrl+Home",
     "jump_last_songline":   "Ctrl+End",
     "step_up":              "Ctrl+Shift+Up",
@@ -131,6 +133,8 @@ ACTION_DESCRIPTIONS: Dict[str, str] = {
     "copy":                 "Copy cells",
     "cut":                  "Cut cells",
     "paste":                "Paste cells",
+    "select_all":           "Select all (pattern)",
+    "toggle_follow":        "Toggle follow mode",
     "jump_first_songline":  "First songline",
     "jump_last_songline":   "Last songline",
     "step_up":              "Increase edit step",
@@ -243,16 +247,28 @@ def _resolve_key_code(key_name: str) -> Optional[int]:
         return None
     try:
         import dearpygui.dearpygui as dpg
-        return getattr(dpg, attr_name, None)
+        # Try primary attribute name first
+        val = getattr(dpg, attr_name, None)
+        if val is not None:
+            return val
+        # Try alternative names for keys that changed between DPG versions
+        try:
+            from dpg_keys import DPG_ATTR_ALTERNATIVES
+            alternatives = DPG_ATTR_ALTERNATIVES.get(attr_name, ())
+            for alt in alternatives:
+                val = getattr(dpg, alt, None)
+                if val is not None:
+                    return val
+        except ImportError:
+            pass
+        return None
     except ImportError:
         # Deterministic fallback for testing without DPG.
-        # Python's hash() is randomized per session (PYTHONHASHSEED),
-        # so we use a simple stable hash to avoid flaky collisions.
         h = 0x811c9dc5  # FNV-1a offset basis (32-bit)
         for b in attr_name.encode():
             h ^= b
             h = (h * 0x01000193) & 0xFFFFFFFF
-        return h & 0x7FFFFFFF  # positive 31-bit int (avoids 0)
+        return h & 0x7FFFFFFF
 
 
 # =============================================================================
@@ -425,6 +441,8 @@ def generate_default_config() -> str:
         ("save_project", None), ("save_project_as", None),
         ("undo", None), ("redo", None),
         ("copy", None), ("cut", None), ("paste", None),
+        ("select_all", None),
+        ("toggle_follow", None),
         ("_comment_nav", "--- Navigation ---"),
         ("jump_first_songline", None), ("jump_last_songline", None),
         ("step_up", None), ("step_down", None),

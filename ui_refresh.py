@@ -1,21 +1,32 @@
 """POKEY VQ Tracker - UI Refresh Functions"""
 import dearpygui.dearpygui as dpg
+import logging
 from constants import (MAX_CHANNELS, MAX_VOLUME, note_to_str, FOCUS_SONG,
                        COL_NOTE, COL_INST, COL_VOL)
 from state import state
 from ui_theme import get_cell_theme
+from cell_colors import (get_note_color_theme as _get_note_color,
+                         get_inst_color_theme as _get_inst_color,
+                         get_vol_color_theme as _get_vol_color,
+                         get_ptn_color_theme as _get_ptn_color,
+                         get_combo_color_theme as _get_combo_color,
+                         get_inst_list_color_theme as _get_inst_list_color)
 import ui_globals as G
+
+logger = logging.getLogger("ui_refresh")
 
 # Callbacks set by main module to avoid circular imports
 _preview_callback = None
 _select_callback = None
+_effects_callback = None
 
 
-def set_instrument_callbacks(preview_cb, select_cb):
+def set_instrument_callbacks(preview_cb, select_cb, effects_cb=None):
     """Set callbacks for instrument list buttons."""
-    global _preview_callback, _select_callback
+    global _preview_callback, _select_callback, _effects_callback
     _preview_callback = preview_cb
     _select_callback = select_cb
+    _effects_callback = effects_cb
 
 
 def refresh_all():
@@ -38,6 +49,17 @@ def refresh_all():
         pass
 
 
+def _color_combo(tag: str, value: int, palette: str):
+    """Apply palette text color to a combo widget, or unbind if palette is None."""
+    if not dpg.does_item_exist(tag):
+        return
+    ct = _get_combo_color(value, palette)
+    if ct and dpg.does_item_exist(ct):
+        dpg.bind_item_theme(tag, ct)
+    else:
+        dpg.bind_item_theme(tag, 0)  # unbind
+
+
 def refresh_all_pattern_combos():
     """Update ALL pattern combo lists throughout the UI."""
     ptn_items = [G.fmt(i) for i in range(len(state.song.patterns))] + ["+"]
@@ -46,6 +68,7 @@ def refresh_all_pattern_combos():
         dpg.configure_item("ptn_select_combo", items=ptn_items)
         if state.selected_pattern < len(state.song.patterns):
             dpg.set_value("ptn_select_combo", G.fmt(state.selected_pattern))
+        _color_combo("ptn_select_combo", state.selected_pattern, G.ptn_palette)
     
     for ch in range(MAX_CHANNELS):
         combo_tag = f"ch_ptn_combo_{ch}"
@@ -54,6 +77,7 @@ def refresh_all_pattern_combos():
             ptns = state.get_patterns()
             if ch < len(ptns):
                 dpg.set_value(combo_tag, G.fmt(ptns[ch]))
+                _color_combo(combo_tag, ptns[ch], G.ptn_palette)
 
 
 def refresh_all_instrument_combos():
@@ -68,6 +92,7 @@ def refresh_all_instrument_combos():
             dpg.set_value("input_inst_combo", items[state.instrument])
         elif items:
             dpg.set_value("input_inst_combo", items[0])
+        _color_combo("input_inst_combo", state.instrument, G.inst_palette)
     
     if dpg.does_item_exist("input_vol_combo"):
         vol_items = [G.fmt_vol(v) for v in range(MAX_VOLUME + 1)]
@@ -121,7 +146,9 @@ def refresh_song_editor():
                     elif is_cursor_row:
                         theme = "theme_cell_current_row"
                     else:
-                        theme = "theme_cell_empty"
+                        # Apply pattern palette color
+                        cc = _get_ptn_color(ptn_val, G.ptn_palette, "n")
+                        theme = cc or "theme_cell_empty"
                     dpg.bind_item_theme(cell_tag, theme)
                 else:
                     dpg.configure_item(cell_tag, label="--")
@@ -192,9 +219,17 @@ def refresh_instruments():
             is_current = (i == state.instrument)
             theme = get_inst_theme(is_current, is_converted)
             
+            # Get palette color for this instrument number
+            inst_color = (100, 100, 110)  # default dim gray
+            if G.inst_palette != "None":
+                from cell_colors import PALETTES
+                pal = PALETTES.get(G.inst_palette)
+                if pal:
+                    inst_color = pal[i % 16]
+            
             with dpg.group(horizontal=True, parent="instlist"):
-                # Instrument number
-                dpg.add_text(f"{G.fmt(i)}", color=(100,100,110))
+                # Instrument number (palette-colored)
+                dpg.add_text(f"{G.fmt(i)}", color=inst_color)
                 dpg.add_spacer(width=2)
                 
                 # Preview button
@@ -221,9 +256,16 @@ def refresh_instruments():
                 # Optimize suggestion indicator (next to checkbox)
                 if opt_result and i < len(opt_result.analyses):
                     a = opt_result.analyses[i]
-                    # Show whether current setting matches optimizer's suggestion
-                    matches = (inst.use_vq == (not a.suggest_raw))
-                    if a.suggest_raw:
+                    if a.skipped:
+                        # Unused instrument in "Used Samples" mode
+                        ind = dpg.add_text("-", color=(100, 100, 110))
+                        with dpg.tooltip(ind):
+                            dpg.add_text("Unused in song", color=(150, 150, 150))
+                            dpg.add_text("Not included in CONVERT/OPTIMIZE.")
+                            dpg.add_text("Add notes using this instrument")
+                            dpg.add_text("or uncheck 'Used Samples'.")
+                    elif a.suggest_raw:
+                        matches = not inst.use_vq  # RAW suggested, checkbox unchecked = match
                         if matches:
                             ind = dpg.add_text("R", color=(100, 255, 100))
                         else:
@@ -237,6 +279,7 @@ def refresh_instruments():
                             if a.cpu_saving > 0.5:
                                 dpg.add_text(f"CPU saving: {a.cpu_saving:.1f} cyc/IRQ")
                     else:
+                        matches = inst.use_vq  # VQ suggested, checkbox checked = match
                         if matches:
                             ind = dpg.add_text("V", color=(200, 200, 100))
                         else:
@@ -247,6 +290,25 @@ def refresh_instruments():
                                 dpg.add_text("(you overrode this)", color=(255, 200, 100))
                             dpg.add_text(f"Reason: {a.reason}")
                             dpg.add_text(f"RAW: {format_size(a.raw_size_aligned)}, VQ: {format_size(a.vq_size)}")
+                
+                # Effects indicator button (opens sample editor)
+                has_fx = bool(inst.effects)
+                fx_label = "E" if has_fx else " "
+                fx_btn = dpg.add_button(label=fx_label, width=20, height=20,
+                                        callback=_effects_callback or _select_callback,
+                                        user_data=i)
+                if has_fx:
+                    dpg.bind_item_theme(fx_btn, "theme_fx_active")
+                with dpg.tooltip(fx_btn):
+                    if has_fx:
+                        n = len(inst.effects)
+                        dpg.add_text(f"{n} effect(s) applied", color=(180, 220, 255))
+                        for fx in inst.effects[:5]:
+                            dpg.add_text(f"  {fx.type}", color=(140, 160, 180))
+                        dpg.add_text("Click to open Sample Editor")
+                    else:
+                        dpg.add_text("No effects", color=(120, 120, 120))
+                        dpg.add_text("Click to open Sample Editor")
                 
                 # Instrument name button (clickable to select)
                 name = inst.name[:20] if inst.name else "(unnamed)"
@@ -292,7 +354,13 @@ def refresh_instruments():
                             lines.append(f"Mode: {'VQ' if inst.use_vq else 'RAW'}")
                         for line in lines:
                             dpg.add_text(line)
-                    dpg.bind_item_theme(btn, theme)
+                    # Selected instrument: highlight theme (green or blue bg)
+                    # Non-selected: palette text + converted/normal bg
+                    if is_current:
+                        dpg.bind_item_theme(btn, theme)
+                    else:
+                        il_theme = _get_inst_list_color(i, is_converted, G.inst_palette)
+                        dpg.bind_item_theme(btn, il_theme or theme)
     
     # Update VQ UI elements
     _update_vq_ui()
@@ -358,6 +426,7 @@ def refresh_editor():
         combo_tag = f"ch_ptn_combo_{ch}"
         if dpg.does_item_exist(combo_tag):
             dpg.set_value(combo_tag, G.fmt(ptns[ch]))
+            _color_combo(combo_tag, ptns[ch], G.ptn_palette)
         cb_tag = f"ch_enabled_{ch}"
         if dpg.does_item_exist(cb_tag):
             dpg.set_value(cb_tag, state.audio.is_channel_enabled(ch))
@@ -398,6 +467,7 @@ def refresh_editor():
             has_note = r.note > 0 if r else False
             
             # Helper to get cell theme with all conditions
+            # Priority: cursor > playing > current_row > SELECTED > inactive > highlight > default
             def cell_theme(is_col_cursor: bool) -> str:
                 if is_col_cursor:
                     return "theme_cell_cursor"
@@ -405,12 +475,14 @@ def refresh_editor():
                     return "theme_cell_playing"
                 elif is_cursor_row:
                     return "theme_cell_current_row"
+                elif is_selected:
+                    return "theme_cell_selected"
                 elif not ch_enabled:
                     return "theme_cell_inactive"
                 elif is_highlight and not is_repeat:
                     return "theme_cell_highlight"
                 else:
-                    return get_cell_theme(False, False, is_selected, is_repeat, has_note, not ch_enabled)
+                    return get_cell_theme(False, False, False, is_repeat, has_note, not ch_enabled)
             
             note_tag = f"cell_note_{vis_row}_{ch}"
             if dpg.does_item_exist(note_tag):
@@ -418,7 +490,15 @@ def refresh_editor():
                     note_str = note_to_str(r.note)
                     prefix = "~" if is_repeat and actual_row == 0 else " "
                     dpg.configure_item(note_tag, label=f"{prefix}{note_str}")
-                    dpg.bind_item_theme(note_tag, cell_theme(is_cursor and state.column == COL_NOTE))
+                    base_theme = cell_theme(is_cursor and state.column == COL_NOTE)
+                    # Apply palette color for data cells (not cursor/playing/selected/inactive/repeat)
+                    cc_theme = None
+                    if (r.note > 0 and not is_cursor and not is_playing
+                            and not is_repeat and ch_enabled
+                            and not is_selected and G.note_palette != "None"):
+                        variant = "c" if is_cursor_row else ("h" if is_highlight else "n")
+                        cc_theme = _get_note_color(r.note, G.note_palette, variant)
+                    dpg.bind_item_theme(note_tag, cc_theme or base_theme)
                 else:
                     dpg.configure_item(note_tag, label="")
             
@@ -429,13 +509,21 @@ def refresh_editor():
                     dpg.configure_item(inst_tag, label=inst_str)
                     
                     # Check for invalid instrument reference (has note but inst doesn't exist)
-                    has_invalid_inst = (r.note > 0 and r.note != 255 and 
+                    has_invalid_inst = (r.note > 0 and r.note not in (255, 254) and 
                                        r.instrument >= len(state.song.instruments))
                     
                     if has_invalid_inst and not is_cursor:
                         dpg.bind_item_theme(inst_tag, "theme_cell_warning")
                     else:
-                        dpg.bind_item_theme(inst_tag, cell_theme(is_cursor and state.column == COL_INST))
+                        base_theme = cell_theme(is_cursor and state.column == COL_INST)
+                        cc_theme = None
+                        if (r.note > 0 and not has_invalid_inst
+                                and not is_cursor and not is_playing
+                                and not is_repeat and ch_enabled
+                                and not is_selected and G.inst_palette != "None"):
+                            variant = "c" if is_cursor_row else ("h" if is_highlight else "n")
+                            cc_theme = _get_inst_color(r.instrument, True, G.inst_palette, variant)
+                        dpg.bind_item_theme(inst_tag, cc_theme or base_theme)
                 else:
                     dpg.configure_item(inst_tag, label="")
             
@@ -444,7 +532,14 @@ def refresh_editor():
                 if r and row_idx < max_len:
                     vol_str = G.fmt_vol(r.volume) if r.note > 0 else ("-" if state.hex_mode else "--")
                     dpg.configure_item(vol_tag, label=vol_str)
-                    dpg.bind_item_theme(vol_tag, cell_theme(is_cursor and state.column == COL_VOL))
+                    base_theme = cell_theme(is_cursor and state.column == COL_VOL)
+                    cc_theme = None
+                    if (r.note > 0 and not is_cursor and not is_playing
+                            and not is_repeat and ch_enabled
+                            and not is_selected and G.vol_palette != "None"):
+                        variant = "c" if is_cursor_row else ("h" if is_highlight else "n")
+                        cc_theme = _get_vol_color(r.volume, True, G.vol_palette, variant)
+                    dpg.bind_item_theme(vol_tag, cc_theme or base_theme)
                 else:
                     dpg.configure_item(vol_tag, label="")
 
@@ -470,6 +565,10 @@ def update_controls():
         dpg.set_value("screen_control_cb", state.song.screen_control)
     if dpg.does_item_exist("keyboard_control_cb"):
         dpg.set_value("keyboard_control_cb", state.song.keyboard_control)
+    if dpg.does_item_exist("start_address_input"):
+        dpg.set_value("start_address_input", f"{state.song.start_address:04X}")
+    if dpg.does_item_exist("memory_config_combo"):
+        dpg.set_value("memory_config_combo", state.song.memory_config)
     # Show/hide volume in CURRENT section based on volume_control setting
     if dpg.does_item_exist("current_vol_group"):
         dpg.configure_item("current_vol_group", show=state.song.volume_control)
@@ -489,8 +588,18 @@ def update_controls():
         dpg.set_value("vq_smooth_combo", str(state.vq.settings.smoothness))
     if dpg.does_item_exist("vq_enhance_cb"):
         dpg.set_value("vq_enhance_cb", state.vq.settings.enhance)
-    if dpg.does_item_exist("vq_memory_limit_input"):
-        dpg.set_value("vq_memory_limit_input", state.vq.settings.memory_limit // 1024)
+    if dpg.does_item_exist("vq_used_only_cb"):
+        dpg.set_value("vq_used_only_cb", state.vq.settings.used_only)
+    
+    # Follow mode checkbox
+    if dpg.does_item_exist("follow_checkbox"):
+        dpg.set_value("follow_checkbox", state.follow)
+    
+    # Channel enable checkboxes (needed after solo toggle)
+    for ch in range(MAX_CHANNELS):
+        cb_tag = f"ch_enabled_{ch}"
+        if dpg.does_item_exist(cb_tag):
+            dpg.set_value(cb_tag, state.audio.is_channel_enabled(ch))
     
     G.update_title()
 
@@ -500,7 +609,7 @@ def quick_validate_song():
     
     Returns (error_count, warning_count, first_issue_msg)
     """
-    from constants import MAX_ROWS, MAX_NOTES, MAX_VOLUME, NOTE_OFF
+    from constants import MAX_ROWS, MAX_NOTES, MAX_VOLUME, NOTE_OFF, VOL_CHANGE
     
     errors = 0
     warnings = 0
@@ -527,7 +636,7 @@ def quick_validate_song():
             
             # Check note
             if row.note != 0 and row.note != NOTE_OFF:
-                if row.note < 1 or row.note > MAX_NOTES:
+                if row.note != VOL_CHANGE and (row.note < 1 or row.note > MAX_NOTES):
                     errors += 1
                     if not first_issue:
                         first_issue = f"Ptn {ptn_idx} Row {row_idx}: invalid note {row.note}"
@@ -542,7 +651,7 @@ def quick_validate_song():
     used_instruments = set()
     for pattern in song.patterns:
         for row in pattern.rows[:pattern.length]:
-            if row.note > 0 and row.note != NOTE_OFF:
+            if row.note > 0 and row.note not in (NOTE_OFF, VOL_CHANGE):
                 used_instruments.add(row.instrument)
     
     # Check instrument references
@@ -579,18 +688,138 @@ def update_validation_indicator():
     if errors > 0:
         # Red - errors found
         dpg.configure_item("validation_indicator", color=(255, 100, 100))
-        dpg.set_value("validation_indicator", f"âš  {errors} error(s)")
+        dpg.set_value("validation_indicator", f"[X] {errors} error(s)")
         if dpg.does_item_exist("validation_tooltip_text"):
             dpg.set_value("validation_tooltip_text", first_issue or "Click VALIDATE for details")
     elif warnings > 0:
         # Yellow - warnings only
         dpg.configure_item("validation_indicator", color=(255, 200, 100))
-        dpg.set_value("validation_indicator", f"âš  {warnings} warning(s)")
+        dpg.set_value("validation_indicator", f"[!] {warnings} warning(s)")
         if dpg.does_item_exist("validation_tooltip_text"):
             dpg.set_value("validation_tooltip_text", first_issue or "Click VALIDATE for details")
     else:
         # Green - all good
         dpg.configure_item("validation_indicator", color=(100, 200, 100))
-        dpg.set_value("validation_indicator", "âœ“ Valid")
+        dpg.set_value("validation_indicator", "[OK] Valid")
         if dpg.does_item_exist("validation_tooltip_text"):
             dpg.set_value("validation_tooltip_text", "Song is ready for export")
+
+
+# =============================================================================
+# VISUALIZATION — channel VU bars + frequency spectrum
+# =============================================================================
+
+_vu_display = [0.0] * MAX_CHANNELS  # Smoothed display levels (0.0–1.0)
+_spectrum_display = None  # Smoothed spectrum bars
+
+_VU_DECAY = 0.97     # Per-frame decay for VU (slow fall for short bars)
+_SPEC_DECAY = 0.85    # Per-frame decay for spectrum (faster = snappier)
+_N_SPECTRUM_BARS = 24
+
+# Precomputed log-spaced frequency bin edges (20Hz to ~20kHz)
+_SPEC_EDGES = None  # Initialized on first call
+
+
+def _init_spectrum_edges():
+    """Compute log-spaced frequency bin edges for spectrum bars."""
+    global _SPEC_EDGES
+    import numpy as np
+    low = 60.0     # Hz — skip sub-bass/DC region
+    high = 18000.0  # Hz
+    _SPEC_EDGES = np.logspace(
+        np.log10(low), np.log10(high), _N_SPECTRUM_BARS + 1)
+
+
+def update_visualization():
+    """Update both channel VU bars and frequency spectrum.
+    
+    Called every frame from main loop.
+    """
+    global _vu_display, _spectrum_display
+    
+    if not G.viz_enabled:
+        return
+    
+    has_vu = dpg.does_item_exist("vu_bar_0")
+    has_spec = dpg.does_item_exist("spectrum_bars")
+    if not has_vu and not has_spec:
+        return
+
+    # --- Channel VU ---
+    engine_levels = state.audio.get_vu_levels()
+    for i in range(MAX_CHANNELS):
+        fresh = engine_levels[i] if i < len(engine_levels) else 0.0
+        _vu_display[i] = max(fresh, _vu_display[i] * _VU_DECAY)
+        # Consume spike
+        if fresh > 0.0 and i < len(state.audio.channels):
+            state.audio.channels[i].vu_level = 0.0
+
+    if has_vu:
+        for i in range(MAX_CHANNELS):
+            tag = f"vu_bar_{i}"
+            if dpg.does_item_exist(tag):
+                dpg.set_value(tag, [[i], [min(1.0, _vu_display[i])]])
+
+    # --- Frequency Spectrum ---
+    if has_spec:
+        _update_spectrum()
+
+
+def _update_spectrum():
+    """Compute FFT spectrum from audio engine's capture buffer."""
+    global _spectrum_display, _SPEC_EDGES
+    import numpy as np
+    
+    if _SPEC_EDGES is None:
+        _init_spectrum_edges()
+    
+    if _spectrum_display is None:
+        _spectrum_display = np.zeros(_N_SPECTRUM_BARS, dtype=np.float32)
+
+    # Get audio snapshot
+    samples = state.audio.get_fft_snapshot()
+    
+    # Remove DC offset before FFT
+    samples = samples - np.mean(samples)
+    
+    # Apply Hann window and FFT
+    window = np.hanning(len(samples))
+    windowed = samples * window
+    fft_data = np.abs(np.fft.rfft(windowed))
+    
+    # Zero out bin 0 (DC) explicitly
+    fft_data[0] = 0.0
+    
+    # Convert to frequency bins
+    from audio_engine import SAMPLE_RATE
+    fft_size = len(samples)
+    freq_per_bin = SAMPLE_RATE / fft_size
+    
+    bars = np.zeros(_N_SPECTRUM_BARS, dtype=np.float32)
+    for i in range(_N_SPECTRUM_BARS):
+        lo_idx = max(1, int(_SPEC_EDGES[i] / freq_per_bin))
+        hi_idx = min(len(fft_data), int(_SPEC_EDGES[i + 1] / freq_per_bin))
+        if hi_idx > lo_idx:
+            bars[i] = np.mean(fft_data[lo_idx:hi_idx])
+    
+    # Convert to dB scale with noise gate
+    # For 2048-pt Hann-windowed FFT, full-scale sine peak ≈ 512
+    # Average per-band magnitudes for loud signals: ~20-200
+    noise_floor = 0.01     # Below this = silence
+    db_range = 50.0        # Dynamic range in dB
+    ref_level = 100.0      # "Full loudness" reference magnitude
+    
+    bars = np.where(bars > noise_floor,
+                    np.clip((20.0 * np.log10(bars / ref_level) + db_range) / db_range,
+                            0.0, 1.0),
+                    0.0)
+    
+    # Smooth with decay
+    _spectrum_display = np.maximum(bars, _spectrum_display * _SPEC_DECAY)
+    
+    # Update plot
+    if dpg.does_item_exist("spectrum_bars"):
+        dpg.set_value("spectrum_bars", [
+            list(range(_N_SPECTRUM_BARS)),
+            _spectrum_display.tolist()
+        ])

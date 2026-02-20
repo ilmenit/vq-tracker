@@ -5,60 +5,107 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [Beta 5] - 2025-02
+
+### Extended Memory Banking
+
+- **Per-bank VQ codebooks**: Each 16KB bank stores its own 256-entry codebook trained via k-means on that bank's audio content. Replaces the single global codebook, dramatically improving VQ quality — each instrument gets codebook entries optimized for its own timbral content.
+- **DBANK_TABLE fix**: Bank selection table was aliased on 130XE — first 4 entries all mapped to the same physical bank. Rewritten to follow the reference `detect_ext` block-grouped ordering.
+- **Alias-aware bank detection**: `mem_detect.asm` rewritten to detect actual distinct banks (not aliases). A 130XE now correctly reports 4 banks, not 64.
+- **PORTB bit 0 fix**: OS ROM was enabled during bank-switched playback, corrupting any sample data above $C000. All runtime PORTB values now have bit 0 cleared.
+- **Song data expansion**: Charset relocated to $FC00, freeing song data region from 16KB to 29KB ($8000–$CFFF + $D800–$FBFF, split around I/O).
+- **SEI micro-window optimization**: VQ bank-read reduced from 41 to 25 cycles by narrowing the interrupt-disabled window.
+
+### Audio & Playback
+
+- **Audio stream architecture**: Eliminated all secondary audio streams. Preview playback (sample editor, file browser) now routes through the main engine's single OutputStream, preventing silent stream death.
+- **Exception-safe audio callback**: Errors output silence instead of killing the stream.
+- **Stream health monitoring**: Auto-restarts dead streams every ~2 seconds.
+- **WAV Export** (File → Export WAV): Offline render to 16-bit 44.1kHz mono WAV.
+
+### Visualization
+
+- **Real-time spectrum analyzer**: 24-band FFT frequency spectrum (60Hz–18kHz, log-spaced) computed from a 2048-sample ring buffer captured in the audio callback. dB normalization with noise gate.
+- **Channel VU bars**: 4 vertical bars with per-channel palette colors, slow decay (0.97/frame).
+- **Settings toggle**: Enable/disable visualization panel (Editor → Settings) to reduce CPU usage.
+
+### Pattern Editor
+
+- **2D block selection**: Selection spans rows × channels. Shift+arrows extend, Shift+click selects rectangle, Ctrl+A selects all.
+- **Multi-channel clipboard**: Copy/cut/paste full 2D blocks. OS clipboard via pyperclip — paste into text editors, edit, paste back.
+- **Shared pattern auto-clone**: Paste/cut/clear on shared patterns auto-clones to prevent edits leaking to other channels.
+- **Follow mode** (F4): Cursor chases playback position.
+- **Solo buttons** (S): Per-channel solo/unsolo in channel headers.
+- **Selection highlight priority fix**: Selection color now always visible, even on beat-marker rows.
+
+### Build Pipeline
+
+- **Memory upgrade dialog**: When build fails due to insufficient memory, a modal offers to upgrade to the smallest working config and rebuild automatically. Works for all failure types (bank packing, pre-flight overflow, assembly errors).
+- **Memory error screen**: User-friendly display on Atari showing memory config name, song title, and required banks (replaces cryptic "NEED: ?? BANKS").
+- **All-RAW build fix**: Build no longer fails when all instruments use RAW mode. Defensive ASM guards and VQ_CFG patching handle missing VQ constants.
+- **MADS macro label scoping**: Used `.def` directive to force global scope for labels created inside macros, fixing "Undeclared label" errors.
+
+### Splash Screen
+
+- **Reordered layout**: Song name and author (centered) on top two lines, VQ TRACKER banner on line 3, SONG/ROW/SPD status on line 4.
+
+### UI Improvements
+
+- **Instrument list coloring**: Instrument numbers and names colored with the active palette, matching track cell colors. Converted instruments show green background with hover/active states; non-converted show gray.
+- **Keyboard shortcuts**: F5–F8 playback keys work globally. Space toggles play/stop from any panel. Modal dialogs block editor shortcuts.
+- **Default sample rate**: Changed from 4524Hz to 3958Hz.
+
+### Code Quality
+
+- **IRQ handler macro refactor**: 852 lines → 315 lines via `CHANNEL_IRQ` macro with MADS parameter substitution.
+- **Bank window exit optimization**: Replaced CMP/BCC with BPL/BMI, saving 40 bytes and 48 cycles on bank-crossing paths.
+- **418 unit tests** covering banking, clipboard, selection, build pipeline, memory detection, VQ re-encoding, and UI state.
+
+---
+
+## [Beta 4] - 2025-02
+
+### Features
+
+- **MOD Import Wizard**: Full wizard with live memory budget, target machine selection, per-row volume control, pattern deduplication, and song truncation.
+- **Instrument Export**: Sample Editor exports processed audio to WAV/FLAC/OGG/MP3.
+- **Cell color palettes**: Pattern editor cells colored by note/instrument/volume/pattern. Four multi-color + six single-color palettes.
+- **Volume-change events (V--)**: Change volume without interrupting playback. Enter via tilde key or volume column on empty rows.
+- **Sustain effect**: Repeat sample loop regions 1–64 times with optional crossfade.
+- **"Used Samples" optimization**: CONVERT/OPTIMIZE skip unused instruments.
+- **Configurable Start Address**: Set player ORG ($0800–$3F00).
+- **Extended memory banking** (128KB–1MB): Bank-switched sample storage with RAM detection, multi-segment XEX, and banking-aware optimization.
+
+### Performance
+
+- **Optimized RAW IRQ player**: 88% → 62% CPU usage for 4 active RAW channels.
+- **Fixed 4-channel note trigger stutter**: Reduced IRQ blackout from 604 to 44 cycles.
+- **Pre-baked AUDC volume bit**: Saves 8 cycles/IRQ across 4 channels.
+
+### Bug Fixes
+
+- Pattern break (Dxx/Bxx) truncation, OPTIMIZE ignoring effects, double-sustain on round-trip, song.speed not serialized, volume_control flag not set on import, editor preferences overwritten by project load, cross-platform DPG key compatibility.
+
+---
+
 ## [Beta 3] - 2025-02
 
 ### Major Features
 
-- **4-channel polyphonic playback**: Expanded from 3 to 4 independent sample
-  channels. All four POKEY audio registers (AUDC1–AUDC4) are now used, giving
-  the full hardware polyphony. The 6502 IRQ handler, process_row commit logic,
-  and tracker_api all handle 4 channels with complete VQ/RAW mode support.
+- **4-channel polyphonic playback**: All four POKEY registers (AUDC1–AUDC4).
+- **Mixed VQ + RAW encoding**: Per-instrument VQ or RAW mode selection.
+- **OPTIMIZE button**: Analyzes instruments and recommends VQ/RAW per instrument.
+- **Amiga MOD import**: 4-channel ProTracker .MOD files with pattern/instrument/speed conversion.
+- **Coupled note entry mode**: FastTracker 2 style (overwrite instrument/volume) or Renoise style (preserve).
+- **Clone instrument**: Deep-copy to new slot.
 
-- **Amiga MOD import**: Import 4-channel ProTracker .MOD files with automatic
-  conversion of patterns, instruments, song arrangement, and speed settings.
-  MOD samples are resampled to the POKEY rate and their `base_note` is set to
-  C-3 (matching MOD tuning conventions). After import, the optimizer runs
-  automatically to assign RAW/VQ modes.
+### Bug Fixes
 
-- **Built-in sample editor**: Simple built-in sample editor to trim sample,
-  change octave or apply effects. The editor is "non-destructive" and the 
-  applied list of commands is copied on instrument cloning, so multiple variants
-  can be created easily.
+- MOD instruments 2 octaves too high (pitch table base_note fix), VQ preview cheating vs RAW, RAW preview wrong interpolation, IRQ skip fall-through, branch out of range, Atari data size display excluded RAW samples.
 
-- **Mixed VQ + RAW sample encoding**: Instruments can now individually use either
-  VQ (Vector Quantization) or RAW (uncompressed 4-bit PCM) encoding. VQ gives
-  better compression (8:1 with vec_size=8) using a shared 256-entry codebook.
-  RAW uses more memory but costs fewer CPU cycles per sample — no codebook
-  lookup needed. The player selects the correct handler per channel at note
-  trigger time via self-modifying code, with zero overhead during playback.
+### Improvements
 
-- **OPTIMIZE button**: Analyzes all instruments and the song arrangement to
-  recommend VQ or RAW mode for each instrument. The optimizer simulates
-  playback row-by-row to find the worst-case CPU load, then switches short
-  or CPU-heavy instruments to RAW when memory allows. After optimization,
-  V (VQ) and R (RAW) indicators appear next to each instrument showing the
-  recommendation. Toggling an instrument's checkbox preserves these indicators.
-
-- **Configurable memory limit**: The sample data memory budget is adjustable
-  (default 35 KB). The OPTIMIZE button and BUILD process respect this limit
-  when deciding how to fit instruments into the Atari's 64 KB RAM.
-
-- **Coupled note entry mode**: New setting (on by default) that controls whether
-  entering a note on an occupied cell overwrites the instrument and volume
-  (FastTracker 2 style) or preserves them (Renoise-style edit mask). Toggle
-  in Settings panel.
-
-- **Clone instrument**: Deep-copies the selected instrument (audio data, effects
-  chain, settings) to a new slot at the end of the instrument list.
-
-- **Removed size-optimized player from tracker**: The tracker now always uses
-  the speed-optimized IRQ handler. 
-
-- **Simplified menus**: Removed "Import vq_converter..." and "Export .ASM..."
-  menu items. The tracker workflow is now: compose → convert → build (.xex).
-
-- **Native File and Folder Selectors**: Removed ugly and non-intuitive custom
-  selectors. Now application is using system native selectors.
+- Noise shaping for RAW samples, 2-cycle/channel IRQ optimization, auto-optimize on MOD import.
 
 ---
 
@@ -66,102 +113,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Bug Fixes
 
-- **Windows: WinError 32 when loading .pvq files**: Loading projects failed with
-  "The process cannot access the file because it is being used by another process".
-  Root cause: ZIP archives use forward slashes (`samples/00.wav`) but Windows uses
-  backslashes. When checking if source and destination paths were the same,
-  string comparison failed due to mixed separators, causing `shutil.copy2()` to
-  attempt copying a file onto itself. Fixed with `os.path.normpath()` before
-  path comparison. (`file_io.py`)
-- **Linux/macOS: FFmpeg not found for MP3 import**: The `_setup_ffmpeg_for_pydub()`
-  function only set up the bundled FFmpeg path on Windows. Now works on all
-  platforms, enabling MP3/OGG/FLAC import from both source and PyInstaller builds.
-  (`main.py`)
-- **Misleading VQ conversion size**: The size shown after conversion (~30KB) didn't match
-  the actual .xex size (~7KB). The encoder's estimated size didn't account for nibble
-  packing. Fixed by having `MADSExporter.export()` return the actual byte count after
-  export, which `builder.py` now stores in `conversion_info.json`. (`vq_converter/`:
-  `mads_exporter.py`, `builder.py`; tracker: `vq_convert.py`, `ui_callbacks.py`,
-  `ui_refresh.py`)
-- **Song editor undo not recorded**: Editing pattern assignments or speed
-  values in the song editor via keyboard did not create an undo snapshot.
-  Changes were silently permanent. (`keyboard.py`: added `save_undo("Edit song")`
-  before `_apply_song_pattern_value` commits)
-- **Autosave lost VQ settings**: The `vq_enhance` and `vq_optimize_speed`
-  fields were not included in the `EditorState` written by autosave, causing
-  these settings to reset to defaults when restoring from an autosave.
-  (`ui_globals.py`: added both fields to the autosave `EditorState` constructor)
+- Windows WinError 32 loading .pvq files (path separator mismatch).
+- Linux/macOS FFmpeg not found for MP3 import in bundled builds.
+- Misleading VQ conversion size display.
+- Song editor undo not recorded.
+- Autosave lost VQ settings.
 
-### Project File Format
+### Improvements
 
-- **Simplified and portable .pvq format**: Complete redesign of sample storage:
-  - Samples stored as numbered files: `samples/000.wav`, `samples/001.wav`, etc.
-  - No paths stored in JSON — sample existence determined by file presence
-  - Removed `sample_path`, `original_sample_path`, `sample_file` from serialization
-  - Instrument `name`, `base_note`, `sample_rate` are the only persisted fields
-  - `sample_path` is now runtime-only, reconstructed on load
-  - Changed numbering from `02d` to `03d` to support all 128 instruments
-- **Cross-platform compatibility**: Project files now fully portable between
-  Windows, macOS, and Linux without path separator issues
-
-### Architecture
-
-- **Operations module refactored into `ops/` package**: The monolithic
-  `operations.py` (1181 lines) has been replaced by ten focused modules under
-  `ops/`, grouped by domain: `base`, `file_ops`, `editing`, `navigation`,
-  `playback`, `instrument_ops`, `pattern_ops`, `songline_ops`, `input_settings`.
-  The `operations.py` wrapper has been removed; all call sites now
-  `import ops` directly.
-- **Typed UI callback interface**: Replaced ~15 mutable module-level callback
-  variables with `UICallbacks`, a typed dataclass in the new
-  `ui_callbacks_interface.py`. All callbacks have safe no-op defaults, so the
-  operations layer works even before the UI is wired up. Callback wiring in
-  `main.py` now constructs a single `UICallbacks` instance and passes it via
-  `set_ui_callbacks()`.
-
-### Code Quality
-
-- **Bare `except:` clauses eliminated**: All bare `except:` and `except: pass`
-  patterns replaced with specific exception types and diagnostic logging:
-  - `file_io.py`: `OSError` for lock/unlock, `Exception` for fallback paths,
-    `scipy`/`wave` read failures now logged at debug/warning level
-  - `audio_engine.py`: stream close, callback errors now logged with context
-  - `ui_globals.py`: parse errors narrowed to `ValueError`/`TypeError`,
-    autosave cleanup errors logged
-- **Magic numbers replaced with constants**: Hardcoded `6` (speed) and `64`
-  (pattern length) in `audio_engine.py` replaced with `DEFAULT_SPEED` and
-  `DEFAULT_LENGTH` from `constants.py`.
-- **Removed unused code**:
-  - `original_sample_path` field from `Instrument` dataclass
-  - `is_converted` parameter from `load_sample()` function
-  - `_safe_filename()` function (no longer needed with numbered samples)
-  - Backward compatibility code for old project formats
-
-### Testing
-
-- **New test suite**: 86 unit tests across five modules, runnable via
-  `run_tests.sh` / `run_tests.bat`:
-  - `test_data_model.py` (37 tests): Song, Pattern, Row, Instrument
-    creation, serialization round-trip, edge cases
-  - `test_file_io.py` (19 tests): Safe filename generation, project
-    save/load, format version handling, lock management
-  - `test_state.py` (19 tests): UndoManager push/pop/redo, Clipboard,
-    Selection, EditorState persistence
-  - `test_export.py` (6 tests): Binary and ASM export validation,
-    event encoding, note mapping
-  - `test_ui_callbacks_interface.py` (5 tests): UICallbacks defaults,
-    field assignment, mutation isolation
-
-### File Changes Summary
-
-New files: `ops/` (10 modules), `ui_callbacks_interface.py`, `tests/` (5 test
-modules + runner scripts).
-Removed: `operations.py`.
-Modified: `keyboard.py`, `main.py`, `ui_globals.py`, `ui_callbacks.py`,
-`ui_build.py`, `audio_engine.py`, `file_io.py`, `data_model.py`, `vq_convert.py`,
-`ui_refresh.py`.
-Unchanged: all ASM sources, `build.py`, `state.py`, `constants.py`, `runtime.py`,
-`ui_theme.py`, `ui_browser.py`, `ui_dialogs.py`, `analyze.py`, `build_release.py`.
+- Simplified .pvq format with numbered sample files, cross-platform portable.
+- Operations module refactored into `ops/` package.
+- 86 unit tests.
 
 ---
 
@@ -169,72 +131,18 @@ Unchanged: all ASM sources, `build.py`, `state.py`, `constants.py`, `runtime.py`
 
 ### Initial Release
 
-First public beta of POKEY VQ Tracker — an experimental sample-based music
-tracker for Atari XL/XE computers using Vector Quantization audio compression.
-
-### Core Features
+First public beta — sample-based music tracker for Atari XL/XE using Vector Quantization audio compression.
 
 - 3-channel polyphonic sample playback on stock 64K Atari XL/XE
-- 3 octaves (36 semitones) with 8.8 fixed-point pitch calculation
-- VQ compression with adjustable sample rate (3333–15834 Hz) and vector
-  size (2, 4, 8, 16)
+- VQ compression with adjustable sample rate and vector size
 - Pattern-based sequencer with songline arrangement
-- Real-time preview playback in the tracker
-- One-click export to Atari executable (.xex) via integrated MADS assembler
+- Real-time preview playback
+- One-click export to .xex via integrated MADS assembler
 - Multi-format sample import (WAV, MP3, OGG, FLAC, AIFF, M4A)
-- Speed and size optimization modes for the 6502 IRQ handler
-- Optional per-note volume control, display blanking, keyboard control
-
-### Editor
-
-- Piano and tracker keyboard modes for note entry
-- Pattern copy/paste/transpose
-- Undo/redo
-- Hex/decimal display toggle
-- Row highlighting and follow mode
-
-### Project Management
-
-- Self-contained `.pvq` project format (ZIP-based with embedded samples)
-- Auto-save, recent files list, editor state preservation
-
-### Build System
-
-- Cross-platform builds (Windows, macOS, Linux) via PyInstaller
-- Bundled MADS assembler binaries
-
-### Analysis
-
-- CPU cycle budget analysis with per-row cost estimation and configuration
-  recommendations
-
-### Known Issues (fixed in Beta 2)
-
-- Windows: Loading .pvq files failed with WinError 32 due to path separator mismatch
-- Linux/macOS: FFmpeg not found for MP3/OGG/FLAC import in bundled builds
-- Project files not portable across platforms (absolute paths stored)
-- VQ conversion showed misleading size (included preview WAVs, not just Atari data)
-- Song editor keyboard edits did not record undo snapshots
-- Autosave did not persist `vq_enhance` and `vq_optimize_speed` settings
-- Bare `except:` clauses throughout the codebase silently swallowed errors
-- Sample filenames limited to 99 instruments (used `02d` format)
-- No unit tests
-
-### Known Limitations
-
-- Analysis provides estimates, not cycle-accurate emulation
-- No effect commands (portamento, vibrato, etc.)
-- Single codebook shared across all samples
-- Base RAM only (no extended memory support)
-- PAL timing is the primary focus; NTSC is less tested
-
----
-
-## Future Plans
-
-See `UserGuide.md` "Future Roadmap" section for planned features including
-cycle-accurate emulation, extended memory support, multi-codebook compression,
-effect commands, and more.
+- Speed and size optimization modes for 6502 IRQ handler
+- Piano and tracker keyboard modes, undo/redo, hex/decimal display
+- Self-contained .pvq project format
+- CPU cycle budget analysis
 
 ---
 

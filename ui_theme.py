@@ -242,24 +242,32 @@ def create_themes():
     with dpg.theme(tag="theme_inst_normal"):
         with dpg.theme_component(dpg.mvButton):
             dpg.add_theme_color(dpg.mvThemeCol_Button, COL_BG2)
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (42, 46, 55))
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (50, 55, 65))
             dpg.add_theme_color(dpg.mvThemeCol_Text, COL_TEXT)
     
     # Instrument converted (green tint)
     with dpg.theme(tag="theme_inst_converted"):
         with dpg.theme_component(dpg.mvButton):
             dpg.add_theme_color(dpg.mvThemeCol_Button, (25, 45, 35))
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (32, 58, 45))
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (40, 70, 55))
             dpg.add_theme_color(dpg.mvThemeCol_Text, (180, 230, 180))
     
     # Instrument selected + not converted
     with dpg.theme(tag="theme_inst_selected"):
         with dpg.theme_component(dpg.mvButton):
             dpg.add_theme_color(dpg.mvThemeCol_Button, COL_CURSOR_BG)
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (55, 70, 100))
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (65, 80, 110))
             dpg.add_theme_color(dpg.mvThemeCol_Text, (255, 255, 255))
     
     # Instrument selected + converted
     with dpg.theme(tag="theme_inst_selected_converted"):
         with dpg.theme_component(dpg.mvButton):
             dpg.add_theme_color(dpg.mvThemeCol_Button, (40, 70, 55))
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (48, 85, 65))
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (55, 100, 75))
             dpg.add_theme_color(dpg.mvThemeCol_Text, (200, 255, 200))
     
     # === VQ CONVERT BUTTON THEMES ===
@@ -303,6 +311,18 @@ def create_themes():
             dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (60, 70, 60))
             dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (70, 85, 70))
             dpg.add_theme_color(dpg.mvThemeCol_Text, (150, 160, 150))
+
+    # Effects indicator - active (has effects)
+    with dpg.theme(tag="theme_fx_active"):
+        with dpg.theme_component(dpg.mvButton):
+            dpg.add_theme_color(dpg.mvThemeCol_Button, (35, 55, 80))
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (45, 70, 100))
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (55, 85, 120))
+            dpg.add_theme_color(dpg.mvThemeCol_Text, (160, 200, 255))
+
+    # === CELL COLOR PALETTES ===
+    from cell_colors import create_cell_color_themes
+    create_cell_color_themes()
 
 
 def get_inst_theme(is_selected: bool, is_converted: bool) -> str:

@@ -8,8 +8,10 @@
 ; (idle state), never from main_loop (screen is off during playback).
 ;
 ; Display Format:
-;   "VQ TRACKER - [SPACE] play/stop [R] reset"
-;   "      SONG:XX   ROW:XX   SPD:XX         "
+;   Line 1: Song Name (centered)
+;   Line 2: Author Name (centered)
+;   Line 3: "VQ TRACKER [SPACE] play/stop [R] reset"
+;   Line 4: "       SONG:XX   ROW:XX   SPD:XX        "
 ;
 ; Input:  seq_songline, seq_row, seq_speed
 ; Output: Display text updated
@@ -48,14 +50,14 @@ update_display:
 ; ==========================================================================
 byte_to_dec:
     ldx #0                      ; Tens counter
-@btd_loop:
+udsp_btd_loop:
     cmp #10
-    bcc @btd_done               ; Less than 10? Done
+    bcc udsp_btd_done           ; Less than 10? Done
     sec
     sbc #10                     ; Subtract 10
     inx                         ; Increment tens
-    bne @btd_loop               ; Always branches (X never 0 here)
-@btd_done:
+    bne udsp_btd_loop           ; Always branches (X never 0 here)
+udsp_btd_done:
     ; A = ones digit (0-9)
     ; X = tens digit (0-9)
     clc
