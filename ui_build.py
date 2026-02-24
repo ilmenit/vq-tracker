@@ -861,52 +861,50 @@ def build_main_area():
             with dpg.child_window(tag="viz_panel", height=VIZ_HEIGHT, border=True,
                                   no_scrollbar=True, no_scroll_with_mouse=True):
                 with dpg.group(horizontal=True):
-                    # --- Left half: Channel VU bars ---
+                    # --- Left: Channel VU bars (drawlist-based) ---
+                    # Using drawlists gives us full control over bar colors,
+                    # unlike ImPlot bar series which ignore per-series themes.
                     _vu_colors = [
-                        (200, 60, 60),     # Ch1 red
-                        (60, 180, 80),     # Ch2 green
-                        (60, 120, 220),    # Ch3 blue
-                        (200, 165, 50),    # Ch4 amber
+                        (220, 50, 50),     # Ch1 red
+                        (50, 200, 70),     # Ch2 green
+                        (50, 120, 240),    # Ch3 blue
+                        (230, 200, 40),    # Ch4 yellow
                     ]
+                    _vu_bar_width = 24
+                    _vu_bar_gap = 3
                     
-                    # Create VU plot theme (dark, no decorations)
+                    # Shared plot theme (for spectrum only now)
                     with dpg.theme(tag="theme_viz_plot"):
                         with dpg.theme_component(dpg.mvPlot):
                             dpg.add_theme_color(dpg.mvPlotCol_PlotBg, (15, 15, 25, 255))
                             dpg.add_theme_color(dpg.mvPlotCol_FrameBg, (15, 15, 25, 255))
-                            dpg.add_theme_style(dpg.mvPlotStyleVar_PlotPadding, 4, 4)
+                            dpg.add_theme_style(dpg.mvPlotStyleVar_PlotPadding, 2, 4)
                             dpg.add_theme_style(dpg.mvPlotStyleVar_FitPadding, 0, 0)
                     
-                    with dpg.plot(tag="vu_plot", width=120, height=-1,
-                                  no_title=True, no_menus=True, no_box_select=True,
-                                  no_mouse_pos=True, no_highlight=True,
-                                  no_child=True):
-                        dpg.bind_item_theme("vu_plot", "theme_viz_plot")
-                        
-                        dpg.add_plot_axis(dpg.mvXAxis, tag="vu_x_axis",
-                                          no_gridlines=True, no_tick_labels=True,
-                                          no_tick_marks=True)
-                        dpg.set_axis_limits("vu_x_axis", -0.5, 3.5)
-                        
-                        with dpg.plot_axis(dpg.mvYAxis, tag="vu_y_axis",
-                                           no_gridlines=True, no_tick_labels=True,
-                                           no_tick_marks=True):
-                            dpg.set_axis_limits("vu_y_axis", 0.0, 1.05)
-                            for ch in range(4):
-                                r, g, b = _vu_colors[ch]
-                                with dpg.theme(tag=f"theme_vu_ch{ch}"):
-                                    with dpg.theme_component(dpg.mvBarSeries):
-                                        dpg.add_theme_color(dpg.mvPlotCol_Fill,
-                                                            (r, g, b, 200))
-                                dpg.add_bar_series([ch], [0.0],
-                                                   tag=f"vu_bar_{ch}",
-                                                   weight=0.7)
-                                dpg.bind_item_theme(f"vu_bar_{ch}",
-                                                    f"theme_vu_ch{ch}")
+                    for ch in range(4):
+                        r, g, b = _vu_colors[ch]
+                        with dpg.drawlist(
+                                tag=f"vu_draw_{ch}",
+                                width=_vu_bar_width,
+                                height=VIZ_HEIGHT - 8):
+                            bar_h = VIZ_HEIGHT - 8
+                            # Background (dark)
+                            dpg.draw_rectangle(
+                                (0, 0), (_vu_bar_width, bar_h),
+                                fill=(15, 15, 25, 255),
+                                color=(15, 15, 25, 255))
+                            # Foreground bar (colored, starts empty at bottom)
+                            dpg.draw_rectangle(
+                                (1, bar_h), (_vu_bar_width - 1, bar_h),
+                                tag=f"vu_bar_{ch}",
+                                fill=(r, g, b, 255),
+                                color=(r, g, b, 255))
+                        if ch < 3:
+                            dpg.add_spacer(width=_vu_bar_gap)
                     
                     dpg.add_spacer(width=3)
                     
-                    # --- Right half: Frequency Spectrum ---
+                    # --- Right: Frequency Spectrum ---
                     N_SPECTRUM_BARS = 24
                     with dpg.theme(tag="theme_spectrum_bar"):
                         with dpg.theme_component(dpg.mvBarSeries):
@@ -1051,15 +1049,6 @@ def build_main_area():
                     
                     dpg.add_spacer(width=15)
                     dpg.add_text(tag="vq_size_label", default_value="", color=COL_DIM)
-                    
-                    dpg.add_spacer(width=15)
-                    dpg.add_checkbox(tag="vq_use_converted_cb", label="Use converted",
-                                     default_value=False, enabled=False,
-                                     callback=C.on_vq_use_converted_change)
-                    with dpg.tooltip(dpg.last_item()):
-                        dpg.add_text("Preview Converted Samples", color=(255, 255, 150))
-                        dpg.add_separator()
-                        dpg.add_text("Hear how it will sound on Atari.")
 
 def build_status_bar():
     """Build the status bar."""

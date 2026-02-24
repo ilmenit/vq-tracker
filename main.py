@@ -564,6 +564,7 @@ def main():
     try:
         state.audio.start()
         state.audio.set_song(state.song)  # Link song to audio engine
+        state.audio.set_vq_state(state.vq)  # Link VQ state for POKEY emulation
         logger.info("Audio engine started")
     except Exception as e:
         logger.warning(f"Audio engine failed to start: {e}")

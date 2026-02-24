@@ -3,6 +3,44 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Beta 6] - 2026-02
+
+### POKEY Emulation
+- **Built-in POKEY emulator**: Pure-Python port of ASAP's `pokey.fu` (Piotr Fusik).
+- **VQ/RAW player engine**: Reimplements the tracker's 6502 IRQ handler (`tracker_irq_speed.asm`) in Python.
+- **All playback through POKEY**: Every audio path — song play (F5/F6/F7), pattern play, note preview, row preview, sample editor preview, WAV export — goes through the POKEY emulator. No WAV pitch-shifting anywhere.
+- **Pre-conversion preview**: Before VQ conversion, instruments are converted on-the-fly to RAW POKEY format (resample to target rate → quantize to 4-bit POKEY levels → AUDC register writes). You hear the actual 4-bit quantization and sample rate limitations from the first note you place.
+- **Post-conversion playback**: After VQ conversion, uses the actual compressed VQ data — identical register writes to the .xex on real hardware.
+- **Sample editor preview**: Renders through POKEY in RAW mode at the configured target rate, so you hear the hardware-accurate version of your sample while editing.
+- **POKEY WAV export**: File → Export WAV renders through the POKEY emulator, producing output that matches Atari hardware sample-for-sample.
+- **VU meter decay**: Classic tracker linear fall (always dropping, no hold). Vibrating bounce on consecutive notes.
+
+---
+
+## [Beta 6] - 2026-02
+
+### Cycle-Accurate POKEY Emulation
+
+- **Built-in POKEY emulator**: Pure-Python port of ASAP's `pokey.fu` (Piotr Fusik). Band-limited sinc interpolation, DAC compression from measured AMI chip characteristics, IIR high-pass filter, poly4/5/9/17 polynomial counters — the full pipeline. 75–108× real-time performance (0.2ms per 20ms frame), zero C extensions needed.
+- **VQ/RAW player engine**: Reimplements the tracker's 6502 IRQ handler (`tracker_irq_speed.asm`) in Python. Bit-exact 8.8 fixed-point pitch accumulation, VQ codebook lookup, RAW page-crossing, volume scaling table, per-channel end-of-stream detection. Seven critical bugs found and fixed during line-by-line audit against the assembly source.
+- **All playback through POKEY**: Every audio path — song play (F5/F6/F7), pattern play, note preview, row preview, sample editor preview, WAV export — goes through the POKEY emulator. No WAV pitch-shifting anywhere. What you hear is what the Atari produces.
+- **Pre-conversion preview**: Before VQ conversion, instruments are converted on-the-fly to RAW POKEY format (resample to target rate → quantize to 4-bit POKEY levels → AUDC register writes). You hear the actual 4-bit quantization and sample rate limitations from the first note you place.
+- **Post-conversion playback**: After VQ conversion, uses the actual compressed VQ data — identical register writes to the .xex on real hardware.
+- **Sample editor preview**: Renders through POKEY in RAW mode at the configured target rate, so you hear the hardware-accurate version of your sample while editing.
+- **POKEY WAV export**: File → Export WAV renders through the POKEY emulator, producing output that matches Atari hardware sample-for-sample.
+- **173 emulator tests**: 125-assertion core suite covering POKEY registers, polynomial tables, sinc interpolation, DAC compression, channel timing, pure tone generation, STIMER/SKCTL, plus 48-assertion deep validation suite testing DC rejection, frame boundary continuity, codebook byte readout, and end-of-stream behavior. Plus 62-assertion 4-channel verification suite testing multi-channel mixing, channel independence, note-off isolation, pitch rates, per-channel volume, and AudioEngine integration. Plus 248-assertion integration test suite verifying every data path from tracker → SongData → VQPlayer → POKEY registers → PCM: AUDF computation, codebook offsets, volume scaling, pitch accumulation (6502-exact fixed-point), sequencer row/songline/speed/wrap logic, VQ and RAW byte readout, end-of-stream, note-off, retrigger, channel muting, DAC compression, DC rejection, NTSC/PAL timing, and AudioEngine WAV→RAW conversion. Plus 39-assertion integration test suite verifying register-level VQ/RAW writes, sequencer correctness, and full AudioEngine paths.
+- **Removed WAV preview generation**: The converter no longer generates per-instrument preview WAV files to `.tmp`. The "Use converted" checkbox has been removed. All preview is now handled by the POKEY emulator directly — faster conversion, less disk I/O, and no sample swapping.
+- **Cached POKEY sinc tables**: Sinc interpolation lookup tables (1024×32 entries) are computed once on first use and shared across all VQPlayer instances. Eliminates 32ms overhead on every play/preview action.
+- **Lock-free rendering**: Note preview, row preview, sample editor preview, and play-start all perform the heavy POKEY rendering outside the audio lock. Lock hold time reduced from 70–104ms to <1ms, eliminating audio pops/glitches when pressing keys or starting playback.
+- **Fixed out-of-range songline**: Playing from an invalid songline position no longer triggers ghost notes from stale pattern data.
+- **Fixed sample editor cursor**: Preview position calculation now uses the correct sample rate (44100 Hz output, not 3958 Hz POKEY rate), so the waveform cursor tracks accurately during playback.
+- **Fixed FFT ring buffer overflow**: Audio callback now handles buffer sizes larger than the 2048-sample FFT window without crashing.
+- **Fixed post-conversion RAW instrument silence**: Three bugs in the VQ→Player data bridge caused RAW-mode instruments to produce silence after conversion: (1) case-sensitive mode comparison (`"RAW"` vs `'raw'`), (2) loader looked for per-instrument `RAW_SAMPLE_N.asm` files but builder creates a single `RAW_SAMPLES.asm` with labeled sections, (3) fallback used empty VQ indices instead of a silence byte. Now correctly parses `RAW_SAMPLES.asm` labels and handles mixed VQ/RAW songs.
+- **VQ data validation with fallback**: All playback paths (song, note preview, row preview, WAV export) now validate loaded VQ data after conversion. If instruments are missing, codebook is empty, or instrument count doesn't match the song, automatically falls back to live RAW preview instead of playing silence.
+- **Invalidate stale VQ during re-conversion**: Starting a new conversion now immediately invalidates the previous VQ data, so playback during conversion falls back to live RAW instead of reading from a deleted output directory.
+- **Fixed play-from-row**: Starting playback from a non-zero row (e.g. pressing play at row 5) now correctly fast-forwards the per-channel event positions. Previously it would fire events from row 0, causing wrong notes and desynchronized patterns.
+- **39-assertion integration test suite**: End-to-end tests covering VQ/RAW register writes, 4-channel isolation, sequencer row/songline/pattern-wrap, start-from-row, pitch accuracy, volume control, channel muting, NTSC/PAL frame lengths, and AudioEngine integration.
+
 ---
 
 ## [Beta 5] - 2025-02

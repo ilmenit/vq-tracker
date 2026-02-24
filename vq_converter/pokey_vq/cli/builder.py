@@ -614,23 +614,15 @@ class PokeyVQBuilder:
                 if vq_idx < len(vq_index_boundaries):
                     vq_boundary_for_orig[orig_idx] = vq_idx
 
-        # --- Generate Instrument Preview WAVs (ALL instruments, original order) ---
-        # Runs for all modes: all-VQ, mixed, and all-RAW
+        # --- Build Instrument Metadata (conversion_info.json) ---
+        # No longer generates preview WAVs — POKEY emulator handles all preview.
         if self.is_multi_sample and self._all_boundaries:
             import json
-            instruments_dir = os.path.join(self.output_subdir, "instruments")
-            os.makedirs(instruments_dir, exist_ok=True)
             converted_files_info = []
             
             n_total = len(self._all_boundaries)
-            print(f"      - Generating {n_total} instrument previews in: {instruments_dir}")
-            
-            from pokey_vq.encoders.raw import RawEncoder
-            from pokey_vq.core.pokey_table import POKEY_VOLTAGE_TABLE
             
             for orig_idx in range(n_total):
-                fname = f"{orig_idx+1:03d}.wav"
-                out_path = os.path.join(instruments_dir, fname)
                 orig_name = self._all_names[orig_idx] if orig_idx < len(self._all_names) else f"sample_{orig_idx}"
                 is_raw = orig_idx < len(sample_modes) and sample_modes[orig_idx]
                 
@@ -638,43 +630,18 @@ class PokeyVQBuilder:
                 idx_end = 0
                 
                 if is_raw:
-                    # RAW instrument: quantize audio → POKEY voltage levels → ZOH → WAV
-                    a_start, a_end = self._all_boundaries[orig_idx]
-                    segment = self._merged_audio[a_start:a_end]
-                    use_ns = self.actual_rate >= 6000
-                    vol_indices = RawEncoder.quantize(segment, POKEY_VOLTAGE_TABLE,
-                                                     noise_shaping=use_ns)
-                    # Reconstruct via ZOH (matching VQ preview and real hardware)
-                    table_norm = POKEY_VOLTAGE_TABLE / POKEY_VOLTAGE_TABLE[-1]
-                    quantized = table_norm[vol_indices]  # [0, 1] range
-                    
-                    POKEY_CLOCK = 1773447
-                    period_int = int(POKEY_CLOCK / self.actual_rate)
-                    high_res = np.repeat(quantized, period_int)
-                    n_48k = int(len(high_res) * 48000 / POKEY_CLOCK)
-                    if n_48k > 0:
-                        sim_audio = scipy.signal.resample(high_res, n_48k).astype(np.float32)
-                        sim_audio = (sim_audio - 0.5) * 2.0  # [0,1] → [-1,1]
-                        audio_int16 = (sim_audio * 32767).astype(np.int16)
-                        scipy.io.wavfile.write(out_path, 48000, audio_int16)
+                    # RAW instrument: no VQ index boundaries
+                    pass
                 else:
-                    # VQ instrument: simulate from VQ indices
+                    # VQ instrument: record index boundaries
                     if orig_idx in vq_boundary_for_orig and encoder is not None:
                         vq_idx = vq_boundary_for_orig[orig_idx]
                         start, end = vq_index_boundaries[vq_idx]
                         idx_start = start
                         idx_end = end
-                        if start < end:
-                            sub_indices = indices[start:end]
-                            sim_audio = encoder.simulate_hardware_glitch(
-                                codebook, sub_indices, self.pokey_div, target_sr=48000)
-                            if sim_audio is not None:
-                                audio_int16 = (sim_audio * 32767).astype(np.int16)
-                                scipy.io.wavfile.write(out_path, 48000, audio_int16)
                 
                 converted_files_info.append({
                     "original_file": orig_name,
-                    "instrument_file": os.path.abspath(out_path),
                     "index_start": int(idx_start),
                     "index_end": int(idx_end),
                     "mode": "RAW" if is_raw else "VQ"
