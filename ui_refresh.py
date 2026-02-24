@@ -20,7 +20,6 @@ _preview_callback = None
 _select_callback = None
 _effects_callback = None
 
-
 def set_instrument_callbacks(preview_cb, select_cb, effects_cb=None):
     """Set callbacks for instrument list buttons."""
     global _preview_callback, _select_callback, _effects_callback
@@ -196,8 +195,8 @@ def refresh_instruments():
     
     from ui_theme import get_inst_theme
     from vq_convert import format_size
-    # Green background when user is USING converted samples, not just when converted
-    is_converted = state.vq.use_converted
+    # Green background when VQ data available (POKEY emu will use it)
+    is_converted = state.vq.converted
     
     if not state.song.instruments:
         # Show help message when no instruments loaded
@@ -398,12 +397,6 @@ def _update_vq_ui():
             dpg.set_value("vq_size_label", f"Atari data: {format_size(state.vq.result.vq_data_size)}")
         else:
             dpg.set_value("vq_size_label", "")
-    
-    # Update use converted checkbox
-    if dpg.does_item_exist("vq_use_converted_cb"):
-        dpg.configure_item("vq_use_converted_cb", enabled=state.vq.converted)
-        if not state.vq.converted:
-            dpg.set_value("vq_use_converted_cb", False)
     
     # Update convert button theme
     if dpg.does_item_exist("vq_convert_btn"):
@@ -709,10 +702,16 @@ def update_validation_indicator():
 # VISUALIZATION — channel VU bars + frequency spectrum
 # =============================================================================
 
-_vu_display = [0.0] * MAX_CHANNELS  # Smoothed display levels (0.0–1.0)
+_vu_display = [0.0] * MAX_CHANNELS  # Display levels (0.0–1.0)
 _spectrum_display = None  # Smoothed spectrum bars
 
-_VU_DECAY = 0.97     # Per-frame decay for VU (slow fall for short bars)
+# Classic tracker VU: instant snap to peak, constant linear fall.
+# No hold, no gravity — bar is ALWAYS falling, giving a vibrating
+# bounce even on consecutive notes.  ~0.06/frame at 50fps means
+# full fall in ~17 frames (340ms), and a visible 36% dip across
+# one row at speed 6.
+_VU_FALL_RATE = 0.06
+
 _SPEC_DECAY = 0.85    # Per-frame decay for spectrum (faster = snappier)
 _N_SPECTRUM_BARS = 24
 
@@ -748,17 +747,48 @@ def update_visualization():
     # --- Channel VU ---
     engine_levels = state.audio.get_vu_levels()
     for i in range(MAX_CHANNELS):
-        fresh = engine_levels[i] if i < len(engine_levels) else 0.0
-        _vu_display[i] = max(fresh, _vu_display[i] * _VU_DECAY)
-        # Consume spike
-        if fresh > 0.0 and i < len(state.audio.channels):
-            state.audio.channels[i].vu_level = 0.0
+        ch_enabled = True
+        if i < len(state.audio.channels):
+            ch_enabled = state.audio.channels[i].enabled
+        
+        fresh = engine_levels[i] if (ch_enabled and i < len(engine_levels)) else 0.0
+        
+        # Always fall first, then snap up if new peak is higher
+        _vu_display[i] = max(0.0, _vu_display[i] - _VU_FALL_RATE)
+        if fresh > _vu_display[i]:
+            _vu_display[i] = fresh
+        
+        if not ch_enabled:
+            _vu_display[i] = max(0.0, _vu_display[i] - _VU_FALL_RATE * 2)
 
     if has_vu:
+        _vu_active_colors = [
+            (220, 50, 50, 255),    # Ch1 red
+            (50, 200, 70, 255),    # Ch2 green
+            (50, 120, 240, 255),   # Ch3 blue
+            (230, 200, 40, 255),   # Ch4 yellow
+        ]
+        _vu_muted_color = (60, 60, 70, 120)
+        _vu_bar_w = 24
+        _vu_bar_h = 77  # VIZ_HEIGHT(85) - 8
+        
         for i in range(MAX_CHANNELS):
             tag = f"vu_bar_{i}"
-            if dpg.does_item_exist(tag):
-                dpg.set_value(tag, [[i], [min(1.0, _vu_display[i])]])
+            if not dpg.does_item_exist(tag):
+                continue
+            
+            ch_enabled = True
+            if i < len(state.audio.channels):
+                ch_enabled = state.audio.channels[i].enabled
+            
+            level = min(1.0, _vu_display[i])
+            top_y = int(_vu_bar_h * (1.0 - level))
+            
+            fill = _vu_active_colors[i] if ch_enabled else _vu_muted_color
+            dpg.configure_item(tag,
+                               pmin=(1, top_y),
+                               pmax=(_vu_bar_w - 1, _vu_bar_h),
+                               fill=fill, color=fill)
 
     # --- Frequency Spectrum ---
     if has_spec:
@@ -809,8 +839,9 @@ def _update_spectrum():
     db_range = 50.0        # Dynamic range in dB
     ref_level = 100.0      # "Full loudness" reference magnitude
     
+    bars_safe = np.maximum(bars, 1e-10)  # Avoid log10(0)
     bars = np.where(bars > noise_floor,
-                    np.clip((20.0 * np.log10(bars / ref_level) + db_range) / db_range,
+                    np.clip((20.0 * np.log10(bars_safe / ref_level) + db_range) / db_range,
                             0.0, 1.0),
                     0.0)
     

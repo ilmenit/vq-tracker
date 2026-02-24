@@ -288,9 +288,12 @@ class VQConverter:
         self.logger.info(f"convert: {len(input_files)} files")
         self._sample_modes = sample_modes or []
         
-        # Reset state
+        # Reset state — invalidate previous VQ data so the player falls
+        # back to live RAW while the new conversion is running.
         self.vq_state.conversion_complete = False
         self.vq_state.completion_result = None
+        self.vq_state.converted = False
+        self.vq_state.result = None
         while not self.vq_state.output_queue.empty():
             try:
                 self.vq_state.output_queue.get_nowait()
@@ -436,7 +439,6 @@ class VQConverter:
                                 f" (VQ: {format_size(result.vq_only_size)}"
                                 f", RAW: {format_size(result.raw_only_size)})")
                         self._queue_output("\n")
-                    self._queue_output(f"Preview WAVs: {len(result.converted_wavs)} files\n")
                 else:
                     result.success = False
                     result.error_message = f"Missing ASM files in {asm_output_dir}"
@@ -475,22 +477,12 @@ class VQConverter:
             self._queue_output(f"  Error listing: {e}\n")
     
     def _parse_results(self, output_dir: str, result: VQResult) -> VQResult:
-        """Find converted WAV files for preview playback.
+        """Parse conversion output for per-instrument sizes.
         
+        Preview WAVs are no longer generated — POKEY emulator handles all preview.
         Size data comes from builder.stats directly, not from file scanning.
-        Also computes per-instrument VQ and RAW sizes.
         """
-        converted_wavs = []
-        
-        # Scan instruments folder for preview WAVs
-        instruments_dir = os.path.join(output_dir, "instruments")
-        if os.path.isdir(instruments_dir):
-            for wav in sorted(os.listdir(instruments_dir)):
-                if wav.endswith('.wav'):
-                    wav_path = os.path.join(instruments_dir, wav)
-                    converted_wavs.append(wav_path)
-        
-        result.converted_wavs = converted_wavs
+        result.converted_wavs = []  # No longer generated
         
         # Parse conversion_info.json for per-instrument VQ sizes
         import json

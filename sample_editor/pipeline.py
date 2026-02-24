@@ -47,22 +47,12 @@ def get_playback_audio(instrument) -> Optional[np.ndarray]:
     """Get audio for playback — processed if effects exist, raw otherwise.
 
     Lazily computes and caches processed_data on the instrument.
-    Skips effects when VQ-converted audio is loaded (already processed).
     """
     if not instrument.is_loaded():
         return None
 
     if not instrument.effects:
         return instrument.sample_data
-
-    # When VQ-converted samples are active, don't re-process through effects.
-    # The VQ converter already received effects-processed audio.
-    try:
-        from state import state as app_state
-        if app_state.vq.use_converted:
-            return instrument.sample_data
-    except (ImportError, AttributeError):
-        pass
 
     if instrument.processed_data is None:
         instrument.processed_data = run_pipeline(

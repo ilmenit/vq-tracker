@@ -1429,128 +1429,18 @@ def on_used_only_change(sender, app_data):
 
 
 def on_vq_use_converted_change(sender, app_data):
-    """Toggle between original and converted sample playback."""
-    import logging
-    logger = logging.getLogger(__name__)
-    
-    logger.info(f"on_vq_use_converted_change: app_data={app_data}")
-    logger.info(f"  state.vq.converted={state.vq.converted}")
-    logger.info(f"  state.vq.result={state.vq.result}")
-    if state.vq.result:
-        logger.info(f"  result.converted_wavs count={len(state.vq.result.converted_wavs)}")
-    
-    state.vq.use_converted = app_data
-    
-    # Reload samples based on new setting
-    if state.vq.converted and state.vq.result and state.vq.use_converted:
-        # Load converted WAVs
-        logger.info("  -> Loading converted samples")
-        _load_converted_samples()
-    else:
-        # Reload original samples from their source paths
-        logger.info("  -> Reloading original samples")
-        _reload_original_samples()
-    
-    state.audio.set_song(state.song)
-    
-    # Refresh instruments to update colors (green when using converted, gray otherwise)
-    R.refresh_instruments()
-    
-    G.show_status("Using converted samples" if state.vq.use_converted else "Using original samples")
+    """No-op: POKEY emulator now handles all preview automatically."""
+    pass
 
 
 def _reload_original_samples():
-    """Reload original samples from their working copy paths.
-    
-    Uses sample_path which points to .tmp/samples/ where samples are stored.
-    """
-    import logging
-    logger = logging.getLogger(__name__)
-    from file_io import load_sample
-    
-    logger.debug(f"Reloading {len(state.song.instruments)} original samples")
-    for inst in state.song.instruments:
-        working_path = inst.sample_path
-        if working_path and os.path.exists(working_path):
-            logger.debug(f"  Inst {inst.name}: {working_path}")
-            ok, msg = load_sample(inst, working_path, update_path=False)
-            if not ok:
-                G.show_status(f"Error reloading {inst.name}: {msg}")
-        elif working_path:
-            logger.warning(f"  Inst {inst.name}: sample not found: {working_path}")
+    """No-op: POKEY emulator reads VQ data directly, no sample swapping needed."""
+    pass
 
 
 def _load_converted_samples():
-    """Load converted WAV files into instruments.
-    
-    Note: Uses update_path=False to preserve sample_path pointing to original.
-    This allows toggling back to original samples later.
-    
-    Skips instruments that were not converted (used_only mode) so their
-    original sample_data is preserved.
-    """
-    import logging
-    logger = logging.getLogger(__name__)
-    
-    # Debug: Show what we have
-    logger.info(f"_load_converted_samples called")
-    logger.info(f"  state.vq.result: {state.vq.result}")
-    
-    if not state.vq.result:
-        G.show_status("Error: No conversion result available")
-        logger.warning("_load_converted_samples: No result")
-        return
-    
-    if not state.vq.result.converted_wavs:
-        G.show_status("Error: No converted WAV files found")
-        logger.warning(f"_load_converted_samples: No converted_wavs (result.output_dir={state.vq.result.output_dir})")
-        return
-    
-    from file_io import load_sample
-    
-    num_wavs = len(state.vq.result.converted_wavs)
-    num_instruments = len(state.song.instruments)
-    logger.info(f"Loading {num_wavs} converted WAVs for {num_instruments} instruments")
-    
-    loaded_count = 0
-    error_count = 0
-    skipped_count = 0
-    
-    for i, inst in enumerate(state.song.instruments):
-        # Skip instruments that weren't actually converted (dummy WAVs)
-        if _vq_used_indices is not None and i not in _vq_used_indices:
-            skipped_count += 1
-            logger.debug(f"  Inst {i} ({inst.name}): skipped (unused)")
-            continue
-        
-        if i < num_wavs:
-            wav_path = state.vq.result.converted_wavs[i]
-            logger.info(f"  Inst {i} ({inst.name}): {wav_path}")
-            
-            if os.path.exists(wav_path):
-                # Load converted sample data WITHOUT updating sample_path
-                # This preserves sample_path pointing to the original working sample
-                ok, msg = load_sample(inst, wav_path, update_path=False)
-                if ok:
-                    loaded_count += 1
-                    logger.info(f"    Loaded OK: {len(inst.sample_data) if inst.sample_data is not None else 0} samples")
-                else:
-                    error_count += 1
-                    logger.error(f"    Load failed: {msg}")
-                    G.show_status(f"Error loading {os.path.basename(wav_path)}: {msg}")
-            else:
-                error_count += 1
-                logger.warning(f"    File not found: {wav_path}")
-        else:
-            logger.warning(f"  Inst {i} ({inst.name}): No converted WAV (only {num_wavs} WAVs)")
-    
-    status = f"Loaded {loaded_count} converted samples"
-    if skipped_count:
-        status += f" ({skipped_count} unused skipped)"
-    if error_count:
-        status += f" ({error_count} errors)"
-    if loaded_count > 0:
-        G.show_status(status)
+    """No-op: Preview WAVs removed — POKEY emulator handles all preview."""
+    pass
 
 
 def invalidate_vq_conversion():
@@ -1566,14 +1456,7 @@ def invalidate_vq_conversion():
     BUILD button is only enabled (green) when:
     - state.vq.converted == True (CONVERT was successful)
     - state.song.instruments is not empty
-    
-    IMPORTANT: If use_converted was True, inst.sample_data contains VQ audio.
-    We must reload original samples before clearing the flag, otherwise all
-    playback/preview will use stale VQ data.
     """
-    # If samples were swapped to VQ audio, restore originals FIRST
-    was_using_converted = state.vq.use_converted
-    
     state.vq.invalidate()
     
     # Clear optimize suggestions (they're based on old settings)
@@ -1588,15 +1471,7 @@ def invalidate_vq_conversion():
     if dpg.does_item_exist("vq_size_label"):
         dpg.set_value("vq_size_label", "")
     
-    if dpg.does_item_exist("vq_use_converted_cb"):
-        dpg.set_value("vq_use_converted_cb", False)
-        dpg.configure_item("vq_use_converted_cb", enabled=False)
-    
     state.vq.use_converted = False
-    
-    # Restore original sample data if it was swapped
-    if was_using_converted:
-        _reload_original_samples()
     
     # Update BUILD button state (must be disabled when VQ is invalid)
     update_build_button_state()
@@ -1646,8 +1521,7 @@ def update_build_button_state():
 def _prepare_conversion_files(instruments, used_indices=None) -> tuple:
     """Prepare input files for VQ conversion, writing processed WAVs where needed.
     
-    Always reads original audio from disk (sample_path), never from sample_data
-    which may contain VQ-converted audio when use_converted is active.
+    Always reads original audio from disk (sample_path), not from sample_data.
     
     Args:
         instruments: List of Instrument objects
@@ -2430,20 +2304,13 @@ def poll_vq_conversion():
                     else:
                         result.inst_raw_sizes.append(0)
             
-            # Auto-enable and check "Use converted" checkbox
-            if dpg.does_item_exist("vq_use_converted_cb"):
-                dpg.configure_item("vq_use_converted_cb", enabled=True)
-                dpg.set_value("vq_use_converted_cb", True)
-            
-            # Auto-load converted samples
-            state.vq.use_converted = True
-            _load_converted_samples()
+            # POKEY emulator will automatically use VQ data on next play
             state.audio.set_song(state.song)
             
             # SYNCHRONIZATION: Update BUILD button to green now that VQ is valid
             update_build_button_state()
             
-            # Refresh instruments (will show green because use_converted=True)
+            # Refresh instruments
             R.refresh_instruments()
             if result.vq_data_size > 0:
                 if result.vq_only_size > 0 and result.raw_only_size > 0:
@@ -2825,6 +2692,7 @@ def poll_build_progress():
             # === SUCCESS — auto-close and run ===
             G.show_status(f"Build complete: {os.path.basename(result.xex_path)}")
             _last_built_xex = result.xex_path
+            
             if dpg.does_item_exist("build_progress_window"):
                 state.set_input_active(False)
                 dpg.delete_item("build_progress_window")

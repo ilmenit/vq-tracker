@@ -1,4 +1,21 @@
-"""POKEY VQ Tracker - Audio Engine"""
+"""POKEY VQ Tracker - Audio Engine
+
+ALL playback uses cycle-accurate POKEY emulation:
+  - Song/pattern play (F5/F6/F7): VQPlayer drives 4-channel POKEY output
+  - Note preview (key press): Renders note through POKEY, plays result
+  - Sample editor preview: Renders through POKEY in RAW mode at target rate
+  - WAV export: Renders entire song through POKEY
+
+Before VQ conversion:
+  Instruments are converted on-the-fly to RAW POKEY bytes (resample to
+  target rate → quantize to 4-bit POKEY levels → 0x10|nibble AUDC bytes).
+  This lets you hear *exactly* what the Atari will produce at the configured
+  sample rate, including the 4-bit quantization artifacts.
+
+After VQ conversion:
+  Uses the actual VQ-compressed data from the converter output.
+  Identical to what the .xex plays on real hardware.
+"""
 import threading
 import numpy as np
 import logging
@@ -16,22 +33,92 @@ except (ImportError, OSError) as e:
     AUDIO_OK = False
     logger.warning(f"sounddevice not available, audio disabled: {e}")
 
+# POKEY emulator (pure Python — always available)
+try:
+    from pokey_emulator.vq_player import (
+        VQPlayer, SongData, InstrumentData,
+        PAL_CLOCK, NTSC_CLOCK,
+    )
+    POKEY_EMU_OK = True
+    logger.info("POKEY emulator loaded")
+except ImportError as e:
+    POKEY_EMU_OK = False
+    logger.warning(f"POKEY emulator not available: {e}")
+
 SAMPLE_RATE = 44100
 BUFFER_SIZE = 512
 
+# Default VQ settings when none provided
+_DEFAULT_RATE = 3958
+_DEFAULT_VECTOR_SIZE = 8
+
+# POKEY voltage table (16 levels, matching real hardware measurements)
+# Same table used by pokey_vq/core/pokey_table.py
+_POKEY_VOLTAGES = np.array([
+    0.000000, 0.032677, 0.068621, 0.101298, 0.143778, 0.176455,
+    0.212399, 0.245076, 0.300626, 0.333303, 0.369247, 0.401924,
+    0.444404, 0.477081, 0.513025, 0.545702,
+], dtype=np.float32)
+
+
+def _wav_to_pokey_raw(audio: np.ndarray, src_rate: int,
+                      target_rate: int) -> bytes:
+    """Convert WAV float32 audio to POKEY RAW bytes.
+
+    Resamples to target_rate and quantizes to 4-bit POKEY volume levels
+    using the measured hardware voltage table (nearest-neighbor).
+    Each output byte is 0x10 | nibble (AUDC volume-only format).
+
+    Args:
+        audio: float32 array in [-1, 1]
+        src_rate: source sample rate (Hz)
+        target_rate: POKEY playback rate (Hz), e.g. 3958
+
+    Returns:
+        bytes of AUDC values, one per sample period.
+    """
+    # Resample via linear interpolation
+    if src_rate != target_rate and len(audio) > 1:
+        num_out = max(1, int(len(audio) * target_rate / src_rate))
+        x_in = np.linspace(0, 1, len(audio))
+        x_out = np.linspace(0, 1, num_out)
+        resampled = np.interp(x_out, x_in, audio)
+    else:
+        resampled = np.asarray(audio, dtype=np.float32)
+
+    # Scale audio [-1,1] to voltage range [0, Vmax]
+    v_max = _POKEY_VOLTAGES[-1]
+    scaled = ((resampled + 1.0) * 0.5) * v_max
+    scaled = np.clip(scaled, 0, v_max)
+
+    # Quantize to nearest POKEY voltage level (0-15)
+    indices = np.searchsorted(_POKEY_VOLTAGES, scaled)
+    indices = np.clip(indices, 0, 15)
+    # Check if the level below is closer
+    left = np.clip(indices - 1, 0, 15)
+    err_right = np.abs(scaled - _POKEY_VOLTAGES[indices])
+    err_left = np.abs(scaled - _POKEY_VOLTAGES[left])
+    indices = np.where(err_left < err_right, left, indices).astype(np.uint8)
+
+    # Pack as AUDC volume-only bytes: 0x10 | nibble
+    return bytes(0x10 | int(v) for v in indices)
+
+
 @dataclass
 class Channel:
-    """Audio channel state."""
+    """Audio channel state — used for VU levels and enabled flags."""
     active: bool = False
     note: int = 0
     volume: int = MAX_VOLUME
+    enabled: bool = True
+    vu_level: float = 0.0
+
+    # WAV fields kept only for preview channel compatibility
     sample_data: Optional[np.ndarray] = None
     sample_rate: int = SAMPLE_RATE
     position: float = 0.0
     pitch: float = 1.0
-    enabled: bool = True  # Simplified: just enabled/disabled
-    vu_level: float = 0.0  # VU meter level (0.0–1.0), set on trigger
-    
+
     def reset(self):
         self.active = False
         self.sample_data = None
@@ -39,33 +126,27 @@ class Channel:
 
 
 class AudioEngine:
-    """Real-time audio playback engine.
-    
+    """Real-time audio playback engine — all paths through POKEY emulation.
+
     Uses a SINGLE OutputStream for all audio.  Never use sd.play() anywhere
     in the application — it creates a second OutputStream that kills this one
     on many audio backends (WASAPI exclusive, ALSA without PulseAudio, etc.).
-    
-    Audio paths:
-      - Tracker channels 0-3: song playback + note preview
-      - Preview channel: sample editor waveform, browser file preview
     """
-    
+
     def __init__(self):
         self.running = False
         self.stream = None
         self.channels = [Channel() for _ in range(MAX_CHANNELS)]
         self.lock = threading.RLock()
-        
-        # Dedicated preview channel (sample editor waveform, browser preview)
-        # Separate from tracker channels so preview doesn't clobber playback.
+
+        # Preview channel (sample editor preview PCM — pre-rendered through POKEY)
         self._preview = Channel()
-        self._preview_src_rate = SAMPLE_RATE  # source sample rate for position tracking
-        
+
         # Playback state
         self.playing = False
         self.mode = 'stop'  # 'stop', 'pattern', 'song'
         self.song = None
-        
+
         # Position
         self.songline = 0
         self.row = 0
@@ -74,33 +155,42 @@ class AudioEngine:
         self.hz = PAL_HZ
         self.samples_per_tick = SAMPLE_RATE // PAL_HZ
         self.sample_count = 0
-        
+
         # Pattern info
         self.patterns = list(range(MAX_CHANNELS))
         self.lengths = [DEFAULT_LENGTH] * MAX_CHANNELS
-        
-        # Callbacks (called from main thread via process_callbacks)
+
+        # Callbacks
         self.on_row: Optional[Callable[[int, int], None]] = None
         self.on_stop: Optional[Callable[[], None]] = None
         self._pending_callbacks: List[Tuple] = []
-        
+
         self.master_volume = 0.8
-        
-        # FFT capture buffer for spectrum visualization
-        # Ring buffer storing recent mixed output samples
+
+        # FFT capture buffer
         self._fft_size = 2048
         self._fft_buf = np.zeros(self._fft_size, dtype=np.float32)
         self._fft_write_pos = 0
-    
+
+        # ================================================================
+        # POKEY Emulation State
+        # ================================================================
+        self._vq_player: Optional[object] = None
+        self._pokey_buf = np.zeros(0, dtype=np.float32)
+        self._pokey_buf_pos = 0
+        self._pokey_buf_avail = 0
+        self._vq_state = None   # Reference to VQState
+        self._pokey_row_cb_cycle = 0
+
+    # ====================================================================
+    # Stream Management
+    # ====================================================================
+
     def start(self) -> bool:
-        """Start audio stream."""
-        logger.info(f"Starting audio engine, AUDIO_OK={AUDIO_OK}, running={self.running}")
         if not AUDIO_OK:
-            logger.warning(f"Cannot start: AUDIO_OK={AUDIO_OK}")
             return False
         if self.running and self.stream and self.stream.active:
-            return True  # Already running and healthy
-        # Close any dead stream before creating a new one
+            return True
         if self.stream:
             try:
                 self.stream.close()
@@ -109,22 +199,19 @@ class AudioEngine:
             self.stream = None
             self.running = False
         try:
-            # Use stereo output for compatibility with most audio systems
             self.stream = sd.OutputStream(
                 samplerate=SAMPLE_RATE, channels=2, dtype='float32',
                 blocksize=BUFFER_SIZE, callback=self._audio_callback, latency='low'
             )
             self.stream.start()
             self.running = True
-            logger.info("Audio stream started successfully (stereo)")
+            logger.info("Audio stream started (stereo)")
             return True
         except Exception as e:
             logger.error(f"Audio start error: {e}")
             return False
-    
+
     def stop(self):
-        """Stop audio stream."""
-        logger.info("Stopping audio engine")
         self.stop_playback()
         self.stop_preview()
         if self.stream:
@@ -135,24 +222,16 @@ class AudioEngine:
                 logger.warning(f"Error closing audio stream: {e}")
         self.stream = None
         self.running = False
-        logger.info("Audio engine stopped")
-    
+
     def ensure_stream(self):
-        """Check stream health and restart if dead.
-        
-        Call from main loop to recover from silent stream death
-        (e.g. PortAudio device errors, OS audio reconfiguration,
-        audio device disconnected/reconnected).
-        """
         if not AUDIO_OK:
             return
         if self.running and self.stream:
             try:
                 if self.stream.active:
-                    return  # Healthy
+                    return
             except Exception:
                 pass
-            # Stream died — restart
             logger.warning("Audio stream died — restarting")
             self.running = False
             try:
@@ -160,169 +239,401 @@ class AudioEngine:
             except Exception:
                 pass
             self.stream = None
-        # (Re)start
         if not self.running:
             self.start()
-    
+
+    # ====================================================================
+    # Audio Callback
+    # ====================================================================
+
     def _audio_callback(self, out: np.ndarray, frames: int, time_info, status):
-        """Audio thread callback.
-        
-        Wrapped in try/except to prevent PortAudio from killing the
-        stream on transient errors.  An unhandled exception here causes
-        PortAudio to permanently stop invoking the callback.
-        """
         try:
             with self.lock:
                 output = np.zeros(frames, dtype=np.float32)
-                
-                if self.playing:
-                    self._process_timing(frames)
-                
-                # Mix tracker channels (0-3)
-                for ch in self.channels:
-                    if not ch.active or ch.sample_data is None or not ch.enabled:
-                        continue
-                    ch_out = self._render_channel(ch, frames)
-                    output += ch_out * (ch.volume / MAX_VOLUME)
-                
-                # Mix preview channel (sample editor / browser)
+
+                # Song/pattern playback via POKEY
+                if self.playing and self._vq_player:
+                    output += self._render_pokey(frames)
+
+                # Preview channel (pre-rendered POKEY PCM)
                 pv = self._preview
                 if pv.active and pv.sample_data is not None:
-                    pv_out = self._render_channel(pv, frames)
-                    output += pv_out * (pv.volume / MAX_VOLUME)
-                
-                # Output to both stereo channels
+                    pv_out = self._render_preview(pv, frames)
+                    output += pv_out
+
                 mono_out = np.tanh(output * self.master_volume)
-                out[:, 0] = mono_out  # Left
-                out[:, 1] = mono_out  # Right
-                
-                # Capture into FFT ring buffer (lock-free: single writer)
+                out[:, 0] = mono_out
+                out[:, 1] = mono_out
+
+                # FFT ring buffer
                 n = len(mono_out)
                 pos = self._fft_write_pos
                 buf = self._fft_buf
                 size = len(buf)
-                end = pos + n
-                if end <= size:
-                    buf[pos:end] = mono_out
+                if n >= size:
+                    # Input larger than buffer — just keep the tail
+                    buf[:] = mono_out[n - size:]
+                    self._fft_write_pos = 0
                 else:
-                    first = size - pos
-                    buf[pos:size] = mono_out[:first]
-                    buf[0:n - first] = mono_out[first:]
-                self._fft_write_pos = end % size
+                    end = pos + n
+                    if end <= size:
+                        buf[pos:end] = mono_out
+                    else:
+                        first = size - pos
+                        buf[pos:size] = mono_out[:first]
+                        buf[0:n - first] = mono_out[first:]
+                    self._fft_write_pos = end % size
         except Exception as e:
-            # Output silence on error — keeps the stream alive
             out[:] = 0
             logger.error(f"Audio callback error (stream kept alive): {e}")
-    
-    def _render_channel(self, ch: Channel, frames: int) -> np.ndarray:
-        """Render channel with linear interpolation."""
+
+    # ====================================================================
+    # POKEY Rendering (song/pattern playback)
+    # ====================================================================
+
+    def _render_pokey(self, frames: int) -> np.ndarray:
+        """Render audio via POKEY emulation — song/pattern playback."""
+        output = np.zeros(frames, dtype=np.float32)
+        player = self._vq_player
+        if not player:
+            return output
+
+        written = 0
+        while written < frames:
+            # Drain existing buffer
+            if self._pokey_buf_avail > 0:
+                take = min(frames - written, self._pokey_buf_avail)
+                start = self._pokey_buf_pos
+                output[written:written + take] = self._pokey_buf[start:start + take]
+                self._pokey_buf_pos += take
+                self._pokey_buf_avail -= take
+                written += take
+
+                # Row callback tracking
+                self._pokey_row_cb_cycle += take
+                spf = SAMPLE_RATE // self.hz
+                while self._pokey_row_cb_cycle >= spf:
+                    self._pokey_row_cb_cycle -= spf
+                    if self.on_row and player.playing:
+                        new_sl = player.seq_songline
+                        new_row = player.seq_row
+                        if new_sl != self.songline or new_row != self.row:
+                            self.songline = new_sl
+                            self.row = new_row
+                            self._pending_callbacks.append(
+                                (self.on_row, (self.songline, self.row)))
+                continue
+
+            # Buffer empty — render next POKEY frame
+            if not player.playing and not any(
+                    ch.active for ch in player.channels):
+                self.playing = False
+                if self.on_stop:
+                    self._pending_callbacks.append((self.on_stop, ()))
+                break
+
+            # Sync channel mute state from AudioEngine → VQPlayer
+            for i in range(min(MAX_CHANNELS, len(player.channel_muted))):
+                player.channel_muted[i] = not self.channels[i].enabled
+
+            pcm = player.render_frame()
+            if len(pcm) == 0:
+                break
+            self._pokey_buf = pcm
+            self._pokey_buf_pos = 0
+            self._pokey_buf_avail = len(pcm)
+
+        # VU levels from POKEY channel activity
+        if player:
+            for i in range(min(MAX_CHANNELS, len(player.channels))):
+                pch = player.channels[i]
+                if pch.active and self.channels[i].enabled:
+                    # Scale by channel volume (vol_shift is 0xF0 at max)
+                    vol_frac = ((pch.vol_shift >> 4) & 0xF) / 15.0
+                    self.channels[i].vu_level = max(
+                        self.channels[i].vu_level, vol_frac)
+
+        return output
+
+    def _render_preview(self, ch: Channel, frames: int) -> np.ndarray:
+        """Render preview channel (pre-rendered PCM from POKEY)."""
         out = np.zeros(frames, dtype=np.float32)
+        if ch.sample_data is None:
+            return out
         length = len(ch.sample_data)
-        
         for i in range(frames):
             pos = int(ch.position)
             if pos >= length - 1:
                 ch.active = False
                 break
             frac = ch.position - pos
-            out[i] = (ch.sample_data[pos] * (1 - frac) + 
+            out[i] = (ch.sample_data[pos] * (1 - frac) +
                       ch.sample_data[min(pos + 1, length - 1)] * frac)
             ch.position += ch.pitch
         return out
-    
-    def _process_timing(self, frames: int):
-        """Process playback timing."""
-        self.sample_count += frames
-        while self.sample_count >= self.samples_per_tick:
-            self.sample_count -= self.samples_per_tick
-            self.tick += 1
-            if self.tick >= self.speed:
-                self.tick = 0
-                self._advance_row()
-    
-    def _advance_row(self):
-        """Advance to next row."""
-        # First increment the row
-        self.row += 1
-        
-        max_len = max(self.lengths) if self.lengths else DEFAULT_LENGTH
-        if self.row >= max_len:
-            self.row = 0
-            if self.mode == 'song':
-                self.songline += 1
-                if self.song and self.songline >= len(self.song.songlines):
-                    self.songline = 0
-                self._update_patterns()
-        
-        # Then play the new row
-        self._play_current_row()
-        
-        if self.on_row:
-            self._pending_callbacks.append((self.on_row, (self.songline, self.row)))
-    
-    def _play_current_row(self):
-        """Trigger notes for current row."""
-        if not self.song:
-            return
+
+    # ====================================================================
+    # POKEY Player Setup
+    # ====================================================================
+
+    def set_vq_state(self, vq_state):
+        """Store reference to VQState for conversion data + settings."""
+        self._vq_state = vq_state
+
+    def _get_target_rate(self) -> int:
+        """Get the VQ target sample rate from settings."""
+        if self._vq_state and hasattr(self._vq_state, 'settings'):
+            return self._vq_state.settings.rate
+        return _DEFAULT_RATE
+
+    def _get_vector_size(self) -> int:
+        if self._vq_state and hasattr(self._vq_state, 'settings'):
+            return self._vq_state.settings.vector_size
+        return _DEFAULT_VECTOR_SIZE
+
+    def _has_vq_data(self) -> bool:
+        """Check if VQ conversion data is available."""
+        if not POKEY_EMU_OK or not self._vq_state:
+            return False
+        if not self._vq_state.converted or not self._vq_state.result:
+            return False
+        if not self._vq_state.result.success:
+            return False
+        if not self._vq_state.result.output_dir:
+            return False
+        return True
+
+    def _build_player_obj(self, songline: int = 0,
+                          row: int = 0) -> Optional['VQPlayer']:
+        """Build VQPlayer for the current song (called outside lock).
+
+        Uses VQ conversion data if available; otherwise builds RAW
+        instruments on-the-fly from WAV samples at the target rate.
+
+        Returns VQPlayer on success, None on failure.
+        """
+        if not POKEY_EMU_OK or not self.song:
+            return None
+
+        try:
+            player = VQPlayer(sample_rate=SAMPLE_RATE)
+
+            if self._has_vq_data():
+                # Post-conversion: use actual VQ/RAW data
+                player.load_from_tracker(
+                    self.song,
+                    self._vq_state.result,
+                    self._vq_state.settings,
+                )
+                # Validate: instruments loaded and codebook non-empty
+                n_loaded = len(player.song.instruments)
+                n_needed = len(self.song.instruments)
+                cb_size = len(player.song.codebook)
+                if n_loaded == 0 or cb_size == 0:
+                    logger.warning(
+                        f"VQ data incomplete (inst={n_loaded}, "
+                        f"codebook={cb_size}B) — falling back to "
+                        f"live RAW")
+                    player = VQPlayer(sample_rate=SAMPLE_RATE)
+                    song_data = self._build_live_song_data()
+                    player.load_song(song_data)
+                elif n_loaded < n_needed:
+                    logger.warning(
+                        f"VQ has {n_loaded} instruments but song "
+                        f"needs {n_needed} — falling back to live RAW")
+                    player = VQPlayer(sample_rate=SAMPLE_RATE)
+                    song_data = self._build_live_song_data()
+                    player.load_song(song_data)
+                else:
+                    logger.info("POKEY player: using converted VQ data")
+            else:
+                # Pre-conversion: build RAW from WAV instruments
+                song_data = self._build_live_song_data()
+                player.load_song(song_data)
+                logger.info("POKEY player: using live RAW from WAV")
+
+            player.start_playback(songline=songline, row=row)
+            return player
+        except Exception as e:
+            logger.error(f"POKEY player build failed: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
+            return None
+
+    def _install_player(self, player: Optional['VQPlayer']):
+        """Install a pre-built player (called with lock held)."""
+        self._vq_player = player
+        self._pokey_buf = np.zeros(0, dtype=np.float32)
+        self._pokey_buf_pos = 0
+        self._pokey_buf_avail = 0
+        self._pokey_row_cb_cycle = 0
+
+    def _build_player(self, songline: int = 0, row: int = 0) -> bool:
+        """Build and install VQPlayer (convenience, for use inside lock).
+
+        Used by render_offline which doesn't need the split.
+        """
+        player = self._build_player_obj(songline, row)
+        self._install_player(player)
+        return player is not None
+
+    def _build_live_song_data(self) -> 'SongData':
+        """Build SongData from current song with WAV→RAW conversion.
+
+        Each instrument's WAV audio is resampled to the target rate and
+        quantized to 4-bit POKEY levels. This gives an accurate preview
+        of what the Atari will sound like at the configured sample rate.
+        """
+        song = self.song
+        target_rate = self._get_target_rate()
+        vector_size = self._get_vector_size()
+
+        sd = SongData()
+        sd.ntsc = (song.system == 60)
+        sd.vector_size = vector_size
+        sd.volume_control = getattr(song, 'volume_control', False)
+
+        clock = NTSC_CLOCK if sd.ntsc else PAL_CLOCK
+        sd.audf_val = max(0, min(255, round(clock / 28.0 / target_rate) - 1))
+        sd.audctl_val = 0
+
+        # Convert each instrument WAV → RAW POKEY bytes
+        for i, inst in enumerate(song.instruments):
+            if inst.is_loaded():
+                # Get processed audio (with effects applied)
+                from sample_editor.pipeline import get_playback_audio
+                audio = get_playback_audio(inst)
+                if audio is None:
+                    audio = inst.sample_data
+
+                raw_bytes = _wav_to_pokey_raw(audio, inst.sample_rate,
+                                              target_rate)
+                inst_data = InstrumentData(
+                    index=i, is_vq=False,
+                    stream_data=raw_bytes,
+                    start_offset=0, end_offset=len(raw_bytes),
+                )
+            else:
+                # Empty instrument
+                inst_data = InstrumentData(
+                    index=i, is_vq=False,
+                    stream_data=b'\x10',
+                    start_offset=0, end_offset=1,
+                )
+            sd.instruments.append(inst_data)
+
+        # Empty codebook (no VQ data)
+        sd.codebook = bytes(256 * vector_size)
+        sd.build_codebook_offsets()
+
+        # Pitch table
+        player_tmp = VQPlayer(sample_rate=SAMPLE_RATE)
+        sd.pitch_table = player_tmp._build_pitch_table()
+
+        # Volume scale
+        if sd.volume_control:
+            sd.build_volume_scale()
+
+        # Song structure
+        sd.song_length = len(song.songlines)
+        for sl in song.songlines:
+            sd.songlines.append({
+                'speed': max(1, sl.speed),
+                'patterns': list(sl.patterns),
+            })
+
         from constants import NOTE_OFF, VOL_CHANGE
-        for ch_idx in range(MAX_CHANNELS):
-            if ch_idx >= len(self.patterns):
-                continue
-            ptn = self.song.get_pattern(self.patterns[ch_idx])
-            row = ptn.get_row_wrapped(self.row)
-            if row.note == NOTE_OFF:
-                # Note-off: silence the channel
-                self.channels[ch_idx].active = False
-                self.channels[ch_idx].vu_level = 0.0
-            elif row.note == VOL_CHANGE:
-                # Volume change only — no retrigger
-                self.channels[ch_idx].volume = row.volume
-                self.channels[ch_idx].vu_level = row.volume / MAX_VOLUME
-            elif row.note > 0:
-                inst = self.song.get_instrument(row.instrument)
-                if inst and inst.is_loaded():
-                    self._trigger_note(ch_idx, row.note, inst, row.volume)
-    
-    def _update_patterns(self):
-        """Update pattern info and speed from current songline."""
-        if not self.song or self.songline >= len(self.song.songlines):
-            return
-        sl = self.song.songlines[self.songline]
-        self.patterns = sl.patterns.copy()
-        self.lengths = [self.song.get_pattern(p).length for p in self.patterns]
-        # Update speed from songline (clamp: corrupt files may have speed=0)
-        self.speed = max(1, sl.speed)
-    
-    def _trigger_note(self, ch_idx: int, note: int, inst, volume: int):
-        """Trigger a note on a channel."""
-        logger.debug(f"_trigger_note: ch={ch_idx}, note={note}, vol={volume}, inst_loaded={inst.is_loaded() if inst else False}")
-        if not (0 <= ch_idx < MAX_CHANNELS):
-            logger.warning(f"Invalid channel index: {ch_idx}")
-            return
-        if not inst or not inst.is_loaded():
-            logger.warning(f"Instrument not loaded")
-            return
-        ch = self.channels[ch_idx]
-        ch.pitch = 2 ** ((note - inst.base_note) / 12.0) * inst.sample_rate / SAMPLE_RATE
-        ch.active = True
-        ch.note = note
-        ch.volume = volume
-        ch.vu_level = volume / MAX_VOLUME  # VU meter spike on trigger
-        # Use processed audio if effects are applied
-        from sample_editor.pipeline import get_playback_audio
-        audio = get_playback_audio(inst)
-        ch.sample_data = audio if audio is not None else inst.sample_data
-        ch.sample_rate = inst.sample_rate
-        ch.position = 0.0
-        logger.debug(f"Note triggered: ch={ch_idx}, pitch={ch.pitch:.3f}, sample_len={len(ch.sample_data)}")
-    
-    def _stop_all_channels(self):
-        """Stop all channels."""
-        for ch in self.channels:
-            ch.reset()
-    
+        _VOL_CHANGE_ASM = 61  # VQPlayer's volume-change marker
+        for ptn in song.patterns:
+            events = []
+            for row_idx in range(ptn.length):
+                r = ptn.rows[row_idx]
+                if r.note == 0:
+                    continue  # Empty row
+                # Translate tracker constants → VQPlayer constants
+                if r.note == NOTE_OFF:  # 255 → note-off (0)
+                    events.append((row_idx, 0, 0, 0))
+                elif r.note == VOL_CHANGE:  # 254 → vol-change (61)
+                    events.append((row_idx, _VOL_CHANGE_ASM,
+                                   r.instrument, r.volume))
+                else:
+                    events.append((row_idx, r.note, r.instrument, r.volume))
+            sd.patterns.append({
+                'length': ptn.length,
+                'events': events,
+            })
+
+        return sd
+
+    # ====================================================================
+    # Note Preview via POKEY
+    # ====================================================================
+
+    def _render_note_pokey(self, note: int, inst_idx: int,
+                           volume: int, duration_s: float = 2.0
+                           ) -> Optional[np.ndarray]:
+        """Pre-render a single note through POKEY emulation.
+
+        Returns float32 PCM array, or None on failure.
+        """
+        if not POKEY_EMU_OK or not self.song:
+            return None
+
+        try:
+            player = VQPlayer(sample_rate=SAMPLE_RATE)
+
+            if self._has_vq_data():
+                player.load_from_tracker(
+                    self.song,
+                    self._vq_state.result,
+                    self._vq_state.settings,
+                )
+                # Validate: fall back if VQ data is incomplete
+                if (len(player.song.instruments) == 0 or
+                        inst_idx >= len(player.song.instruments)):
+                    player = VQPlayer(sample_rate=SAMPLE_RATE)
+                    sd_data = self._build_live_song_data()
+                    player.load_song(sd_data)
+            else:
+                sd_data = self._build_live_song_data()
+                player.load_song(sd_data)
+
+            # Don't start sequencer — manually trigger a note
+            player.playing = False
+
+            if inst_idx < len(player.song.instruments):
+                inst = player.song.instruments[inst_idx]
+                pitch_step = 0x0100  # default 1x
+                note_idx = note - 1
+                if 0 <= note_idx < len(player.song.pitch_table):
+                    pitch_step = player.song.pitch_table[note_idx]
+
+                ch = player.channels[0]
+                ch.trigger(inst, pitch_step, player.song)
+                ch.vol_shift = (volume << 4) & 0xF0
+
+            # Render frames until note ends or duration exceeded
+            max_frames = int(duration_s * self.hz)
+            chunks = []
+            for _ in range(max_frames):
+                pcm = player.render_frame()
+                if len(pcm) > 0:
+                    chunks.append(pcm)
+                if not any(c.active for c in player.channels):
+                    break
+
+            if chunks:
+                return np.concatenate(chunks)
+            return None
+        except Exception as e:
+            logger.error(f"Note preview render failed: {e}")
+            return None
+
+    # ====================================================================
+    # Callbacks
+    # ====================================================================
+
     def process_callbacks(self):
-        """Process pending callbacks (call from main thread)."""
         with self.lock:
             callbacks = self._pending_callbacks.copy()
             self._pending_callbacks.clear()
@@ -331,352 +642,438 @@ class AudioEngine:
                 fn(*args)
             except Exception as e:
                 logger.warning(f"Callback error in {fn.__name__}: {e}")
-    
-    # === PUBLIC API ===
-    
+
+    # ====================================================================
+    # PUBLIC API
+    # ====================================================================
+
     def set_song(self, song):
-        """Set current song."""
         with self.lock:
             self.song = song
             if song:
-                # Use speed from first songline (if available)
                 if song.songlines:
                     self.speed = song.songlines[0].speed
                 else:
                     self.speed = DEFAULT_SPEED
                 self.hz = song.system
                 self.samples_per_tick = SAMPLE_RATE // self.hz
-    
+
     def play_from(self, songline: int, row: int):
-        """Play from position."""
+        """Play from position (pattern mode)."""
+        if not self.song:
+            return
+        # Build player outside lock (heavy: 60-70ms)
+        player = self._build_player_obj(songline, row)
         with self.lock:
-            if not self.song:
-                return
-            self._stop_all_channels()
+            self._stop_all()
             self.mode = 'pattern'
             self.songline = songline
             self.row = row
-            self.tick = 0
-            self.sample_count = 0
-            self._update_patterns()
-            self._play_current_row()  # Play first row immediately
+            self._install_player(player)
             self.playing = True
-            # Fire callback for initial position
             if self.on_row:
-                self._pending_callbacks.append((self.on_row, (self.songline, self.row)))
-    
+                self._pending_callbacks.append(
+                    (self.on_row, (self.songline, self.row)))
+
     def play_pattern(self, songline: int = 0):
-        """Play current pattern."""
         self.play_from(songline, 0)
-    
-    def play_song(self, from_start: bool = True, songline: int = 0, row: int = 0):
-        """Play song.
-        
-        Args:
-            from_start: If True, start from beginning (songline 0, row 0)
-            songline: Starting songline (ignored if from_start=True)
-            row: Starting row within songline (ignored if from_start=True)
-        """
+
+    def play_song(self, from_start: bool = True, songline: int = 0,
+                  row: int = 0):
+        if not self.song:
+            return
+        start_sl = 0 if from_start else songline
+        start_row = 0 if from_start else row
+        # Build player outside lock
+        player = self._build_player_obj(start_sl, start_row)
         with self.lock:
-            if not self.song:
-                return
-            self._stop_all_channels()
+            self._stop_all()
             self.mode = 'song'
-            self.songline = 0 if from_start else songline
-            self.tick = 0
-            self.sample_count = 0
-            self._update_patterns()
-            
-            # Set starting row (with bounds check)
-            if from_start:
-                self.row = 0
-            else:
-                # Clamp row to valid range for current songline patterns
-                max_len = max(self.lengths) if self.lengths else DEFAULT_LENGTH
-                self.row = min(row, max_len - 1) if max_len > 0 else 0
-            
-            self._play_current_row()  # Play first row immediately
+            self.songline = start_sl
+            self.row = start_row
+            self._install_player(player)
             self.playing = True
-            # Fire callback for initial position
             if self.on_row:
-                self._pending_callbacks.append((self.on_row, (self.songline, self.row)))
-    
+                self._pending_callbacks.append(
+                    (self.on_row, (self.songline, self.row)))
+
     def stop_playback(self):
-        """Stop playback."""
         with self.lock:
             was_playing = self.playing
             self.playing = False
             self.mode = 'stop'
-            self._stop_all_channels()
+            self._vq_player = None
+            self._stop_all()
             for ch in self.channels:
                 ch.vu_level = 0.0
             if was_playing and self.on_stop:
                 self._pending_callbacks.append((self.on_stop, ()))
-    
-    # === PREVIEW (sample editor / browser — routed through main stream) ===
-    
-    def play_preview(self, audio_data: np.ndarray, sample_rate: int):
-        """Play raw audio through the preview channel.
-        
-        Used by sample editor (waveform playback) and file browser
-        (audio file preview).  Routed through the single OutputStream
-        so it cannot kill the main audio stream.
-        
-        NEVER use sd.play() anywhere in this application.
-        
-        Args:
-            audio_data: float32 mono array, values in [-1, 1]
-            sample_rate: source sample rate (e.g. 44100, 15720)
+
+    def _stop_all(self):
+        for ch in self.channels:
+            ch.active = False
+            ch.reset()
+
+    # === NOTE PREVIEW (through POKEY) ===
+
+    def preview_note(self, ch_idx: int, note: int, inst,
+                     volume: int = MAX_VOLUME):
+        """Preview a single note through POKEY emulation.
+
+        The note is pre-rendered through the POKEY emulator (RAW or VQ
+        depending on conversion state) and played via the preview channel.
+
+        Heavy POKEY rendering happens OUTSIDE the lock to avoid blocking
+        the audio callback (which fires every ~11ms).
         """
-        if sample_rate <= 0:
-            logger.warning(f"play_preview: invalid sample_rate={sample_rate}")
+        if not inst or not inst.is_loaded():
             return
+        # Find instrument index (UI thread only, no lock needed)
+        inst_idx = 0
+        if self.song:
+            for i, si in enumerate(self.song.instruments):
+                if si is inst:
+                    inst_idx = i
+                    break
+
+        # Render outside lock (60-100ms of POKEY emulation)
+        pcm = self._render_note_pokey(note, inst_idx, volume)
+
+        # Brief lock to swap in the result
+        if pcm is not None and len(pcm) > 0:
+            with self.lock:
+                self.channels[ch_idx].vu_level = volume / MAX_VOLUME
+                self.channels[ch_idx].active = True
+                pv = self._preview
+                pv.sample_data = pcm
+                pv.sample_rate = SAMPLE_RATE
+                pv.pitch = 1.0
+                pv.position = 0.0
+                pv.volume = MAX_VOLUME
+                pv.active = True
+                pv.vu_level = 1.0
+
+    def preview_row(self, song, songline: int, row: int):
+        """Preview all notes in a row through POKEY emulation."""
+        if not song or songline >= len(song.songlines):
+            return
+        from constants import NOTE_OFF, VOL_CHANGE
+        sl = song.songlines[songline]
+
+        # Collect all active notes (UI thread, no lock needed)
+        notes = []
+        note_ch_info = []
+        for ch_idx in range(MAX_CHANNELS):
+            ptn = song.get_pattern(sl.patterns[ch_idx])
+            r = ptn.get_row_wrapped(row)
+            if r.note == NOTE_OFF:
+                note_ch_info.append((ch_idx, 'off', 0))
+            elif r.note == VOL_CHANGE:
+                note_ch_info.append((ch_idx, 'vol', r.volume))
+            elif r.note > 0:
+                notes.append((ch_idx, r.note, r.instrument, r.volume))
+
+        if not notes:
+            # Still apply note-offs and vol changes under lock
+            with self.lock:
+                for ch_idx, kind, vol in note_ch_info:
+                    if kind == 'off':
+                        self.channels[ch_idx].active = False
+                        self.channels[ch_idx].vu_level = 0.0
+                    elif kind == 'vol':
+                        self.channels[ch_idx].vu_level = vol / MAX_VOLUME
+            return
+
+        # Heavy render outside lock
+        pcm = self._render_row_pokey(notes)
+
+        # Brief lock to swap in result
         with self.lock:
-            pv = self._preview
-            # Ensure float32 mono
-            data = np.asarray(audio_data, dtype=np.float32)
-            if data.ndim > 1:
-                data = data.mean(axis=1)
-            if len(data) == 0:
-                return
-            pv.sample_data = data
-            pv.sample_rate = sample_rate
-            pv.pitch = sample_rate / SAMPLE_RATE
-            pv.position = 0.0
-            pv.volume = MAX_VOLUME
-            pv.active = True
-            pv.vu_level = 0.8
-            self._preview_src_rate = sample_rate
-    
+            for ch_idx, kind, vol in note_ch_info:
+                if kind == 'off':
+                    self.channels[ch_idx].active = False
+                    self.channels[ch_idx].vu_level = 0.0
+                elif kind == 'vol':
+                    self.channels[ch_idx].vu_level = vol / MAX_VOLUME
+
+            if pcm is not None and len(pcm) > 0:
+                for ch_idx, _, _, vol in notes:
+                    self.channels[ch_idx].vu_level = vol / MAX_VOLUME
+                    self.channels[ch_idx].active = True
+                pv = self._preview
+                pv.sample_data = pcm
+                pv.sample_rate = SAMPLE_RATE
+                pv.pitch = 1.0
+                pv.position = 0.0
+                pv.volume = MAX_VOLUME
+                pv.active = True
+
+    def _render_row_pokey(self, notes: list,
+                          duration_s: float = 2.0) -> Optional[np.ndarray]:
+        """Pre-render multiple notes through POKEY (for row preview)."""
+        if not POKEY_EMU_OK or not self.song:
+            return None
+        try:
+            player = VQPlayer(sample_rate=SAMPLE_RATE)
+            if self._has_vq_data():
+                player.load_from_tracker(
+                    self.song, self._vq_state.result,
+                    self._vq_state.settings)
+                if len(player.song.instruments) == 0:
+                    player = VQPlayer(sample_rate=SAMPLE_RATE)
+                    player.load_song(self._build_live_song_data())
+            else:
+                player.load_song(self._build_live_song_data())
+
+            player.playing = False
+
+            for ch_idx, note, inst_idx, vol in notes:
+                if inst_idx >= len(player.song.instruments):
+                    continue
+                if ch_idx >= 4:
+                    continue
+                inst = player.song.instruments[inst_idx]
+                pitch_step = 0x0100
+                nidx = note - 1
+                if 0 <= nidx < len(player.song.pitch_table):
+                    pitch_step = player.song.pitch_table[nidx]
+                ch = player.channels[ch_idx]
+                ch.trigger(inst, pitch_step, player.song)
+                ch.vol_shift = (vol << 4) & 0xF0
+
+            max_frames = int(duration_s * self.hz)
+            chunks = []
+            for _ in range(max_frames):
+                pcm = player.render_frame()
+                if len(pcm) > 0:
+                    chunks.append(pcm)
+                if not any(c.active for c in player.channels):
+                    break
+            return np.concatenate(chunks) if chunks else None
+        except Exception as e:
+            logger.error(f"Row preview render failed: {e}")
+            return None
+
+    # === SAMPLE EDITOR PREVIEW (through POKEY RAW) ===
+
+    def play_preview(self, audio_data: np.ndarray, sample_rate: int):
+        """Play audio through POKEY emulation in RAW mode at target rate.
+
+        Used by sample editor and file browser. The audio is converted to
+        POKEY RAW format at the configured target rate, rendered through the
+        POKEY emulator, and played back — giving an accurate preview of
+        what the sample will sound like on Atari hardware.
+        """
+        if sample_rate <= 0 or len(audio_data) == 0:
+            return
+        data = np.asarray(audio_data, dtype=np.float32)
+        if data.ndim > 1:
+            data = data.mean(axis=1)
+
+        target_rate = self._get_target_rate()
+
+        # Heavy POKEY render outside lock
+        pcm = self._render_raw_preview(data, sample_rate, target_rate)
+
+        if pcm is not None and len(pcm) > 0:
+            with self.lock:
+                pv = self._preview
+                pv.sample_data = pcm
+                pv.sample_rate = SAMPLE_RATE
+                pv.pitch = 1.0
+                pv.position = 0.0
+                pv.volume = MAX_VOLUME
+                pv.active = True
+                pv.vu_level = 1.0
+
+    def _render_raw_preview(self, audio: np.ndarray, src_rate: int,
+                            target_rate: int) -> Optional[np.ndarray]:
+        """Render audio through POKEY in RAW mode for sample preview."""
+        if not POKEY_EMU_OK:
+            return None
+        try:
+            raw_bytes = _wav_to_pokey_raw(audio, src_rate, target_rate)
+            if len(raw_bytes) == 0:
+                return None
+
+            player = VQPlayer(sample_rate=SAMPLE_RATE)
+            sd_data = SongData()
+            sd_data.ntsc = (self.song.system == 60) if self.song else False
+
+            clock = NTSC_CLOCK if sd_data.ntsc else PAL_CLOCK
+            sd_data.audf_val = max(0, min(255,
+                                          round(clock / 28.0 / target_rate) - 1))
+            sd_data.audctl_val = 0
+            sd_data.vector_size = _DEFAULT_VECTOR_SIZE
+            sd_data.codebook = bytes(256 * sd_data.vector_size)
+            sd_data.build_codebook_offsets()
+            sd_data.pitch_table = player._build_pitch_table()
+
+            inst = InstrumentData(
+                index=0, is_vq=False,
+                stream_data=raw_bytes,
+                start_offset=0, end_offset=len(raw_bytes),
+            )
+            sd_data.instruments.append(inst)
+            sd_data.song_length = 1
+            sd_data.songlines.append({'speed': 6, 'patterns': [0, 0, 0, 0]})
+            sd_data.patterns.append({
+                'length': 64,
+                'events': [(0, 1, 0, 15)],  # C-1, inst 0, vol 15
+            })
+
+            player.load_song(sd_data)
+            player.playing = False
+
+            # Trigger note directly on channel 0
+            ch = player.channels[0]
+            ch.trigger(inst, 0x0100, sd_data)  # 1:1 pitch
+            ch.vol_shift = 0xF0  # Full volume
+
+            # Render until done
+            max_frames = int(len(raw_bytes) / target_rate * self.hz) + 20
+            max_frames = min(max_frames, 30000)
+            chunks = []
+            for _ in range(max_frames):
+                pcm = player.render_frame()
+                if len(pcm) > 0:
+                    chunks.append(pcm)
+                if not ch.active:
+                    break
+            return np.concatenate(chunks) if chunks else None
+        except Exception as e:
+            logger.error(f"RAW preview render failed: {e}")
+            return None
+
     def stop_preview(self):
-        """Stop preview channel playback."""
         with self.lock:
             self._preview.active = False
             self._preview.vu_level = 0.0
             self._preview.sample_data = None
-    
+
     def is_preview_playing(self) -> bool:
-        """Check if preview channel is actively playing."""
         return self._preview.active and self._preview.sample_data is not None
-    
+
     def get_preview_position(self) -> float:
-        """Get current preview playback position in seconds.
-        
-        Returns elapsed time relative to start of the audio data.
+        """Return current preview playback position in seconds.
+
+        The preview PCM is always rendered at SAMPLE_RATE regardless of the
+        POKEY target rate, so we always divide by SAMPLE_RATE.
         """
         pv = self._preview
         if not pv.active or pv.sample_data is None:
             return -1.0
-        return pv.position / self._preview_src_rate
-    
-    def get_vu_levels(self):
-        """Get current VU levels for all channels. Thread-safe."""
-        return [ch.vu_level for ch in self.channels[:MAX_CHANNELS]]
-    
-    def get_fft_snapshot(self):
-        """Get a copy of the FFT ring buffer for spectrum analysis. Thread-safe."""
-        # Read the whole buffer — single-writer so we get a consistent-enough snapshot
-        pos = self._fft_write_pos
-        buf = self._fft_buf
-        # Reorder so newest samples are at end
-        return np.roll(buf, -pos).copy()
-    
-    def is_playing(self) -> bool:
-        return self.playing
-    
-    def get_mode(self) -> str:
-        return self.mode
-    
-    def get_position(self) -> Tuple[int, int]:
-        return (self.songline, self.row)
-    
-    def preview_note(self, ch_idx: int, note: int, inst, volume: int = MAX_VOLUME):
-        """Preview a single note."""
-        logger.debug(f"preview_note called: ch={ch_idx}, note={note}, vol={volume}, running={self.running}")
-        with self.lock:
-            if inst and inst.is_loaded():
-                logger.debug(f"Calling _trigger_note")
-                self._trigger_note(ch_idx, note, inst, volume)
-            else:
-                logger.warning(f"preview_note: instrument not loaded or None")
-    
-    def preview_row(self, song, songline: int, row: int):
-        """Preview all notes in a row."""
-        with self.lock:
-            if not song or songline >= len(song.songlines):
-                return
-            from constants import NOTE_OFF, VOL_CHANGE
-            sl = song.songlines[songline]
-            for ch_idx in range(MAX_CHANNELS):
-                ptn = song.get_pattern(sl.patterns[ch_idx])
-                r = ptn.get_row_wrapped(row)
-                if r.note == NOTE_OFF:
-                    self.channels[ch_idx].active = False
-                    self.channels[ch_idx].vu_level = 0.0
-                elif r.note == VOL_CHANGE:
-                    self.channels[ch_idx].volume = r.volume
-                    self.channels[ch_idx].vu_level = r.volume / MAX_VOLUME
-                elif r.note > 0:
-                    inst = song.get_instrument(r.instrument)
-                    if inst and inst.is_loaded():
-                        self._trigger_note(ch_idx, r.note, inst, r.volume)
-    
+        return pv.position / SAMPLE_RATE
+
+    # === CHANNEL CONTROLS ===
+
     def toggle_channel(self, ch: int) -> bool:
-        """Toggle channel enabled state."""
         if 0 <= ch < MAX_CHANNELS:
             self.channels[ch].enabled = not self.channels[ch].enabled
             return self.channels[ch].enabled
         return True
-    
+
     def set_channel_enabled(self, ch: int, enabled: bool):
-        """Set channel enabled state."""
         if 0 <= ch < MAX_CHANNELS:
             self.channels[ch].enabled = enabled
-    
+
     def is_channel_enabled(self, ch: int) -> bool:
-        """Check if channel is enabled."""
         return self.channels[ch].enabled if 0 <= ch < MAX_CHANNELS else True
-    
+
     def set_speed(self, speed: int):
         with self.lock:
             self.speed = max(1, min(255, speed))
-    
+
     def set_system(self, hz: int):
         with self.lock:
             self.hz = hz
             self.samples_per_tick = SAMPLE_RATE // hz
 
-    # === OFFLINE RENDERING (WAV export) ===
+    # === QUERY ===
 
-    def _save_channel_state(self):
-        """Snapshot all per-channel fields for later restore."""
-        return [{
-            'active': ch.active, 'note': ch.note, 'volume': ch.volume,
-            'sample_data': ch.sample_data, 'sample_rate': ch.sample_rate,
-            'position': ch.position, 'pitch': ch.pitch,
-            'enabled': ch.enabled, 'vu_level': ch.vu_level,
-        } for ch in self.channels]
+    def get_vu_levels(self):
+        """Read VU levels and reset to 0 (consume pattern).
+        
+        The audio callback sets vu_level to the peak volume each frame.
+        The UI reads it and resets to 0 so the next audio frame can set
+        a fresh value. The UI-side gravity handles the visual decay.
+        """
+        levels = []
+        for ch in self.channels[:MAX_CHANNELS]:
+            levels.append(ch.vu_level)
+            ch.vu_level = 0.0
+        return levels
 
-    def _restore_channel_state(self, saved):
-        """Restore per-channel fields from a snapshot."""
-        for i, s in enumerate(saved):
-            if i < len(self.channels):
-                ch = self.channels[i]
-                for k, v in s.items():
-                    setattr(ch, k, v)
+    def get_fft_snapshot(self):
+        pos = self._fft_write_pos
+        buf = self._fft_buf
+        return np.roll(buf, -pos).copy()
+
+    def is_playing(self) -> bool:
+        return self.playing
+
+    def is_pokey_mode(self) -> bool:
+        """Always True — all playback uses POKEY emulation."""
+        return POKEY_EMU_OK
+
+    def get_mode(self) -> str:
+        return self.mode
+
+    def get_position(self) -> Tuple[int, int]:
+        return (self.songline, self.row)
+
+    # === OFFLINE RENDERING (WAV export — always through POKEY) ===
 
     def render_offline(self, progress_cb=None) -> Optional[np.ndarray]:
-        """Render the entire song to a numpy array (mono float32, 44100 Hz).
-
-        Plays through all songlines once (stops when songline wraps to 0).
-        Returns mono float32 array at SAMPLE_RATE, or None on error.
-
-        The audio stream is stopped during rendering so the PortAudio
-        callback thread is not blocked.  The stream is restarted afterwards.
-
-        Args:
-            progress_cb: Optional callback(songline, row, total_songlines)
-                         called after each row for progress display.
-        """
+        """Render entire song to numpy array via POKEY emulation."""
         if not self.song or not self.song.songlines:
             return None
-
-        total_songlines = len(self.song.songlines)
-
-        # --- Quiesce the real-time audio path ---
-        was_running = self.running
-        self.stop_playback()          # playing=False, channels silent
-        if was_running:
-            self.stop()               # close stream — no callback runs
-
-        # Save full state (safe: no concurrent access)
-        saved_ch = self._save_channel_state()
-        saved_engine = (self.mode, self.songline, self.row,
-                        self.tick, self.sample_count, self.speed,
-                        self.patterns[:] if self.patterns else [],
-                        self.lengths[:] if self.lengths else [])
+        if not POKEY_EMU_OK:
+            return None
 
         try:
-            # Initialise for offline rendering
-            self._stop_all_channels()
-            self.mode = 'song'
-            self.songline = 0
-            self.row = 0
-            self.tick = 0
-            self.sample_count = 0
-            self.playing = True
-            self._update_patterns()
-            self._play_current_row()
-
-            for ch in self.channels:
-                ch.enabled = True
+            player = VQPlayer(sample_rate=SAMPLE_RATE)
+            if self._has_vq_data():
+                player.load_from_tracker(
+                    self.song, self._vq_state.result,
+                    self._vq_state.settings)
+                if (len(player.song.instruments) == 0 or
+                        len(player.song.instruments) <
+                        len(self.song.instruments)):
+                    player = VQPlayer(sample_rate=SAMPLE_RATE)
+                    player.load_song(self._build_live_song_data())
+            else:
+                player.load_song(self._build_live_song_data())
+            player.start_playback(songline=0, row=0)
 
             chunks = []
-            max_samples = SAMPLE_RATE * 600   # 10-minute hard cap
-            total_samples = 0
+            frame_count = 0
+            max_frames = 30000  # ~10 minutes at 50fps
 
-            while total_samples < max_samples:
-                buf_size = min(1024, self.samples_per_tick)
-                output = np.zeros(buf_size, dtype=np.float32)
+            while frame_count < max_frames:
+                pcm = player.render_frame()
+                if len(pcm) > 0:
+                    chunks.append(pcm)
+                frame_count += 1
 
-                # --- Timing: advance rows exactly as the real-time path ---
-                remaining = buf_size
-                while remaining > 0:
-                    tick_remaining = self.samples_per_tick - self.sample_count
-                    process = min(remaining, tick_remaining)
-                    self.sample_count += process
-                    remaining -= process
+                if progress_cb and frame_count % 50 == 0:
+                    try:
+                        progress_cb(player.seq_songline, player.seq_row,
+                                    len(self.song.songlines))
+                    except Exception:
+                        pass
 
-                    if self.sample_count >= self.samples_per_tick:
-                        self.sample_count = 0
-                        self.tick += 1
-                        if self.tick >= self.speed:
-                            self.tick = 0
-                            self.row += 1
-                            max_len = (max(self.lengths)
-                                       if self.lengths else DEFAULT_LENGTH)
-                            if self.row >= max_len:
-                                self.row = 0
-                                self.songline += 1
-                                if self.songline >= total_songlines:
-                                    self.playing = False
-                                    break
-                                self._update_patterns()
-                            self._play_current_row()
-
-                            if progress_cb:
-                                try:
-                                    progress_cb(self.songline, self.row,
-                                                total_songlines)
-                                except Exception:
-                                    pass
-
-                # --- Render this buffer (including the final one after
-                #     the song ends — channels still ring out) ---
-                for ch in self.channels:
-                    if not ch.active or ch.sample_data is None:
-                        continue
-                    ch_out = self._render_channel(ch, buf_size)
-                    output += ch_out * (ch.volume / MAX_VOLUME)
-
-                chunks.append(np.tanh(output * self.master_volume))
-                total_samples += buf_size
-
-                if not self.playing:
-                    break                 # exit AFTER rendering final buffer
+                if not player.playing and not any(
+                        ch.active for ch in player.channels):
+                    for _ in range(10):
+                        pcm = player.render_frame()
+                        if len(pcm) > 0:
+                            chunks.append(pcm)
+                    break
 
             if not chunks:
                 return None
-            return np.concatenate(chunks)
-
-        finally:
-            # --- Restore engine + channel state ---
-            (self.mode, self.songline, self.row,
-             self.tick, self.sample_count, self.speed,
-             self.patterns, self.lengths) = saved_engine
-            self.playing = False          # always leave stopped
-            self._restore_channel_state(saved_ch)
-
-            # Restart audio stream if it was running
-            if was_running:
-                self.start()
+            return np.tanh(np.concatenate(chunks) * self.master_volume)
+        except Exception as e:
+            logger.error(f"POKEY offline render failed: {e}")
+            return None
